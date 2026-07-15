@@ -2,9 +2,9 @@
 
 ## Integrity scanners must distinguish no matches from execution failure
 
-- Evidence: the target quality log reported `rg: command not found` twice, but command substitutions ending in `|| true` converted both failures into empty output and the coverage-integrity scan reported success.
+- Evidence: successive target quality logs reported `rg: command not found` in the coverage-integrity and forbidden-scope gates, but command substitutions ending in `|| true` converted the failures into empty output and both negative scanners reported success.
 - Durable lesson: a negative scanner may tolerate its tool's documented no-match status only after distinguishing it from startup/read/parse failures; missing tools and unreadable roots must fail closed. Prefer an already locked runtime when that removes an undeclared runner dependency.
-- Scope and verification: coverage-suppression policy; replaced with a Node standard-library scanner, verified with clean, C#, and frontend negative probes, with a target rerun still required.
+- Scope and verification: coverage-suppression and forbidden-product-scope policies; replaced with Node standard-library scanners and verified with clean, denied-input, and explicit-guard probes, with a target rerun still required.
 
 ## Private-repository CodeQL upload needs Actions read access
 

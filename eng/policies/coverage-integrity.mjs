@@ -23,7 +23,7 @@ const sourceFiles = async (directory, extensions) => {
   for (const entry of entries) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) {
-      files.push(...await sourceFiles(path, extensions))
+      files.push(...(await sourceFiles(path, extensions)))
     } else if (entry.isFile() && extensions.has(extname(entry.name))) {
       files.push(path)
     }
