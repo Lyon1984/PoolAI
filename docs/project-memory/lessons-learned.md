@@ -1,5 +1,11 @@
 # Lessons learned
 
+## Private-repository CodeQL upload needs Actions read access
+
+- Evidence: the initial target CodeQL run completed extraction, builds, queries, and SARIF export, then failed while reading its workflow run with `Resource not accessible by integration`; the job token had `contents: read` and `security-events: write` but not `actions: read`.
+- Durable lesson: a private-repository CodeQL/SARIF job must explicitly grant `actions: read` in addition to `contents: read` and `security-events: write`; this token permission is separate from GitHub Code Security entitlement and must be verified before diagnosing an entitlement failure.
+- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`, with target rerun evidence required before the CodeQL gate is marked verified.
+
 ## Central package changes require Solution-wide lock refresh
 
 - Evidence: adding a centrally managed direct package with `CentralPackageTransitivePinningEnabled` made otherwise untouched project lock files fail `dotnet restore --locked-mode` with NU1004.
