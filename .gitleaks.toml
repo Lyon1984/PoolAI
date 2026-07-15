@@ -1,0 +1,11 @@
+title = "PoolAI Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Canonical traceability contract paths are not an API credential"
+condition = "AND"
+regexTarget = "match"
+paths = ['''^docs/traceability/release-1-traceability\.json$''']
+regexes = ['''openapi-v1\.yaml", "docs/contracts/fixtures''']

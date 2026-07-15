@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.KeyPerFile" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../PoolAI.Infrastructure.Postgres/PoolAI.Infrastructure.Postgres.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Identity/PoolAI.Modules.Identity.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.GroupQuota/PoolAI.Modules.GroupQuota.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Supply/PoolAI.Modules.Supply.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Usage/PoolAI.Modules.Usage.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Operations/PoolAI.Modules.Operations.csproj" />
+  </ItemGroup>
+</Project>

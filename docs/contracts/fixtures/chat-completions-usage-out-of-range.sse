@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl_0190f941","object":"chat.completion.chunk","created":1783987200,"model":"gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}
+
+data: {"error":{"message":"上游返回的单请求 usage 超出兼容协议的安全整数范围。","type":"server_error","param":null,"code":"upstream_usage_out_of_range"}}

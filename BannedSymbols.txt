@@ -1,0 +1,26 @@
+# Runtime code must receive an explicit TimeProvider instead of reading wall-clock time directly.
+P:System.DateTime.Now; Use TimeProvider.GetLocalNow().
+P:System.DateTime.UtcNow; Use TimeProvider.GetUtcNow().
+P:System.DateTimeOffset.Now; Use TimeProvider.GetLocalNow().
+P:System.DateTimeOffset.UtcNow; Use TimeProvider.GetUtcNow().
+
+# HTTP clients are created through IHttpClientFactory and typed clients.
+M:System.Net.Http.HttpClient.#ctor; Inject IHttpClientFactory or a typed HttpClient.
+M:System.Net.Http.HttpClient.#ctor(System.Net.Http.HttpMessageHandler); Inject IHttpClientFactory or a typed HttpClient.
+M:System.Net.Http.HttpClient.#ctor(System.Net.Http.HttpMessageHandler,System.Boolean); Inject IHttpClientFactory or a typed HttpClient.
+
+# Blocking async work risks thread-pool starvation and hidden deadlocks.
+P:System.Threading.Tasks.Task`1.Result; Await the task.
+M:System.Threading.Tasks.Task.Wait; Await the task.
+M:System.Threading.Tasks.Task.Wait(System.Int32); Await the task with cancellation or timeout.
+M:System.Threading.Tasks.Task.Wait(System.TimeSpan); Await the task with cancellation or timeout.
+M:System.Threading.Tasks.Task.Wait(System.Threading.CancellationToken); Await the task with cancellation.
+M:System.Threading.Tasks.Task.Wait(System.Int32,System.Threading.CancellationToken); Await the task with cancellation or timeout.
+
+# Random is not a secret generator.
+M:System.Random.NextBytes(System.Byte[]); Use RandomNumberGenerator.Fill for secrets.
+M:System.Random.NextBytes(System.Span{System.Byte}); Use RandomNumberGenerator.Fill for secrets.
+
+# Schema changes belong exclusively to PoolAI.Migrator.
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.Migrate(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade); Api and Worker must never run automatic migrations.
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.MigrateAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.Threading.CancellationToken); Api and Worker must never run automatic migrations.

@@ -1,0 +1,12 @@
+{
+  "model": "gpt-5",
+  "previous_response_id": "resp_0190f931",
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_weather_01",
+      "output": "{\"temperature_c\":26,\"condition\":\"晴\"}"
+    }
+  ],
+  "stream": true
+}

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../PoolAI.BuildingBlocks/PoolAI.BuildingBlocks.csproj" />
+    <ProjectReference Include="../PoolAI.Modules.Routing.Abstractions/PoolAI.Modules.Routing.Abstractions.csproj" />
+    <ProjectReference Include="../PoolAI.Modules.Operations.Abstractions/PoolAI.Modules.Operations.Abstractions.csproj" />
+    <ProjectReference Include="../PoolAI.Modules.Supply.Abstractions/PoolAI.Modules.Supply.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

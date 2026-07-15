@@ -1,0 +1,45 @@
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.vs/
+*.user
+*.suo
+
+# .NET outputs
+**/bin/
+**/obj/
+TestResults/
+artifacts/
+.dotnet/
+.nuget/
+.tools/
+*.nupkg
+*.snupkg
+
+# Frontend outputs
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+.pnpm-store/
+coverage/
+
+# Local logs and temporary files
+*.log
+*.tmp
+.cache/
+.codex-log/
+.srl
+
+# Codex generated local state belongs under CODEX_HOME, not this repository
+.codex/memories/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.secrets.json
+ops/**/postgres-connection.env
+ops/**/secrets/

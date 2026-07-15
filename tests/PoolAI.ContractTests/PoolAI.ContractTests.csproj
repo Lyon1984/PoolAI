@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+    <PackageReference Include="xunit.analyzers" PrivateAssets="all" />
+    <PackageReference Include="coverlet.collector" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/PoolAI.Contracts/PoolAI.Contracts.csproj" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Gateway.Abstractions/PoolAI.Modules.Gateway.Abstractions.csproj" />
+    <ProjectReference Include="../../src/Adapters/PoolAI.Adapters.OpenAI/PoolAI.Adapters.OpenAI.csproj" />
+  </ItemGroup>
+</Project>

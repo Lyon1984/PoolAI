@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../PoolAI.Contracts/PoolAI.Contracts.csproj" />
+    <ProjectReference Include="../PoolAI.Application.Orchestration/PoolAI.Application.Orchestration.csproj" />
+    <ProjectReference Include="../PoolAI.Infrastructure.Postgres/PoolAI.Infrastructure.Postgres.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Identity/PoolAI.Modules.Identity.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.SubscriptionAccess/PoolAI.Modules.SubscriptionAccess.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.GroupQuota/PoolAI.Modules.GroupQuota.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Supply/PoolAI.Modules.Supply.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Routing/PoolAI.Modules.Routing.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Usage/PoolAI.Modules.Usage.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Operations/PoolAI.Modules.Operations.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Gateway/PoolAI.Modules.Gateway.csproj" />
+    <ProjectReference Include="../Adapters/PoolAI.Adapters.OpenAI/PoolAI.Adapters.OpenAI.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+    <PackageReference Include="xunit.analyzers" PrivateAssets="all" />
+    <PackageReference Include="coverlet.collector" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/PoolAI.Api/PoolAI.Api.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Worker/PoolAI.Worker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Migrator/PoolAI.Migrator.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Application.Orchestration/PoolAI.Application.Orchestration.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Contracts/PoolAI.Contracts.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.BuildingBlocks/PoolAI.BuildingBlocks.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Infrastructure.Postgres/PoolAI.Infrastructure.Postgres.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/PoolAI.Database.Migrations/PoolAI.Database.Migrations.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Identity.Abstractions/PoolAI.Modules.Identity.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Identity/PoolAI.Modules.Identity.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.SubscriptionAccess.Abstractions/PoolAI.Modules.SubscriptionAccess.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.SubscriptionAccess/PoolAI.Modules.SubscriptionAccess.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.GroupQuota.Abstractions/PoolAI.Modules.GroupQuota.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.GroupQuota/PoolAI.Modules.GroupQuota.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Supply.Abstractions/PoolAI.Modules.Supply.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Supply/PoolAI.Modules.Supply.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Routing.Abstractions/PoolAI.Modules.Routing.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Routing/PoolAI.Modules.Routing.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Usage.Abstractions/PoolAI.Modules.Usage.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Usage/PoolAI.Modules.Usage.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Operations.Abstractions/PoolAI.Modules.Operations.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Operations/PoolAI.Modules.Operations.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Gateway.Abstractions/PoolAI.Modules.Gateway.Abstractions.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Gateway/PoolAI.Modules.Gateway.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/Adapters/PoolAI.Adapters.OpenAI/PoolAI.Adapters.OpenAI.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

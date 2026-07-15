@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../docs/release-manifest-v1.json" Link="ReleaseManifest/poolai-release-manifest-v1.json" />
+    <EmbeddedResource Include="../../docs/database/0001_baseline.sql" Link="Migrations/0001_baseline.sql" />
+    <EmbeddedResource Include="../../docs/database/0002_quota_functions.sql" Link="Migrations/0002_quota_functions.sql" />
+    <EmbeddedResource Include="../../docs/database/0003_runtime_permissions.sql" Link="Migrations/0003_runtime_permissions.sql" />
+  </ItemGroup>
+</Project>

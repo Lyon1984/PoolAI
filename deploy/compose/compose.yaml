@@ -1,0 +1,415 @@
+name: poolai-local
+
+x-common-app-environment: &common-app-environment
+  DOTNET_ENVIRONMENT: LocalCompose
+  App__PublicBaseUrl: http://localhost:${POOLAI_API_PORT:-8080}
+  App__TimeZone: Asia/Shanghai
+  App__AllowedHosts__0: localhost
+  App__AllowedHosts__1: 127.0.0.1
+  App__AllowedHosts__2: api
+  Cors__AllowedOrigins__0: http://localhost:${POOLAI_FRONTEND_PORT:-5173}
+  Auth__Jwt__Issuer: PoolAI
+  Auth__Jwt__Audience: PoolAI.Web
+  Auth__Jwt__AccessTokenMinutes: "15"
+  Auth__Jwt__RefreshTokenDays: "30"
+  Auth__Jwt__ClockSkewSeconds: "30"
+  Auth__Password__MinLength: "12"
+  Auth__PasswordReset__TokenMinutes: "30"
+  Auth__TOTP__Issuer: PoolAI
+  Auth__TOTP__StepSeconds: "30"
+  Auth__TOTP__AllowedAdjacentSteps: "1"
+  ApiKeys__Prefix: sk-pool-
+  Data__Postgres__CommandTimeoutSeconds: "30"
+  Data__Postgres__MaxPoolSize: "100"
+  Data__Redis__KeyPrefix: "poolai:r1:local-compose:"
+  Email__Smtp__Host: mock-smtp
+  Email__Smtp__Port: "1025"
+  Email__Smtp__Security: starttls
+  Email__FromAddress: no-reply@poolai.local
+  Email__FromName: PoolAI
+  Email__Outbox__MaxAttempts: "8"
+  Email__Outbox__PollSeconds: "5"
+  Email__Outbox__ClaimSeconds: "30"
+  Secrets__Envelope__CurrentKeyId: local-compose-v1
+  Secrets__Envelope__SchemaVersion: "1"
+  Secrets__Envelope__Algorithm: A256GCM+A256GCM-v1
+  Outbox__MaxAttempts: "12"
+  Outbox__PollSeconds: "1"
+  Outbox__ClaimSeconds: "30"
+  Quota__MaxTotalTokens: "9007199254740991"
+  Quota__NonStreamLeaseSeconds: "300"
+  Quota__NonStreamRenewEverySeconds: "60"
+  Quota__MaxNonStreamSeconds: "600"
+  Quota__StreamLeaseSeconds: "120"
+  Quota__StreamRenewEverySeconds: "30"
+  Quota__ReservationSweepSeconds: "30"
+  Quota__MaxStreamSeconds: "7200"
+  Quota__DisconnectDrainSeconds: "15"
+  Admission__DataNonStreamPermits: "200"
+  Admission__DataStreamPermits: "600"
+  Admission__DataQueueLimit: "0"
+  Admission__ControlPermits: "100"
+  Admission__ControlQueueLimit: "50"
+  Admission__UsagePermits: "100"
+  Admission__UsageQueueLimit: "20"
+  Health__Ntp__Server: mock-upstream
+  Health__Ntp__Port: "4123"
+  Health__Ntp__TimeoutMilliseconds: "750"
+  Health__ReadinessTimeoutSeconds: "3"
+
+x-common-app-runtime: &common-app-runtime
+  read_only: true
+  init: true
+  user: "1654:1654"
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - runtime
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: poolai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-superuser-password
+    secrets:
+      - postgres-superuser-password
+      - postgres-api-password
+      - postgres-worker-password
+      - postgres-migrator-password
+    volumes:
+      # PostgreSQL 18 images use the version-aware data root below. Do not
+      # regress this mount to /var/lib/postgresql/data.
+      - postgres-data:/var/lib/postgresql
+      - type: bind
+        source: ../postgres/bootstrap-runtime-roles.sh
+        target: /docker-entrypoint-initdb.d/00-bootstrap-runtime-roles.sh
+        read_only: true
+      - type: bind
+        source: ../postgres/runtime-roles.sql
+        target: /opt/poolai/bootstrap/runtime-roles.sql
+        read_only: true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+      start_interval: 1s
+    networks:
+      - runtime
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  redis:
+    image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
+    restart: unless-stopped
+    command:
+      - redis-server
+      - /run/secrets/redis.conf
+    secrets:
+      - source: redis-password
+        target: redis-password
+      - source: redis-config
+        target: redis.conf
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$(cat /run/secrets/redis-password)" redis-cli --user poolai --no-auth-warning ping | grep -qx PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+      start_interval: 1s
+    networks:
+      - runtime
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  mock-upstream:
+    image: node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    command:
+      - node
+      - /opt/poolai-mock/server.mjs
+    environment:
+      MOCK_UPSTREAM_ENVIRONMENT: LocalCompose
+      MOCK_UPSTREAM_HOST: 0.0.0.0
+      MOCK_UPSTREAM_PORT: "4010"
+      MOCK_NTP_HOST: 0.0.0.0
+      MOCK_NTP_PORT: "4123"
+    volumes:
+      - type: bind
+        source: ../mock-upstream/server.mjs
+        target: /opt/poolai-mock/server.mjs
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - name: mock-http
+        target: 4010
+        published: "${POOLAI_MOCK_UPSTREAM_PORT:-4010}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    expose:
+      - "4123/udp"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4010/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+      start_interval: 1s
+    networks:
+      - runtime
+      - loopback
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  mock-smtp:
+    image: axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6
+    restart: unless-stopped
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_TLS_CERT: /run/secrets/mock-smtp-cert.pem
+      MP_SMTP_TLS_KEY: /run/secrets/mock-smtp-key.pem
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+    secrets:
+      - source: mock-smtp-cert
+        target: mock-smtp-cert.pem
+      - source: mock-smtp-key
+        target: mock-smtp-key.pem
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - /mailpit
+        - readyz
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+      start_interval: 1s
+    ports:
+      - name: mail-ui
+        target: 8025
+        published: "${POOLAI_MAILPIT_UI_PORT:-8025}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - runtime
+      - loopback
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  migrator:
+    <<: *common-app-runtime
+    image: ${POOLAI_MIGRATOR_IMAGE:-poolai-migrator:local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/PoolAI.Migrator.Dockerfile
+      args:
+        RUNTIME_IMAGE: mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra@sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b
+        PUBLISH_DIR: artifacts/publish/PoolAI.Migrator
+    restart: "no"
+    environment:
+      DOTNET_ENVIRONMENT: LocalCompose
+    secrets:
+      - source: migrator-postgres-connection
+        target: Data__Postgres__ConnectionString
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: false
+
+  api:
+    <<: *common-app-runtime
+    image: ${POOLAI_API_IMAGE:-poolai-api:local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/PoolAI.Api.Dockerfile
+      args:
+        RUNTIME_IMAGE: mcr.microsoft.com/dotnet/aspnet:10.0.10-noble-chiseled-extra@sha256:f9bd6be9b5ab75b8196bff0f0972580edaea7fa8ca04e6ef530950e33caee5b0
+        PUBLISH_DIR: artifacts/publish/PoolAI.Api
+    restart: unless-stopped
+    environment:
+      <<: *common-app-environment
+      ASPNETCORE_HTTP_PORTS: "8080"
+      Observability__ServiceName: poolai-api
+      SSL_CERT_FILE: /run/secrets/local-compose-ca-bundle.pem
+    secrets:
+      - source: api-postgres-connection
+        target: Data__Postgres__ConnectionString
+      - source: redis-connection
+        target: Data__Redis__ConnectionString
+      - source: jwt-signing-key
+        target: Auth__Jwt__SigningKey
+      - source: api-key-current-pepper
+        target: ApiKeys__CurrentPepper
+      - source: envelope-current-key
+        target: Secrets__Envelope__CurrentKey
+      - source: envelope-current-key
+        target: Secrets__Envelope__DecryptKeyRing__local-compose-v1
+      - source: local-ca-bundle
+        target: local-compose-ca-bundle.pem
+    ports:
+      - name: http
+        target: 8080
+        published: "${POOLAI_API_PORT:-8080}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks:
+      - runtime
+      - loopback
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: false
+      redis:
+        condition: service_healthy
+        restart: false
+      mock-upstream:
+        condition: service_healthy
+        restart: false
+      mock-smtp:
+        condition: service_healthy
+        restart: false
+      migrator:
+        condition: service_completed_successfully
+        restart: false
+    stop_grace_period: 20s
+
+  worker:
+    <<: *common-app-runtime
+    image: ${POOLAI_WORKER_IMAGE:-poolai-worker:local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/PoolAI.Worker.Dockerfile
+      args:
+        RUNTIME_IMAGE: mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra@sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b
+        PUBLISH_DIR: artifacts/publish/PoolAI.Worker
+    restart: unless-stopped
+    environment:
+      <<: *common-app-environment
+      Observability__ServiceName: poolai-worker
+      SSL_CERT_FILE: /run/secrets/local-compose-ca-bundle.pem
+    secrets:
+      - source: worker-postgres-connection
+        target: Data__Postgres__ConnectionString
+      - source: redis-connection
+        target: Data__Redis__ConnectionString
+      - source: jwt-signing-key
+        target: Auth__Jwt__SigningKey
+      - source: api-key-current-pepper
+        target: ApiKeys__CurrentPepper
+      - source: envelope-current-key
+        target: Secrets__Envelope__CurrentKey
+      - source: envelope-current-key
+        target: Secrets__Envelope__DecryptKeyRing__local-compose-v1
+      - source: local-ca-bundle
+        target: local-compose-ca-bundle.pem
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: false
+      redis:
+        condition: service_healthy
+        restart: false
+      mock-upstream:
+        condition: service_healthy
+        restart: false
+      mock-smtp:
+        condition: service_healthy
+        restart: false
+      migrator:
+        condition: service_completed_successfully
+        restart: false
+    stop_grace_period: 30s
+
+networks:
+  runtime:
+    internal: true
+  loopback:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+volumes:
+  postgres-data:
+  redis-data:
+  mailpit-data:
+
+secrets:
+  postgres-superuser-password:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/postgres-superuser-password
+  postgres-api-password:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/postgres-api-password
+  postgres-worker-password:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/postgres-worker-password
+  postgres-migrator-password:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/postgres-migrator-password
+  api-postgres-connection:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/api-postgres-connection-string
+  worker-postgres-connection:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/worker-postgres-connection-string
+  migrator-postgres-connection:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/migrator-postgres-connection-string
+  redis-password:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/redis-password
+  redis-config:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/redis.conf
+  redis-connection:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/redis-connection-string
+  jwt-signing-key:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-jwt-signing-key
+  api-key-current-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/api-keys-current-pepper
+  envelope-current-key:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/envelope-current-key
+  local-ca-bundle:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/local-compose-ca-bundle.pem
+  mock-smtp-cert:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/mock-smtp-cert.pem
+  mock-smtp-key:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/mock-smtp-key.pem

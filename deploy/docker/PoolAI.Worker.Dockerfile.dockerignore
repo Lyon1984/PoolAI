@@ -1,0 +1,9 @@
+**
+!artifacts/
+!artifacts/publish/
+!artifacts/publish/PoolAI.Worker/
+!artifacts/publish/PoolAI.Worker/**
+!deploy/
+!deploy/docker/
+!deploy/docker/PoolAI.Worker.Dockerfile
+!deploy/docker/PoolAI.Worker.Dockerfile.dockerignore

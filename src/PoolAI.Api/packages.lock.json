@@ -1,0 +1,274 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0": {
+      "Meziantou.Analyzer": {
+        "type": "Direct",
+        "requested": "[3.0.123, )",
+        "resolved": "3.0.123",
+        "contentHash": "maXbWokGTRWiBGqxxN2J1vEVGHFc6yWSjbyc0KkrJ78PcjkeWm3Y4PrKUH0tMcknpJvQkM4twMKrgSYZmRNbcQ=="
+      },
+      "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
+        "type": "Direct",
+        "requested": "[5.6.0, )",
+        "resolved": "5.6.0",
+        "contentHash": "Kcobt3pnOdO0A+6CKiMHZdTEluJpsfxiV20axtZdmfBQnDmiWTKPJADlgAfdTuKNAnVarrkJa0UEGwuOo91muw=="
+      },
+      "OpenTelemetry.Exporter.OpenTelemetryProtocol": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "gzYLY8sVDY5FYtVlCYSzBYX53xslRlvBLxwFYOdNIhc76SgKdFYUoDQXOeQI3WPBCrZp51QNcP6fZHh1+HtpIQ==",
+        "dependencies": {
+          "OpenTelemetry": "1.16.0"
+        }
+      },
+      "OpenTelemetry.Extensions.Hosting": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "/YfrO5MRaA156vhNanYGPX2JjOwKUrA0+Jf7ltT2eD3VkfHqXcEJY5Oxt/nWH8lqBOTc1nJpn2soBtD5Cml8Dg==",
+        "dependencies": {
+          "OpenTelemetry": "1.16.0"
+        }
+      },
+      "OpenTelemetry.Instrumentation.AspNetCore": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "vSC5EsmBVNcqXMh9BGkkq8zkoUjrg8ghBDb9zbKR8Bqjd05utjVgVft+fqsqQVsvlV5olGj1pBliHBngcIGSIg==",
+        "dependencies": {
+          "OpenTelemetry.Api.ProviderBuilderExtensions": "[1.16.0, 2.0.0)"
+        }
+      },
+      "OpenTelemetry.Instrumentation.Http": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "+Sz3lfvMXwWE8s/sMruHCDlO/+cArFVc6oBg1tCb70BKlL9FCC7uK4Ar2/VP9Hhwvs+UwaW1vGzE/uiByVHXiA==",
+        "dependencies": {
+          "OpenTelemetry.Api.ProviderBuilderExtensions": "[1.16.0, 2.0.0)"
+        }
+      },
+      "OpenTelemetry.Instrumentation.Runtime": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "3mKCZZo32UYn/vcVFxxrWgO+BcDy9EZBdW1rfCzdtK+CGCFIMnf6AY96MrnVnyNK/f3ehq9t6qLec8OTNxgzRw==",
+        "dependencies": {
+          "OpenTelemetry.Api": "[1.16.0, 2.0.0)"
+        }
+      },
+      "OpenTelemetry.Api": {
+        "type": "Transitive",
+        "resolved": "1.16.0",
+        "contentHash": "WZP8Eb6vZTeNqeV+fjBitc7iefBoTHIhaWorqg/h/YiQBlcQJu0bICuTqKV0XRyjiE0eWs80yLlnUtHAFSkFWA=="
+      },
+      "OpenTelemetry.Api.ProviderBuilderExtensions": {
+        "type": "Transitive",
+        "resolved": "1.16.0",
+        "contentHash": "hZwaHAkXvUNn9+cS+vEvYBgIrIQOQRz2cIRUODZ5gxHsDsLeNCueLgZFkybopjE0jUhLut6lm5eL3LTqbW0hMg==",
+        "dependencies": {
+          "OpenTelemetry.Api": "1.16.0"
+        }
+      },
+      "RESPite": {
+        "type": "Transitive",
+        "resolved": "3.0.17",
+        "contentHash": "68slEMyRTUNLc75DruEDsEohFmFfNwkHLLtwQ46bobF+8Tl+UXMKM1kM87ihhKy6JdAqy1RrvAfvBWeLmcY9Gg=="
+      },
+      "System.IO.Hashing": {
+        "type": "Transitive",
+        "resolved": "10.0.5",
+        "contentHash": "8IBJWcCT9+e4Bmevm4T7+fQEiAh133KGiz4oiVTgJckd3Q76OFdR1falgn9lpz7+C4HJvogCDJeAa2QmvbeVtg=="
+      },
+      "poolai.adapters.openai": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.Modules.Gateway.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.application.orchestration": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.Modules.GroupQuota.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.SubscriptionAccess.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.buildingblocks": {
+        "type": "Project"
+      },
+      "poolai.contracts": {
+        "type": "Project"
+      },
+      "poolai.infrastructure.postgres": {
+        "type": "Project",
+        "dependencies": {
+          "Npgsql": "[10.0.3, )",
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.gateway": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Modules.Gateway.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.GroupQuota.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Routing.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.SubscriptionAccess.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Usage.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.gateway.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.groupquota": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Modules.GroupQuota.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.groupquota.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.identity": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.identity.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.operations": {
+        "type": "Project",
+        "dependencies": {
+          "Npgsql": "[10.0.3, )",
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "StackExchange.Redis": "[3.0.17, )"
+        }
+      },
+      "poolai.modules.operations.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.routing": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Routing.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.routing.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.subscriptionaccess": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Modules.GroupQuota.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.SubscriptionAccess.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.subscriptionaccess.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.supply": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.supply.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.usage": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )",
+          "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Modules.GroupQuota.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
+          "PoolAI.Modules.Usage.Abstractions": "[1.0.0, )"
+        }
+      },
+      "poolai.modules.usage.abstractions": {
+        "type": "Project",
+        "dependencies": {
+          "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "Npgsql": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.3, )",
+        "resolved": "10.0.3",
+        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w=="
+      },
+      "OpenTelemetry": {
+        "type": "CentralTransitive",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "nE/Px3MUvQC8c0UG0DOP5OJE7vMtiMaPYi/6TkSS/o/O0s/oPq+8WaPYTVEPzb7lwu/QyLgknc+sFm2FjPXe2A==",
+        "dependencies": {
+          "OpenTelemetry.Api.ProviderBuilderExtensions": "1.16.0"
+        }
+      },
+      "StackExchange.Redis": {
+        "type": "CentralTransitive",
+        "requested": "[3.0.17, )",
+        "resolved": "3.0.17",
+        "contentHash": "ItAm9lokZ1mWsQLF3u4Yw4eb/gvkX6Rp9bLAe1KUKgKAjPkALoQwTc6jJLtBZoOv9LT7RwvSIXZZb9FF30QhOg==",
+        "dependencies": {
+          "RESPite": "3.0.17",
+          "System.IO.Hashing": "10.0.5"
+        }
+      }
+    }
+  }
+}

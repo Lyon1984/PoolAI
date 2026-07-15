@@ -1,0 +1,11 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_0190f931","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1,"usage":null}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_0190f931","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1,"usage":null}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"msg_0190f932","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+event: error
+data: {"type":"error","code":"upstream_usage_out_of_range","message":"上游返回的单请求 usage 超出兼容协议的安全整数范围。","param":null,"sequence_number":3}

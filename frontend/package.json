@@ -1,0 +1,52 @@
+{
+  "name": "@poolai/frontend",
+  "version": "0.0.0-m0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": "24.18.0",
+    "pnpm": "11.13.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "pnpm run lint:frontend && pnpm run lint:contracts",
+    "lint:frontend": "eslint --config eslint.config.js . --max-warnings=0",
+    "lint:contracts": "node ../tools/contracts/lint.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "contracts:validate": "node ../tools/contracts/cli.mjs validate",
+    "contracts:test": "node ../tools/contracts/cli.mjs test",
+    "contracts:generate": "node ../tools/contracts/cli.mjs generate",
+    "contracts:check": "node ../tools/contracts/cli.mjs all --check"
+  },
+  "dependencies": {
+    "pinia": "3.0.4",
+    "vue": "3.5.39",
+    "vue-router": "5.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
+    "@vitest/coverage-v8": "4.1.10",
+    "@types/node": "24.12.4",
+    "@vitejs/plugin-vue": "6.0.8",
+    "@vue/test-utils": "2.4.11",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "eslint": "10.7.0",
+    "eslint-plugin-vue": "10.9.2",
+    "happy-dom": "20.10.6",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.64.0",
+    "vite": "8.1.4",
+    "vitest": "4.1.10",
+    "vue-tsc": "3.3.7",
+    "yaml": "2.9.0"
+  }
+}

@@ -1,0 +1,10 @@
+# Runtime images are built only from pre-published host artifacts. Keep the
+# build context allowlisted so local secrets (especially .tools/compose/secrets)
+# and the repository source tree are never sent to the Docker builder.
+**
+!artifacts/
+!artifacts/publish/
+!artifacts/publish/**
+!deploy/
+!deploy/docker/
+!deploy/docker/*.Dockerfile

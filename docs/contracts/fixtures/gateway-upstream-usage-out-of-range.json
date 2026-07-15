@@ -1,0 +1,16 @@
+{
+  "type": "https://poolai.example/problems/upstream-usage-out-of-range",
+  "title": "Upstream usage out of range",
+  "status": 502,
+  "detail": "上游返回的单请求 usage 超出兼容协议的安全整数范围。",
+  "instance": "/v1/responses",
+  "code": "upstream_usage_out_of_range",
+  "request_id": "0190f8bf-a040-7444-a2ca-c4bc32e48b47",
+  "retryable": false,
+  "error": {
+    "message": "上游返回的单请求 usage 超出兼容协议的安全整数范围。",
+    "type": "server_error",
+    "param": null,
+    "code": "upstream_usage_out_of_range"
+  }
+}

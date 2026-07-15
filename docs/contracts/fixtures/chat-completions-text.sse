@@ -1,0 +1,9 @@
+data: {"id":"chatcmpl_0190f921","object":"chat.completion.chunk","created":1783987200,"model":"gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl_0190f921","object":"chat.completion.chunk","created":1783987200,"model":"gpt-5","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl_0190f921","object":"chat.completion.chunk","created":1783987200,"model":"gpt-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"chatcmpl_0190f921","object":"chat.completion.chunk","created":1783987200,"model":"gpt-5","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}
+
+data: [DONE]

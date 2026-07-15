@@ -1,0 +1,32 @@
+{
+  "model": "gpt-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "上海天气怎么样？"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_weather_01",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"上海\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_weather_01",
+      "content": "{\"temperature_c\":26,\"condition\":\"晴\"}"
+    }
+  ],
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

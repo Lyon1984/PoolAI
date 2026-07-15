@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>json,cobertura</Format>
+          <Include>[PoolAI.*]*</Include>
+          <ExcludeByFile>**/PoolAI.Contracts/Generated/ErrorCodesV1.g.cs,**/PoolAI.Contracts/Generated/OpenApiV1.g.cs</ExcludeByFile>
+          <SkipAutoProps>true</SkipAutoProps>
+          <SingleHit>true</SingleHit>
+          <UseSourceLink>false</UseSourceLink>
+          <DeterministicReport>true</DeterministicReport>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

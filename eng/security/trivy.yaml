@@ -1,0 +1,4 @@
+license:
+  full: true
+pkg:
+  include-dev-deps: true

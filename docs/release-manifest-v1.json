@@ -1,0 +1,42 @@
+{
+  "manifest_version": 1,
+  "release_id": "r1.1",
+  "public_api": {
+    "schema_version": 1,
+    "source": "docs/contracts/openapi-v1.yaml",
+    "sha256": "79ac8c51efde8acc2b6a30630c6bc914c3524d0582f0944bcae292e8800cd102"
+  },
+  "postgres": {
+    "required_server_major": 18,
+    "minimum_compatible_version": 3,
+    "maximum_compatible_version": 3,
+    "migrations": [
+      {
+        "version": 1,
+        "name": "0001_baseline.sql",
+        "source": "docs/database/0001_baseline.sql",
+        "sha256": "ca4ff86efd22c82ebf3b414415cb96087ce5ef5d582704cde934540b692ac543"
+      },
+      {
+        "version": 2,
+        "name": "0002_quota_functions.sql",
+        "source": "docs/database/0002_quota_functions.sql",
+        "sha256": "b0914b5f125ad5cc2c418d47e728e61a210b52fb196d36cb8bf7454e884fbfc4"
+      },
+      {
+        "version": 3,
+        "name": "0003_runtime_permissions.sql",
+        "source": "docs/database/0003_runtime_permissions.sql",
+        "sha256": "c453c91d2a2c900b0e58e42d483586c797ae328a7a799440c280dfb4e26538c8"
+      }
+    ]
+  },
+  "redis": {
+    "required_server_major": 8,
+    "contract_version": 1,
+    "key_schema_version": "r1",
+    "contract_source": "docs/runtime/redis-contract.md",
+    "contract_sha256": "65ce97fe9263045dd3dd8fc347db2f7e7c8df07e8bafb1a4eba5b9115b225dda",
+    "scripts": []
+  }
+}

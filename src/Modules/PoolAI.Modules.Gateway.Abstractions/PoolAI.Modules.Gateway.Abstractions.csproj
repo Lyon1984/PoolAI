@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../PoolAI.BuildingBlocks/PoolAI.BuildingBlocks.csproj" />
+  </ItemGroup>
+</Project>
