@@ -4,12 +4,12 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## M0 exit blockers
 
-1. The authorized target repository's initial quality gate, full-history Gitleaks, browser matrix, SBOM/image scans, and dynamic Compose jobs passed. The initial CodeQL job completed analysis and SARIF export but failed because the private-repository job lacked `actions: read`; the correction is repository-enforced, while its target rerun/entitlement, first-PR changed-line coverage, required checks, and branch protection remain pending.
+1. The authorized target repository's full-history Gitleaks, browser matrix, SBOM/image scans, and dynamic Compose jobs passed. PR #1 proved the CodeQL `actions: read` correction, but upload is blocked because Code Scanning is not enabled for the private repository. Its quality log also exposed a false-pass risk when missing `rg` was suppressed; the branch now uses a fail-closed Node scanner. A target rerun of that scanner, entitled Code Security enablement, non-zero changed-line coverage on a production-source PR, required checks, and branch protection remain pending.
 2. The repository now validates all DEC/AC mappings and a complete 38-Epic task-system-neutral import preview. Importing that preview into the real task system, reading back real IDs/owners, completing DEC/database/OpenAPI sign-off, and recording the M0 exit review still require external project-management/review evidence.
 
 ## Repository publication
 
-- The authorized private GitHub repository `Lyon1984/PoolAI` and its bootstrap `main` branch exist. The first pull request must validate the CodeQL permission correction and changed-line coverage; required checks and branch protection still need verified configuration. Subsequent changes must use pull requests rather than direct pushes to `main`.
+- The authorized private GitHub repository `Lyon1984/PoolAI` and its bootstrap `main` branch exist. PR #1 validated the CodeQL token correction, but private Code Scanning entitlement/enablement remains blocked; its changed-line check correctly had no production source to evaluate. Required checks and branch protection still need verified configuration. Subsequent changes must use pull requests rather than direct pushes to `main`.
 
 ## Later implementation risk
 

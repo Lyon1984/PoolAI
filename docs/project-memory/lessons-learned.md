@@ -1,10 +1,16 @@
 # Lessons learned
 
+## Integrity scanners must distinguish no matches from execution failure
+
+- Evidence: the target quality log reported `rg: command not found` twice, but command substitutions ending in `|| true` converted both failures into empty output and the coverage-integrity scan reported success.
+- Durable lesson: a negative scanner may tolerate its tool's documented no-match status only after distinguishing it from startup/read/parse failures; missing tools and unreadable roots must fail closed. Prefer an already locked runtime when that removes an undeclared runner dependency.
+- Scope and verification: coverage-suppression policy; replaced with a Node standard-library scanner, verified with clean, C#, and frontend negative probes, with a target rerun still required.
+
 ## Private-repository CodeQL upload needs Actions read access
 
 - Evidence: the initial target CodeQL run completed extraction, builds, queries, and SARIF export, then failed while reading its workflow run with `Resource not accessible by integration`; the job token had `contents: read` and `security-events: write` but not `actions: read`.
 - Durable lesson: a private-repository CodeQL/SARIF job must explicitly grant `actions: read` in addition to `contents: read` and `security-events: write`; this token permission is separate from GitHub Code Security entitlement and must be verified before diagnosing an entitlement failure.
-- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`, with target rerun evidence required before the CodeQL gate is marked verified.
+- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; the remaining failure is the separate private-repository Code Security entitlement/enablement gate.
 
 ## Central package changes require Solution-wide lock refresh
 
