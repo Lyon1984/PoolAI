@@ -11,7 +11,7 @@
     "decisionSignoff": { "status": "pending", "evidence": null },
     "databaseReview": { "status": "pending", "evidence": null },
     "openApiReview": { "status": "pending", "evidence": null },
-    "targetCi": { "status": "pending", "evidence": null },
+    "targetCi": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/pull/4" },
     "m0ExitReview": { "status": "pending", "evidence": null }
   },
   "decisions": [
