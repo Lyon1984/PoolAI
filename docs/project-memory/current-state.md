@@ -37,10 +37,10 @@ The former Sub2API feature-analysis document has been converted into the refacto
 
 ## Not yet implemented or verified
 
-- PR #1 remains draft and unmerged. Its changed-line coverage correctly reported not evaluated because the diff contains no production source files; a later source-changing PR must still prove the non-zero path
+- PR #1 contains no production source files, so changed-line coverage correctly reported not evaluated; a later source-changing PR must still prove the non-zero path
 - Project-management evidence outside the repository: real task IDs and owners for each DEC/AC, DEC sign-off references, database/OpenAPI review references, and the M0 exit approval
 - M1 and later business workflows, including concrete command handlers, SMTP sender loops, and milestone-owned Admin replay surfaces; M0-E3 supplies their verified persistence and fencing baseline
 
 ## Current milestone
 
-M0 remains active. The M0-E3 transaction/idempotency/messaging baseline, M0-E4 local runtime compatibility path, repository-owned PR/release gates, repository-side DEC/AC traceability, a complete 38-Epic task-import preview, the authorized public GitHub bootstrap, target workflow evidence, CodeQL, and protected `main` are implemented or externally verified. The next items require review and external evidence: review and merge PR #1, exercise changed-line coverage on a production-source PR, import the preview into the real task system and read back IDs/owners, complete DEC/database/OpenAPI sign-off, and conduct the M0 exit review. M1 feature implementation must wait for M0 exit sign-off.
+M0 remains active. The M0-E3 transaction/idempotency/messaging baseline, M0-E4 local runtime compatibility path, repository-owned PR/release gates, repository-side DEC/AC traceability, a complete 38-Epic task-import preview, the authorized public GitHub bootstrap, target workflow evidence, CodeQL, and protected `main` are implemented or externally verified. The next items require external evidence: exercise changed-line coverage on a production-source PR, import the preview into the real task system and read back IDs/owners, complete DEC/database/OpenAPI sign-off, and conduct the M0 exit review. M1 feature implementation must wait for M0 exit sign-off.

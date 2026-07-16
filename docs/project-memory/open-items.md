@@ -4,12 +4,12 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## M0 exit blockers
 
-1. PR #1 passed all six protected-branch checks, including fail-closed coverage-integrity/forbidden-scope and CodeQL with zero results, but remains draft and unmerged. Its diff has no production source, so the first source-changing PR must still prove non-zero changed-line coverage.
+1. PR #1 passed all six protected-branch checks, including fail-closed coverage-integrity/forbidden-scope and CodeQL with zero results. Its diff has no production source, so the first source-changing PR must still prove non-zero changed-line coverage.
 2. The repository now validates all DEC/AC mappings and a complete 38-Epic task-system-neutral import preview. Importing that preview into the real task system, reading back real IDs/owners, completing DEC/database/OpenAPI sign-off, and recording the M0 exit review still require external project-management/review evidence.
 
 ## Repository publication
 
-- The authorized public GitHub repository `Lyon1984/PoolAI` and protected bootstrap `main` branch exist. Six strict checks are required for administrators and other actors, conversations must be resolved, and force pushes/deletion are disabled. PR #1 remains draft pending review; subsequent changes must use pull requests rather than direct pushes to `main`.
+- The authorized public GitHub repository `Lyon1984/PoolAI` and protected bootstrap `main` branch exist. Six strict checks are required for administrators and other actors, conversations must be resolved, and force pushes/deletion are disabled. PR #1 validated the protected delivery path; subsequent changes must use pull requests rather than direct pushes to `main`.
 
 ## Later implementation risk
 
