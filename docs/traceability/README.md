@@ -8,10 +8,13 @@ This index does not redefine DEC/AC text and does not replace the authoritative 
 
 Local evidence must declare either `kind: test`, which resolves to an actual xUnit `[Fact]`/`[Theory]` method, or `kind: quality-gate-command`, which resolves to an exact command executed by the repository quality gate. The validator parses the authoritative WS applicability matrix and locks the reviewed ID/WS/Epic map against silent remapping. External task IDs and owners reflect the GitHub readback indexed by Issue #44; DEC-001..042, the M0 database baseline, and the OpenAPI v1 baseline are signed off by their separate permanent approval comments, while M0 exit review stays empty until its own human approval comment produces an auditable permanent link. Format checks cannot replace external readback or human approval. The target-CI gate is verified by PR #4, the task-system gate by Issues #6–#44, the decision-signoff gate by the DEC approval comment, the database-review gate by the [database approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4990098502), and the OpenAPI-review gate by the [OpenAPI approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992036352); only the exit-review gate remains pending.
 
+The M0 exit gate also depends on the machine-validated [`R1.1 certification plan`](../release-evidence/r1.1-certification-plan.json). That plan declares the future logical certification environment, adopts the frozen reference hardware, and names the durable report archive; it deliberately keeps provisioning and load execution pending for M6. Passing the plan validator is a prerequisite for M0 review, never a substitute for the final human approval comment.
+
 Validate it with:
 
 ```bash
 tools/local-dev/run-with-toolchain.sh node eng/policies/validate-traceability.mjs --structure-only
+tools/local-dev/run-with-toolchain.sh node eng/release/validate-release-certification-plan.mjs
 tools/local-dev/run-with-toolchain.sh node eng/release/prepare-task-import.mjs --check
 tools/local-dev/run-with-toolchain.sh node eng/release/prepare-task-import.mjs --output-dir artifacts/task-system
 ```

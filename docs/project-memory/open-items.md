@@ -5,7 +5,8 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 ## M0 exit blockers
 
 1. GitHub Issues #6–#43 provide the 38 unique Epic task IDs and read-back owner `@Lyon1984`; Issue #44 indexes the import, and its separate permanent DEC, database, and OpenAPI approval comments close those three baseline sign-off gates. The M0 exit approval remains pending and must be last.
-2. M0 exit also requires the R1.1 release environment, reference hardware, and load-report archive location to be explicit and reviewable; those production inputs are not yet recorded as verified evidence.
+
+The non-secret R1.1 logical certification environment, exact reference hardware/data profile, and durable load-report archive policy are declared in [`../release-evidence/r1.1-certification-plan.json`](../release-evidence/r1.1-certification-plan.json). This closes the M0 planning input only; provisioning and performance certification remain M6 work.
 
 ## Repository publication
 
