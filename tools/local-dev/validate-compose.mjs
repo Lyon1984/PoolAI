@@ -420,7 +420,7 @@ check(
 
 const hostRuntimeImages = new Map([
   ["PoolAI.Api.Dockerfile", lockedContainer("dotnetAspNet")],
-  ["PoolAI.Worker.Dockerfile", lockedContainer("dotnetRuntime")],
+  ["PoolAI.Worker.Dockerfile", lockedContainer("dotnetAspNet")],
   ["PoolAI.Migrator.Dockerfile", lockedContainer("dotnetRuntime")],
 ]);
 for (const [dockerfileName, expectedRuntimeImage] of hostRuntimeImages) {
@@ -482,12 +482,14 @@ check(
   services.api?.build?.args?.RUNTIME_IMAGE === lockedContainer("dotnetAspNet"),
   "Api Compose build must equal the reviewed ASP.NET runtime lock in eng/versions.json.",
 );
-for (const host of ["worker", "migrator"]) {
-  check(
-    services[host]?.build?.args?.RUNTIME_IMAGE === lockedContainer("dotnetRuntime"),
-    `${host} Compose build must equal the reviewed .NET runtime lock in eng/versions.json.`,
-  );
-}
+check(
+  services.worker?.build?.args?.RUNTIME_IMAGE === lockedContainer("dotnetAspNet"),
+  "Worker Compose build must equal the reviewed ASP.NET runtime lock in eng/versions.json.",
+);
+check(
+  services.migrator?.build?.args?.RUNTIME_IMAGE === lockedContainer("dotnetRuntime"),
+  "Migrator Compose build must equal the reviewed .NET runtime lock in eng/versions.json.",
+);
 
 const roleSql = readFileSync(path.join(repositoryRoot, "deploy/postgres/runtime-roles.sql"), "utf8");
 check(
