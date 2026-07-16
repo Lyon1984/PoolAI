@@ -127,6 +127,40 @@ public sealed class ConfigurationValidationTests
     }
 
     [Theory]
+    [InlineData("192.0.2.10")]
+    [InlineData("2001:db8::10")]
+    [InlineData("https://smtp.example.test")]
+    [InlineData("smtp.example.test/path")]
+    [InlineData("smtp.example.test?tls=true")]
+    public void SmtpHostRejectsIpLiteralsAndUriShapes(string host)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Email:Smtp:Host"] = host;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Email:Smtp:Host", exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("smtp.example.test")]
+    [InlineData("mock-smtp")]
+    public void SmtpHostAcceptsDnsNames(string host)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Email:Smtp:Host"] = host;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production");
+    }
+
+    [Theory]
     [InlineData("foo")]
     [InlineData("poolai:r1:Test:")]
     [InlineData("poolai:r1:test_:")]

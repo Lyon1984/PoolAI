@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "capturedAt": "2026-07-15",
+  "capturedAt": "2026-07-16",
   "areas": {
     "quota": {
       "pathIncludes": [
@@ -32,12 +32,12 @@
         "/PoolAiRuntimeConfigurationValidator.cs",
         "/PostgresEmailOutboxDeliveryStore.cs"
       ],
-      "linesCovered": 507,
+      "linesCovered": 510,
       "linesValid": 602,
-      "lineRate": 84.21926910299004,
-      "branchesCovered": 184,
+      "lineRate": 84.71760797342192,
+      "branchesCovered": 185,
       "branchesValid": 258,
-      "branchRate": 71.31782945736434
+      "branchRate": 71.70542635658916
     }
   }
 }

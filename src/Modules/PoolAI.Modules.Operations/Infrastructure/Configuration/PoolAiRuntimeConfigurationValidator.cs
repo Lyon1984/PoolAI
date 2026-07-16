@@ -181,7 +181,7 @@ public static class PoolAiRuntimeConfigurationValidator
     private static void ValidateEmail(Validation validation, bool isProduction)
     {
         string host = validation.Required("Email:Smtp:Host");
-        if (!string.IsNullOrWhiteSpace(host) && Uri.CheckHostName(host) == UriHostNameType.Unknown)
+        if (!string.IsNullOrWhiteSpace(host) && Uri.CheckHostName(host) != UriHostNameType.Dns)
         {
             validation.Invalid("Email:Smtp:Host");
         }
