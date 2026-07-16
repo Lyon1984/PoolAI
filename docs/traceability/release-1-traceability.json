@@ -12,7 +12,7 @@
     "databaseReview": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4990098502" },
     "openApiReview": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992036352" },
     "targetCi": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/pull/4" },
-    "m0ExitReview": { "status": "pending", "evidence": null }
+    "m0ExitReview": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992803266" }
   },
   "decisions": [
     { "id": "DEC-001", "workstream": "WS-01", "epics": ["M0-E1"], "contracts": ["global.json", "docs/开发执行规格-v1.0.md"], "externalTaskId": "https://github.com/Lyon1984/PoolAI/issues/6", "owner": "@Lyon1984", "signoff": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4989364159" },
