@@ -70,6 +70,57 @@ const workflows = await Promise.all(workflowNames.map(async (name) => ({
   name,
   contents: await read(`.github/workflows/${name}`),
 })))
+
+const readJobPermissions = (workflow, jobName) => {
+  const lines = workflow.contents.split('\n')
+  const jobStart = lines.findIndex((line) => line === `  ${jobName}:`)
+  if (jobStart < 0) {
+    failures.push(`${workflow.name} is missing the ${jobName} job`)
+    return new Map()
+  }
+
+  const nextJob = lines.findIndex((line, index) => index > jobStart && /^  [A-Za-z0-9_-]+:$/.test(line))
+  const jobEnd = nextJob < 0 ? lines.length : nextJob
+  const permissionsStart = lines.findIndex(
+    (line, index) => index > jobStart && index < jobEnd && line === '    permissions:',
+  )
+  if (permissionsStart < 0) {
+    failures.push(`${workflow.name} job ${jobName} is missing explicit permissions`)
+    return new Map()
+  }
+
+  const permissions = new Map()
+  for (let index = permissionsStart + 1; index < jobEnd; index += 1) {
+    const match = lines[index].match(/^      ([a-z-]+):\s*(read|write|none)$/)
+    if (match === null) {
+      break
+    }
+    permissions.set(match[1], match[2])
+  }
+  return permissions
+}
+
+const securityWorkflow = workflows.find((workflow) => workflow.name === 'security-evidence.yml')
+if (securityWorkflow === undefined) {
+  failures.push('security-evidence.yml is missing')
+} else {
+  const codeqlPermissions = readJobPermissions(securityWorkflow, 'codeql')
+  const expectedCodeqlPermissions = new Map([
+    ['actions', 'read'],
+    ['contents', 'read'],
+    ['packages', 'read'],
+    ['security-events', 'write'],
+  ])
+  for (const [permission, expected] of expectedCodeqlPermissions) {
+    expectEqual(`security-evidence.yml codeql permission ${permission}`, codeqlPermissions.get(permission), expected)
+  }
+  for (const permission of codeqlPermissions.keys()) {
+    if (!expectedCodeqlPermissions.has(permission)) {
+      failures.push(`security-evidence.yml codeql has unexpected ${permission} permission`)
+    }
+  }
+}
+
 const registeredActions = Object.keys(versions.githubActions).sort((left, right) => right.length - left.length)
 const usedActions = new Set()
 
