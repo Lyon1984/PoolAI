@@ -13,7 +13,7 @@
 - Codex/贡献者协作规则：[`../AGENTS.md`](../AGENTS.md)
 - 项目维护记忆与当前状态：[`project-memory/README.md`](project-memory/README.md)
 - Release 1 DEC/AC 到证据或计划测试的机器索引：[`traceability/README.md`](traceability/README.md)
-- M0–M7 全部 Epic 的任务系统中立导入索引与预览：[`traceability/delivery-epics.json`](traceability/delivery-epics.json)
+- M0–M7 全部 Epic 的已验证 GitHub Issues 导入登记与索引：[`traceability/delivery-epics.json`](traceability/delivery-epics.json)
 
 项目记忆只用于导航和交接，不能覆盖下列契约优先级。
 

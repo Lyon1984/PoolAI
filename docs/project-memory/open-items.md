@@ -4,7 +4,8 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## M0 exit blockers
 
-1. The repository validates all DEC/AC mappings and a complete 38-Epic task-system-neutral import preview. Importing that preview into the real task system, reading back real IDs/owners, completing DEC/database/OpenAPI sign-off, and recording the M0 exit review still require external project-management/review evidence.
+1. GitHub Issues #6–#43 now provide the 38 unique Epic task IDs and read-back owner `@Lyon1984`; Issue #44 indexes the import. DEC, database, and OpenAPI approval comments by `@Lyon1984`, followed last by the M0 exit approval comment, still require external human-review evidence.
+2. M0 exit also requires the R1.1 release environment, reference hardware, and load-report archive location to be explicit and reviewable; those production inputs are not yet recorded as verified evidence.
 
 ## Repository publication
 
