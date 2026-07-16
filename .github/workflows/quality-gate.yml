@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 45
     env:
       CI: true
+      CONTRACT_DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
       COVERAGE_DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
       COVERAGE_REQUIRE_DIFF: ${{ github.event_name == 'pull_request' }}
       DOCKER_CONFIG: /tmp/poolai-docker-config-${{ github.run_id }}-${{ github.run_attempt }}

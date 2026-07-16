@@ -48,6 +48,9 @@ pnpm --dir frontend install --frozen-lockfile
 pnpm --dir frontend lint
 pnpm --dir frontend typecheck
 pnpm --dir frontend test:coverage
+if [[ -n "${CONTRACT_DIFF_BASE:-}" ]]; then
+  node tools/contracts/cli.mjs compatibility
+fi
 pnpm --dir frontend contracts:check
 pnpm --dir frontend build
 

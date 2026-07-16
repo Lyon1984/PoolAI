@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { parseErrorCatalog } from './lib/catalog.mjs'
+import { runCompatibilitySelfTests } from './lib/compatibility-self-tests.mjs'
+import { validateContractsAgainstGitBase } from './lib/compatibility.mjs'
 import { ContractFailure, loadContractSources } from './lib/context.mjs'
 import { validateFixtures } from './lib/fixtures.mjs'
 import { generateContracts } from './lib/generator.mjs'
@@ -10,11 +12,11 @@ import { validateSqlErrorMap } from './lib/sql-errors.mjs'
 
 const command = process.argv[2] ?? 'all'
 const check = process.argv.includes('--check')
-const supportedCommands = new Set(['all', 'generate', 'test', 'validate'])
+const supportedCommands = new Set(['all', 'compatibility', 'generate', 'test', 'validate'])
 
 if (!supportedCommands.has(command)) {
   process.stderr.write(
-    `Unknown command ${command}. Use validate, test, generate, or all; generate/all accept --check.\n`,
+    `Unknown command ${command}. Use validate, test, compatibility, generate, or all; generate/all accept --check.\n`,
   )
   process.exitCode = 2
 } else if (check && !['all', 'generate'].includes(command)) {
@@ -24,15 +26,31 @@ if (!supportedCommands.has(command)) {
   try {
     const sources = await loadContractSources()
     const catalog = parseErrorCatalog(sources.errorCatalogSource)
-    const openApiResult = validateOpenApi(sources.openApi)
+    const openApiResult = validateOpenApi(sources.openApi, catalog)
     process.stdout.write(
       `OpenAPI valid: ${openApiResult.operations} operations, ${openApiResult.compiledSchemas} AJV-compiled component schemas, ${openApiResult.references} local refs.\n`,
     )
     process.stdout.write(`Error catalog valid: ${catalog.entries.length} stable codes.\n`)
 
+    if (command === 'compatibility') {
+      const baseRef = process.env.CONTRACT_DIFF_BASE
+      if (!baseRef) {
+        throw new ContractFailure('CONTRACT_DIFF_BASE is required for compatibility checks.')
+      }
+      const compatibilityResult = await validateContractsAgainstGitBase({
+        baseRef,
+        headErrorCatalogSource: sources.errorCatalogSource,
+        headOpenApi: sources.openApi,
+      })
+      process.stdout.write(
+        `Contract compatibility valid against ${compatibilityResult.baseRef}: ${compatibilityResult.operations} existing operations, ${compatibilityResult.schemas} existing schemas, ${compatibilityResult.errorCodes} existing stable error codes, and ${compatibilityResult.sseFixtures} existing SSE fixtures preserved.\n`,
+      )
+    }
+
     if (command === 'test' || command === 'all') {
-      const fixtureResult = await validateFixtures(openApiResult.validateSchema, catalog.codes)
+      const fixtureResult = await validateFixtures(openApiResult.validateSchema, catalog)
       const sqlResult = await validateSqlErrorMap(catalog.codes)
+      const compatibilitySelfTestResult = runCompatibilitySelfTests(sources)
       const selfTestResult = await runSelfTests({
         ...sources,
         catalog,
@@ -46,6 +64,9 @@ if (!supportedCommands.has(command)) {
       process.stdout.write(`SQL P0001 map valid: ${sqlResult.mappedCodes} literal codes.\n`)
       process.stdout.write(
         `Validator self-tests passed: ${selfTestResult.negativeCases} negative cases, ${selfTestResult.deterministicGenerators} deterministic generators.\n`,
+      )
+      process.stdout.write(
+        `Compatibility self-tests passed: ${compatibilitySelfTestResult.additiveCases} additive cases, ${compatibilitySelfTestResult.breakingCases} breaking cases.\n`,
       )
     }
 

@@ -32,7 +32,41 @@ const VERSIONED_ACTION_OPERATIONS = new Set([
   'adminResetGroupQuota',
 ])
 
-const ETAG_EXEMPT_IDEMPOTENT_OPERATIONS = new Set(['beginMyTotpSetup'])
+const ETAG_EXEMPT_IDEMPOTENT_OPERATIONS = new Set([
+  'adminRequestUserPasswordReset',
+  'beginMyTotpSetup',
+])
+
+const BODY_ERROR_RESPONSE_BINDINGS = {
+  control: {
+    '413': {
+      baseSchema: 'ControlPlaneProblem',
+      code: 'payload_too_large',
+      mediaType: 'application/problem+json',
+      responseComponent: 'PayloadTooLarge',
+    },
+    '415': {
+      baseSchema: 'ControlPlaneProblem',
+      code: 'unsupported_media_type',
+      mediaType: 'application/problem+json',
+      responseComponent: 'UnsupportedMediaType',
+    },
+  },
+  gateway: {
+    '413': {
+      baseSchema: 'GatewayProblem',
+      code: 'payload_too_large',
+      mediaType: 'application/json',
+      responseComponent: 'GatewayPayloadTooLarge',
+    },
+    '415': {
+      baseSchema: 'GatewayProblem',
+      code: 'unsupported_media_type',
+      mediaType: 'application/json',
+      responseComponent: 'GatewayUnsupportedMediaType',
+    },
+  },
+}
 
 const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   '$ref',
@@ -40,6 +74,7 @@ const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   'allOf',
   'anyOf',
   'const',
+  'contentMediaType',
   'default',
   'description',
   'discriminator',
@@ -260,6 +295,27 @@ function schemaReferences(openApi, schema, componentName, visited = new Set()) {
   )
 }
 
+function validateBodyErrorComponents(openApi) {
+  for (const bindings of Object.values(BODY_ERROR_RESPONSE_BINDINGS)) {
+    for (const [status, binding] of Object.entries(bindings)) {
+      const response = openApi.components?.responses?.[binding.responseComponent]
+      const expectedSchemaRef = `#/components/schemas/${binding.baseSchema}`
+      invariant(
+        response?.content?.[binding.mediaType]?.schema?.$ref === expectedSchemaRef,
+        `${binding.responseComponent} must reference ${expectedSchemaRef}.`,
+      )
+      invariant(
+        response?.['x-http-status'] === Number(status),
+        `${binding.responseComponent} must bind x-http-status ${status}.`,
+      )
+      invariant(
+        response?.['x-error-code'] === binding.code,
+        `${binding.responseComponent} must bind x-error-code ${binding.code}.`,
+      )
+    }
+  }
+}
+
 function validateErrorProjection(openApi, operationId, path, status, response, expectedMediaType) {
   const media = response?.content?.[expectedMediaType]
   invariant(media?.schema, `${operationId} ${status} has no ${expectedMediaType} error schema.`)
@@ -386,6 +442,33 @@ function validateOperations(openApi) {
           idempotency?.required === true && idempotency.in === 'header',
           `${operation.operationId} must require Idempotency-Key.`,
         )
+        invariant(
+          Object.hasOwn(operation.responses, '409'),
+          `${operation.operationId} must declare 409 idempotency_conflict.`,
+        )
+      }
+
+      if (operation.requestBody !== undefined) {
+        invariant(
+          Object.hasOwn(operation.responses, '400'),
+          `${operation.operationId} with a request body must declare 400 invalid_request.`,
+        )
+        invariant(
+          Object.hasOwn(operation.responses, '413'),
+          `${operation.operationId} with a request body must declare 413 payload_too_large.`,
+        )
+        invariant(
+          Object.hasOwn(operation.responses, '415'),
+          `${operation.operationId} with a request body must declare 415 unsupported_media_type.`,
+        )
+        const scope = path.startsWith('/v1/') ? 'gateway' : 'control'
+        for (const [status, binding] of Object.entries(BODY_ERROR_RESPONSE_BINDINGS[scope])) {
+          const expectedReference = `#/components/responses/${binding.responseComponent}`
+          invariant(
+            operation.responses[status]?.$ref === expectedReference,
+            `${operation.operationId} ${status} must reference ${expectedReference} for ${binding.code}.`,
+          )
+        }
       }
 
       const requiresIfMatch =
@@ -460,6 +543,12 @@ function toJsonSchema(value) {
       result.$ref = `#/$defs/${escapePointerSegment(child.split('/').at(-1))}`
       continue
     }
+    if (key === 'properties') {
+      result.properties = Object.fromEntries(
+        Object.entries(child).map(([name, schema]) => [name, toJsonSchema(schema)]),
+      )
+      continue
+    }
     result[key] = toJsonSchema(child)
   }
   return result
@@ -523,7 +612,178 @@ export function createSchemaValidator(openApi) {
   return validateSchema
 }
 
-function validateEmbeddedExamples(openApi, validateSchema) {
+function examplesFromMedia(openApi, media, pointer) {
+  const examples = []
+  if (Object.hasOwn(media, 'example')) {
+    examples.push({ pointer: `${pointer}/example`, value: media.example })
+  }
+  for (const [name, exampleOrReference] of Object.entries(media.examples ?? {})) {
+    const example = exampleOrReference?.$ref
+      ? resolveLocalReference(openApi, exampleOrReference.$ref)
+      : exampleOrReference
+    invariant(
+      example && Object.hasOwn(example, 'value') && example.externalValue === undefined,
+      `Media example ${pointer}/examples/${escapePointerSegment(name)} must contain an inline value.`,
+    )
+    examples.push({
+      pointer: `${pointer}/examples/${escapePointerSegment(name)}/value`,
+      value: example.value,
+    })
+  }
+  return examples
+}
+
+function catalogEntry(catalog, code, pointer) {
+  invariant(catalog, `Error catalog is required to validate ${pointer}.`)
+  const entry = catalog.entries.find((candidate) => candidate.code === code)
+  invariant(entry, `${pointer} uses unknown error code ${code}.`)
+  return entry
+}
+
+function validateProblemExample({ catalog, example, mediaType, operationId, pointer, response, status }) {
+  invariant(
+    example && typeof example === 'object' && !Array.isArray(example),
+    `${pointer} problem example must be an object.`,
+  )
+  const numericStatus = Number(status)
+  invariant(example.status === numericStatus, `${pointer} status must equal response status ${status}.`)
+  const entry = catalogEntry(catalog, example.code, pointer)
+  invariant(
+    entry.httpStatuses.includes(numericStatus),
+    `${pointer} error code ${entry.code} does not allow HTTP ${status}.`,
+  )
+  if (entry.retryable !== null) {
+    invariant(
+      example.retryable === entry.retryable,
+      `${pointer} retryable does not match error catalog code ${entry.code}.`,
+    )
+  }
+
+  if (entry.retryAfter === 'fixed') {
+    invariant(
+      example.retry_after_seconds === entry.retryAfterSeconds,
+      `${pointer} retry_after_seconds must equal ${entry.retryAfterSeconds} for ${entry.code}.`,
+    )
+    invariant(responseHasHeader(response, 'Retry-After'), `${operationId} ${status} must declare Retry-After.`)
+  } else if (entry.retryAfter === 'required') {
+    invariant(
+      Number.isSafeInteger(example.retry_after_seconds) && example.retry_after_seconds > 0,
+      `${pointer} must declare a positive retry_after_seconds for ${entry.code}.`,
+    )
+    invariant(responseHasHeader(response, 'Retry-After'), `${operationId} ${status} must declare Retry-After.`)
+  } else if (entry.retryAfter === 'optional') {
+    invariant(
+      example.retry_after_seconds === undefined ||
+        (Number.isSafeInteger(example.retry_after_seconds) && example.retry_after_seconds > 0),
+      `${pointer} retry_after_seconds must be a positive integer when present.`,
+    )
+  } else {
+    invariant(
+      example.retry_after_seconds === undefined,
+      `${pointer} must omit retry_after_seconds for ${entry.code}.`,
+    )
+  }
+
+  if (mediaType === 'application/problem+json') {
+    invariant(example.error === undefined, `${pointer} ControlPlaneProblem must not contain error.`)
+  } else {
+    invariant(example.error && typeof example.error === 'object', `${pointer} GatewayProblem must contain error.`)
+    invariant(example.code === example.error.code, `${pointer} outer code must equal error.code.`)
+    invariant(example.detail === example.error.message, `${pointer} detail must equal error.message.`)
+  }
+  if (entry.code === 'validation_failed') {
+    invariant(
+      example.errors && typeof example.errors === 'object' && Object.keys(example.errors).length > 0,
+      `${pointer} validation_failed must contain field errors.`,
+    )
+  }
+}
+
+function validateMediaExamples(openApi, validateSchema, catalog) {
+  let exampleCount = 0
+  for (const [kind, containers] of [
+    ['requestBodies', openApi.components?.requestBodies],
+    ['responses', openApi.components?.responses],
+  ]) {
+    for (const [name, containerOrReference] of Object.entries(containers ?? {})) {
+      const container = containerOrReference?.$ref
+        ? resolveLocalReference(openApi, containerOrReference.$ref)
+        : containerOrReference
+      for (const [mediaType, media] of Object.entries(container?.content ?? {})) {
+        for (const example of examplesFromMedia(
+          openApi,
+          media,
+          `#/components/${kind}/${escapePointerSegment(name)}/content/${escapePointerSegment(mediaType)}`,
+        )) {
+          invariant(media.schema, `${example.pointer} has no media schema.`)
+          validateSchema.validateInline(media.schema, example.value, example.pointer)
+          if (
+            kind === 'responses' &&
+            example.value &&
+            typeof example.value === 'object' &&
+            Number.isInteger(example.value.status) &&
+            typeof example.value.code === 'string'
+          ) {
+            validateProblemExample({
+              catalog,
+              example: example.value,
+              mediaType,
+              operationId: `components.responses.${name}`,
+              pointer: example.pointer,
+              response: container,
+              status: String(example.value.status),
+            })
+          }
+          exampleCount += 1
+        }
+      }
+    }
+  }
+
+  for (const [path, pathItem] of Object.entries(openApi.paths ?? {})) {
+    for (const [method, operation] of Object.entries(pathItem)) {
+      if (!HTTP_METHODS.has(method)) {
+        continue
+      }
+
+      const requestBody = operation.requestBody?.$ref
+        ? resolveLocalReference(openApi, operation.requestBody.$ref)
+        : operation.requestBody
+      for (const [mediaType, media] of Object.entries(requestBody?.content ?? {})) {
+        for (const example of examplesFromMedia(openApi, media, `#/paths/${escapePointerSegment(path)}/${method}/requestBody/content/${escapePointerSegment(mediaType)}`)) {
+          invariant(media.schema, `${example.pointer} has no media schema.`)
+          validateSchema.validateInline(media.schema, example.value, example.pointer)
+          exampleCount += 1
+        }
+      }
+
+      for (const [status, responseOrReference] of Object.entries(operation.responses ?? {})) {
+        const response = dereferenceResponse(openApi, responseOrReference)
+        for (const [mediaType, media] of Object.entries(response?.content ?? {})) {
+          for (const example of examplesFromMedia(openApi, media, `#/paths/${escapePointerSegment(path)}/${method}/responses/${escapePointerSegment(status)}/content/${escapePointerSegment(mediaType)}`)) {
+            invariant(media.schema, `${example.pointer} has no media schema.`)
+            validateSchema.validateInline(media.schema, example.value, example.pointer)
+            if ((status === 'default' || Number(status) >= 400) && status !== 'default') {
+              validateProblemExample({
+                catalog,
+                example: example.value,
+                mediaType,
+                operationId: operation.operationId,
+                pointer: example.pointer,
+                response,
+                status,
+              })
+            }
+            exampleCount += 1
+          }
+        }
+      }
+    }
+  }
+  return exampleCount
+}
+
+function validateEmbeddedExamples(openApi, validateSchema, catalog) {
   let exampleCount = 0
   for (const [name, schema] of Object.entries(openApi.components.schemas)) {
     walkSchema(schema, `#/components/schemas/${name}`, (node, pointer) => {
@@ -542,10 +802,10 @@ function validateEmbeddedExamples(openApi, validateSchema) {
       validateSchema(name, schema.example)
     }
   }
-  return exampleCount
+  return exampleCount + validateMediaExamples(openApi, validateSchema, catalog)
 }
 
-export function validateOpenApi(openApi) {
+export function validateOpenApi(openApi, catalog = null) {
   invariant(openApi.openapi === '3.1.0', `Expected OpenAPI 3.1.0; found ${openApi.openapi}.`)
   invariant(openApi.info?.version === '1.0.0', `Expected API version 1.0.0; found ${openApi.info?.version}.`)
   if (openApi.jsonSchemaDialect !== undefined) {
@@ -557,9 +817,10 @@ export function validateOpenApi(openApi) {
 
   const references = validateReferences(openApi)
   const schemaNodes = validateSupportedSchemas(openApi)
+  validateBodyErrorComponents(openApi)
   const operations = validateOperations(openApi)
   const validateSchema = createSchemaValidator(openApi)
-  const examples = validateEmbeddedExamples(openApi, validateSchema)
+  const examples = validateEmbeddedExamples(openApi, validateSchema, catalog)
 
   return {
     compiledSchemas: validateSchema.compiledSchemas,
