@@ -21,12 +21,27 @@ const CSHARP_JSON_ELEMENT_ALLOWLIST = new Set([
   '#/components/schemas/ChatUserMessage/properties/content',
   '#/components/schemas/OpenAIResponse/properties/output/items',
   '#/components/schemas/OpenAIResponse/properties/tool_choice',
+  '#/components/schemas/ResponseCompletedEvent/properties/response/properties/output/items',
+  '#/components/schemas/ResponseCompletedEvent/properties/response/properties/tool_choice',
+  '#/components/schemas/ResponseCompletedEvent/properties/response/properties/usage',
   '#/components/schemas/ResponseCreateRequest/properties/input',
   '#/components/schemas/ResponseCreateRequest/properties/tool_choice',
+  '#/components/schemas/ResponseCreatedEvent/properties/response/properties/output/items',
+  '#/components/schemas/ResponseCreatedEvent/properties/response/properties/tool_choice',
+  '#/components/schemas/ResponseCreatedEvent/properties/response/properties/usage',
+  '#/components/schemas/ResponseInProgressEvent/properties/response/properties/output/items',
+  '#/components/schemas/ResponseInProgressEvent/properties/response/properties/tool_choice',
+  '#/components/schemas/ResponseInProgressEvent/properties/response/properties/usage',
   '#/components/schemas/ResponseInputMessage/properties/content',
 ])
 
-const CSHARP_ROOT_JSON_ELEMENT_ALLOWLIST = new Set(['ChatMessage', 'LoginResult'])
+const CSHARP_ROOT_JSON_ELEMENT_ALLOWLIST = new Set([
+  'ChatMessage',
+  'LoginResult',
+  'ResponseCompletedOutputItem',
+  'ResponseInProgressOutputItem',
+  'ResponseStreamEvent',
+])
 
 function generatedHeader(comment, openApiSource, errorCatalogSource) {
   return [
@@ -303,6 +318,69 @@ function csharpGenerator(openApi) {
     return false
   }
 
+  function nullOnly(schema, stack = new Set()) {
+    if (!schema || typeof schema !== 'object') {
+      return false
+    }
+    if (schema.$ref) {
+      if (stack.has(schema.$ref)) {
+        return false
+      }
+      return nullOnly(resolve(schema), new Set(stack).add(schema.$ref))
+    }
+    if ('const' in schema) {
+      return schema.const === null
+    }
+    if (schema.enum?.length) {
+      return schema.enum.every((value) => value === null)
+    }
+    if (schema.type === 'null' || (Array.isArray(schema.type) && schema.type.every((type) => type === 'null'))) {
+      return true
+    }
+    for (const keyword of ['oneOf', 'anyOf']) {
+      if (schema[keyword]?.length) {
+        return schema[keyword].every((candidate) => nullOnly(candidate, stack))
+      }
+    }
+    return false
+  }
+
+  function acceptsNull(schema, stack = new Set()) {
+    if (schema === true) {
+      return true
+    }
+    if (!schema || schema === false || typeof schema !== 'object') {
+      return false
+    }
+    if (schema.$ref) {
+      if (stack.has(schema.$ref)) {
+        return false
+      }
+      return acceptsNull(resolve(schema), new Set(stack).add(schema.$ref))
+    }
+    let directAcceptsNull = true
+    if ('const' in schema) {
+      directAcceptsNull = schema.const === null
+    } else if (schema.enum) {
+      directAcceptsNull = schema.enum.includes(null)
+    } else if (schema.type) {
+      directAcceptsNull =
+        schema.type === 'null' || (Array.isArray(schema.type) && schema.type.includes('null'))
+    }
+    if (!directAcceptsNull) {
+      return false
+    }
+    if (schema.allOf?.length && !schema.allOf.every((candidate) => acceptsNull(candidate, stack))) {
+      return false
+    }
+    for (const keyword of ['oneOf', 'anyOf']) {
+      if (schema[keyword]?.length) {
+        return schema[keyword].some((candidate) => acceptsNull(candidate, stack))
+      }
+    }
+    return true
+  }
+
   function mergeShapes(shapes, union) {
     const result = { additionalProperties: false, properties: new Map(), required: new Set() }
     if (shapes.length === 0) {
@@ -332,6 +410,10 @@ function csharpGenerator(openApi) {
           if (refines(schema, existing)) {
             result.properties.set(name, schema)
           } else if (!refines(existing, schema)) {
+            if (!union) {
+              result.properties.set(name, { allOf: [existing, schema] })
+              continue
+            }
             const options = [...(existing.anyOf ?? [existing]), ...(schema.anyOf ?? [schema])]
             const unique = [
               ...new Map(options.map((option) => [stableJson(option), option])).values(),
@@ -343,7 +425,6 @@ function csharpGenerator(openApi) {
     }
     return result
   }
-
   function collectShape(schema, referenceStack = new Set()) {
     if (schema.$ref) {
       invariant(!referenceStack.has(schema.$ref), `Recursive object inheritance at ${schema.$ref}.`)
@@ -409,12 +490,49 @@ function csharpGenerator(openApi) {
     return types.some((type) => type.text.endsWith('?')) ? nullable(result) : result
   }
 
+  function collapseIntersectionVariants(types) {
+    const baseTypes = new Map()
+    for (const type of types) {
+      const baseText = type.text.endsWith('?') ? type.text.slice(0, -1) : type.text
+      baseTypes.set(baseText, { ...type, text: baseText })
+    }
+    if (baseTypes.size !== 1) {
+      return null
+    }
+    const result = [...baseTypes.values()][0]
+    return types.every((type) => type.text.endsWith('?')) ? nullable(result) : result
+  }
+
   function csharpType(schema, preferredName, pointer) {
     if (schema === true) {
       invariant(CSHARP_JSON_ELEMENT_ALLOWLIST.has(pointer), `Unapproved JsonElement fallback at ${pointer}.`)
       return { text: 'JsonElement', valueType: true }
     }
     invariant(schema && typeof schema === 'object', `Invalid C# schema at ${pointer}.`)
+
+    if (schema.allOf) {
+      const directSchema = { ...schema }
+      delete directSchema.allOf
+      const candidates = [directSchema, ...schema.allOf].filter(hasRepresentableTypeShape)
+      if (candidates.length > 0 && !candidates.every((candidate) => objectLike(candidate))) {
+        if (candidates.some((candidate) => nullOnly(candidate))) {
+          invariant(
+            candidates.every((candidate) => acceptsNull(candidate)),
+            `Unsatisfiable null C# intersection at ${pointer}.`,
+          )
+          return CSHARP_JSON_ELEMENT_ALLOWLIST.has(pointer)
+            ? { text: 'JsonElement?', valueType: true }
+            : { text: 'object?', valueType: false }
+        }
+        const candidateTypes = candidates.map((candidate, index) =>
+          csharpType(candidate, preferredName, `${pointer}/allOf/${index}`),
+        )
+        const intersection = collapseIntersectionVariants(candidateTypes)
+        invariant(intersection, `Unsupported mixed C# intersection at ${pointer}.`)
+        return intersection
+      }
+    }
+
     const allowsNull = isNullable(schema)
     schema = withoutNull(schema)
 
@@ -698,8 +816,12 @@ export function generateTypeScriptErrors(catalog, openApiSource, errorCatalogSou
     'export const errorContracts = {',
   ]
   for (const entry of [...catalog.entries].sort((left, right) => left.code.localeCompare(right.code))) {
+    const retryAfter =
+      entry.retryAfter === 'fixed'
+        ? `{ mode: "fixed", seconds: ${entry.retryAfterSeconds} }`
+        : `{ mode: ${JSON.stringify(entry.retryAfter)} }`
     lines.push(
-      `  ${JSON.stringify(entry.code)}: { status: ${JSON.stringify(entry.status)}, retryable: ${JSON.stringify(entry.retryable)}, retryAfter: ${JSON.stringify(entry.retryAfter)} },`,
+      `  ${JSON.stringify(entry.code)}: { httpStatuses: ${JSON.stringify(entry.httpStatuses)}, stream: ${entry.stream}, retryable: ${JSON.stringify(entry.retryable)}, retryAfter: ${retryAfter} },`,
     )
   }
   lines.push(

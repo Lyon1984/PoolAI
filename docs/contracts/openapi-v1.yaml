@@ -39,7 +39,7 @@ tags:
   - name: Auth
     description: 封闭注册下的用户会话
   - name: Me
-    description: 当前用户的 API Key 与订阅
+    description: 当前用户的安全状态、API Key、订阅与脱敏安全事件
   - name: AdminUsers
     description: 管理员用户控制面
   - name: AdminGroups
@@ -69,6 +69,8 @@ paths:
         `stream=true` 时返回 `text/event-stream`。文本完成、函数调用与流开始后错误的
         golden fixture 分别位于 `fixtures/responses-stream-completed.sse`、
         `fixtures/responses-stream-function-call.sse` 和 `fixtures/responses-stream-error.sse`；
+        Header 已提交但尚无业务事件即发生首包超时的单帧终止流见
+        `fixtures/responses-stream-first-byte-timeout.sse`；
         上游 usage 超出安全整数边界的终止流见
         `fixtures/responses-stream-usage-out-of-range.sse`，非流 502 见
         `fixtures/gateway-upstream-usage-out-of-range.json`；
@@ -99,15 +101,16 @@ paths:
               schema:
                 type: string
                 contentMediaType: text/event-stream
+                description: 每个 `data` JSON 必须匹配 `ResponseStreamEvent`；SSE wire framing 由 golden fixtures 冻结。
               examples:
                 completed:
                   summary: typed events 正常完成；完整内容见 golden fixture
                   value: |-
                     event: response.created
-                    data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_01JZ8A","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1}}
+                    data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_01JZ8A","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1,"usage":null}}
 
                     event: response.in_progress
-                    data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_01JZ8A","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1}}
+                    data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_01JZ8A","object":"response","created_at":1783987200,"status":"in_progress","error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"gpt-5","output":[],"parallel_tool_calls":true,"temperature":1,"tool_choice":"auto","tools":[],"top_p":1,"usage":null}}
         '400':
           $ref: '#/components/responses/GatewayBadRequest'
         '401':
@@ -118,6 +121,8 @@ paths:
           $ref: '#/components/responses/GatewayNotFound'
         '413':
           $ref: '#/components/responses/GatewayPayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/GatewayUnsupportedMediaType'
         '422':
           $ref: '#/components/responses/GatewayUnprocessableEntity'
         '429':
@@ -141,7 +146,8 @@ paths:
         时发送 OpenAI chunk SSE，每帧为 `data: <ChatCompletionChunk>`，正常结束发送
         `data: [DONE]`。流开始后错误是 PoolAI R1 兼容策略：发送
         `data: {"error":{"message":...,"type":...,"param":null,"code":...}}` 后关闭连接，
-        且不发送 `[DONE]`；这不是 Responses typed event。文本与函数调用流分别见
+        且不发送 `[DONE]`；这不是 Responses typed event。默认 `include_usage=false` 的文本流见
+        `fixtures/chat-completions-text-no-usage.sse`；显式 `include_usage=true` 的文本流与函数调用流分别见
         `fixtures/chat-completions-text.sse`、`fixtures/chat-completions-function-call.sse`，
         usage 超界终止流见 `fixtures/chat-completions-usage-out-of-range.sse`，
         tool 结果回传请求见 `fixtures/chat-completions-tool-followup.json`。
@@ -167,7 +173,7 @@ paths:
               schema:
                 type: string
                 contentMediaType: text/event-stream
-              description: 文本、函数调用与错误 fixture 位于 fixtures/chat-completions-text.sse、fixtures/chat-completions-function-call.sse、fixtures/chat-completions-error.sse 和 fixtures/chat-completions-usage-out-of-range.sse
+              description: 每个非 `[DONE]` 的 `data` JSON 必须匹配 `ChatCompletionChunk` 或 `ChatCompletionErrorEvent`；无 usage、含 usage、函数调用与错误 fixture 分别位于 fixtures/chat-completions-text-no-usage.sse、fixtures/chat-completions-text.sse、fixtures/chat-completions-function-call.sse、fixtures/chat-completions-error.sse 和 fixtures/chat-completions-usage-out-of-range.sse
         '400':
           $ref: '#/components/responses/GatewayBadRequest'
         '401':
@@ -178,6 +184,8 @@ paths:
           $ref: '#/components/responses/GatewayNotFound'
         '413':
           $ref: '#/components/responses/GatewayPayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/GatewayUnsupportedMediaType'
         '422':
           $ref: '#/components/responses/GatewayUnprocessableEntity'
         '429':
@@ -267,6 +275,10 @@ paths:
             schema:
               $ref: '#/components/schemas/LoginRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -287,6 +299,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -308,6 +322,10 @@ paths:
             schema:
               $ref: '#/components/schemas/RefreshRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -350,6 +368,12 @@ paths:
             schema:
               $ref: '#/components/schemas/LogoutRequest'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '204':
@@ -380,6 +404,10 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpVerifyRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -421,6 +449,10 @@ paths:
             schema:
               $ref: '#/components/schemas/ForgotPasswordRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '202':
@@ -451,6 +483,10 @@ paths:
             schema:
               $ref: '#/components/schemas/ResetPasswordRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '204':
@@ -523,6 +559,10 @@ paths:
             schema:
               $ref: '#/components/schemas/PasswordChangeRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '204':
           description: 密码已修改，当前及其他会话均已撤销
           headers:
@@ -574,6 +614,10 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpSetupRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -623,6 +667,10 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpConfirmRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -676,6 +724,10 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpDisableRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '204':
@@ -750,6 +802,10 @@ paths:
             schema:
               $ref: '#/components/schemas/ApiKeyCreateRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -838,6 +894,10 @@ paths:
             schema:
               $ref: '#/components/schemas/ApiKeyUpdateRequest'
       responses:
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -893,10 +953,52 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '412':
           $ref: '#/components/responses/PreconditionFailed'
         '428':
           $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/security-events:
+    get:
+      tags: [Me]
+      operationId: listMySecurityEvents
+      summary: 分页列出本人的脱敏安全事件摘要
+      description: |
+        只返回 actor 或 target 为当前用户的安全相关审计摘要。响应不包含管理员审计理由、
+        before/after changes、幂等键摘要、完整 IP、凭据、Token 或其他用户信息。
+      x-required-roles: [user, auditor, operator, admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 本人安全事件摘要分页
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+              description: 固定为 `no-store`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityEventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -1020,6 +1122,8 @@ paths:
             schema:
               $ref: '#/components/schemas/UserCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -1104,6 +1208,8 @@ paths:
             schema:
               $ref: '#/components/schemas/UserUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -1119,6 +1225,292 @@ paths:
                 $ref: '#/components/schemas/User'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/admin/users/{userId}/password-reset:
+    post:
+      tags: [AdminUsers]
+      operationId: adminRequestUserPasswordReset
+      summary: 管理员为目标用户发起密码重置
+      description: |
+        创建目标用户的单用 password-reset token 与加密 email outbox；必须记录代理操作原因。
+        `202` 只表示请求已持久化，不表示邮件已经送达。该管理端点允许返回目标用户不存在，
+        不复用匿名 forgot-password 的防枚举响应语义。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPasswordResetRequest'
+      responses:
+        '202':
+          description: 密码重置邮件请求已持久化；相同幂等请求重放相同结果
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/admin/users/{userId}/api-keys:
+    get:
+      tags: [AdminUsers]
+      operationId: adminListUserApiKeys
+      summary: 管理员列出目标用户的 API Key
+      description: 只返回 prefix 与非秘密状态，不返回 Key 明文。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 目标用户的 API Key 分页
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserApiKeyPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [AdminUsers]
+      operationId: adminCreateUserApiKey
+      summary: 管理员为目标用户创建固定绑定 Group 的 API Key
+      description: |
+        目标用户必须对 Group 有 active Subscription。`group_id` 创建后不可变；代理创建必须
+        记录原因。Key 明文只在本响应和同一幂等请求的安全重放响应中返回。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserApiKeyCreateRequest'
+      responses:
+        '201':
+          description: API Key 已创建；相同幂等请求重放相同响应
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+              description: 固定为 `no-store`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/admin/users/{userId}/api-keys/{apiKeyId}:
+    get:
+      tags: [AdminUsers]
+      operationId: adminGetUserApiKey
+      summary: 管理员查询目标用户的单个 API Key
+      description: 只返回 prefix 与非秘密状态，不返回 Key 明文。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/ApiKeyId'
+      responses:
+        '200':
+          description: 目标 API Key 详情
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    patch:
+      tags: [AdminUsers]
+      operationId: adminUpdateUserApiKey
+      summary: 管理员更新目标用户的 API Key 元数据或启停状态
+      description: "`group_id` 不可修改，revoked Key 不可恢复；代理修改必须在 body 中记录原因。"
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/ApiKeyId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/AdminUserApiKeyUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的 API Key
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags: [AdminUsers]
+      operationId: adminRevokeUserApiKey
+      summary: 管理员永久撤销目标用户的 API Key
+      description: 代理撤销必须使用 `X-Change-Reason`，并记录 actor、target 与幂等键摘要。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/ApiKeyId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/XChangeReason'
+      responses:
+        '204':
+          description: 已永久撤销；相同幂等请求重放仍返回 204
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1188,6 +1580,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GroupCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -1275,6 +1669,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GroupUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -1366,6 +1762,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GroupSupplyConfigurationCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '201':
           description: Supply 配置已创建
           headers:
@@ -1421,6 +1819,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GroupSupplyConfigurationUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '200':
           description: 更新后的 Supply 配置
           headers:
@@ -1606,6 +2006,8 @@ paths:
             schema:
               $ref: '#/components/schemas/QuotaAdjustRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -1660,6 +2062,8 @@ paths:
             schema:
               $ref: '#/components/schemas/QuotaResetRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -1741,6 +2145,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SubscriptionTemplateCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -1825,6 +2231,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SubscriptionTemplateUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -1956,6 +2364,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SubscriptionCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -2030,6 +2440,8 @@ paths:
       description: |
         只修改既有资源，不创建历史重复行。`active` 恢复、`suspended` 暂停、`revoked`
         撤销；过期由时间派生，延长时修改 `expires_at`。user_id/group_id 不可变。
+        Operator 可延长、暂停和恢复 suspended Subscription，但 `revoked -> active` 的
+        regrant 仅允许 Admin 显式执行；Operator 尝试该转换返回 `403 role_required`。
       security:
         - UserJwt: []
       parameters:
@@ -2043,6 +2455,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SubscriptionUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -2124,6 +2538,8 @@ paths:
             schema:
               $ref: '#/components/schemas/AccountCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -2264,6 +2680,8 @@ paths:
             schema:
               $ref: '#/components/schemas/AccountUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -2386,6 +2804,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ChannelCreateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '201':
@@ -2645,6 +3065,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ChannelUpdateRequest'
       responses:
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '200':
@@ -2891,6 +3313,19 @@ components:
             $ref: '#/components/schemas/GatewayProblem'
     GatewayPayloadTooLarge:
       description: 模型请求体超过入口或应用上限
+      x-http-status: 413
+      x-error-code: payload_too_large
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayProblem'
+    GatewayUnsupportedMediaType:
+      description: 模型请求 Content-Type 不受支持
+      x-http-status: 415
+      x-error-code: unsupported_media_type
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3135,6 +3570,19 @@ components:
                 retryable: true
     PayloadTooLarge:
       description: 请求体超过入口或应用上限
+      x-http-status: 413
+      x-error-code: payload_too_large
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ControlPlaneProblem'
+    UnsupportedMediaType:
+      description: 请求 Content-Type 不受支持
+      x-http-status: 415
+      x-error-code: unsupported_media_type
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -3487,6 +3935,204 @@ components:
                     code:
                       type: string
                       const: gateway_overloaded
+    ResponseStreamEvent:
+      description: Responses typed SSE 每个 `data` JSON 的封闭联合；wire `event` 必须等于 `type`。
+      oneOf:
+        - $ref: '#/components/schemas/ResponseCreatedEvent'
+        - $ref: '#/components/schemas/ResponseInProgressEvent'
+        - $ref: '#/components/schemas/ResponseOutputItemAddedEvent'
+        - $ref: '#/components/schemas/ResponseContentPartAddedEvent'
+        - $ref: '#/components/schemas/ResponseOutputTextDeltaEvent'
+        - $ref: '#/components/schemas/ResponseOutputTextDoneEvent'
+        - $ref: '#/components/schemas/ResponseContentPartDoneEvent'
+        - $ref: '#/components/schemas/ResponseFunctionCallArgumentsDeltaEvent'
+        - $ref: '#/components/schemas/ResponseFunctionCallArgumentsDoneEvent'
+        - $ref: '#/components/schemas/ResponseOutputItemDoneEvent'
+        - $ref: '#/components/schemas/ResponseCompletedEvent'
+        - $ref: '#/components/schemas/PoolResponseErrorEvent'
+      discriminator:
+        propertyName: type
+        mapping:
+          response.created: '#/components/schemas/ResponseCreatedEvent'
+          response.in_progress: '#/components/schemas/ResponseInProgressEvent'
+          response.output_item.added: '#/components/schemas/ResponseOutputItemAddedEvent'
+          response.content_part.added: '#/components/schemas/ResponseContentPartAddedEvent'
+          response.output_text.delta: '#/components/schemas/ResponseOutputTextDeltaEvent'
+          response.output_text.done: '#/components/schemas/ResponseOutputTextDoneEvent'
+          response.content_part.done: '#/components/schemas/ResponseContentPartDoneEvent'
+          response.function_call_arguments.delta: '#/components/schemas/ResponseFunctionCallArgumentsDeltaEvent'
+          response.function_call_arguments.done: '#/components/schemas/ResponseFunctionCallArgumentsDoneEvent'
+          response.output_item.done: '#/components/schemas/ResponseOutputItemDoneEvent'
+          response.completed: '#/components/schemas/ResponseCompletedEvent'
+          error: '#/components/schemas/PoolResponseErrorEvent'
+    ResponseInProgressOutputItem:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/ResponseOutputMessage'
+            - type: object
+              properties:
+                status: { type: string, const: in_progress }
+        - allOf:
+            - $ref: '#/components/schemas/ResponseOutputFunctionCall'
+            - type: object
+              properties:
+                status: { type: string, const: in_progress }
+    ResponseCompletedOutputItem:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/ResponseOutputMessage'
+            - type: object
+              properties:
+                status: { type: string, const: completed }
+        - allOf:
+            - $ref: '#/components/schemas/ResponseOutputFunctionCall'
+            - type: object
+              properties:
+                status: { type: string, const: completed }
+    ResponseCreatedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, response]
+      properties:
+        type: { type: string, const: response.created }
+        sequence_number: { type: integer, minimum: 0 }
+        response:
+          allOf:
+            - $ref: '#/components/schemas/OpenAIResponse'
+            - type: object
+              required: [status, usage]
+              properties:
+                status: { type: string, const: in_progress }
+                usage: { type: 'null' }
+    ResponseInProgressEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, response]
+      properties:
+        type: { type: string, const: response.in_progress }
+        sequence_number: { type: integer, minimum: 0 }
+        response:
+          allOf:
+            - $ref: '#/components/schemas/OpenAIResponse'
+            - type: object
+              required: [status, usage]
+              properties:
+                status: { type: string, const: in_progress }
+                usage: { type: 'null' }
+    ResponseOutputItemAddedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, output_index, item]
+      properties:
+        type: { type: string, const: response.output_item.added }
+        sequence_number: { type: integer, minimum: 0 }
+        output_index: { type: integer, minimum: 0 }
+        item:
+          $ref: '#/components/schemas/ResponseInProgressOutputItem'
+    ResponseContentPartAddedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, content_index, part]
+      properties:
+        type: { type: string, const: response.content_part.added }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        content_index: { type: integer, minimum: 0 }
+        part:
+          $ref: '#/components/schemas/ResponseOutputTextPart'
+    ResponseOutputTextDeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, content_index, delta, logprobs]
+      properties:
+        type: { type: string, const: response.output_text.delta }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        content_index: { type: integer, minimum: 0 }
+        delta: { type: string }
+        logprobs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ResponseOutputTextDoneEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, content_index, text, logprobs]
+      properties:
+        type: { type: string, const: response.output_text.done }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        content_index: { type: integer, minimum: 0 }
+        text: { type: string }
+        logprobs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ResponseContentPartDoneEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, content_index, part]
+      properties:
+        type: { type: string, const: response.content_part.done }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        content_index: { type: integer, minimum: 0 }
+        part:
+          $ref: '#/components/schemas/ResponseOutputTextPart'
+    ResponseFunctionCallArgumentsDeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, delta]
+      properties:
+        type: { type: string, const: response.function_call_arguments.delta }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        delta: { type: string }
+    ResponseFunctionCallArgumentsDoneEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, item_id, output_index, name, arguments]
+      properties:
+        type: { type: string, const: response.function_call_arguments.done }
+        sequence_number: { type: integer, minimum: 0 }
+        item_id: { type: string, minLength: 1 }
+        output_index: { type: integer, minimum: 0 }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        arguments:
+          type: string
+          description: JSON 对象序列化后的完整字符串
+    ResponseOutputItemDoneEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, output_index, item]
+      properties:
+        type: { type: string, const: response.output_item.done }
+        sequence_number: { type: integer, minimum: 0 }
+        output_index: { type: integer, minimum: 0 }
+        item:
+          $ref: '#/components/schemas/ResponseCompletedOutputItem'
+    ResponseCompletedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, sequence_number, response]
+      properties:
+        type: { type: string, const: response.completed }
+        sequence_number: { type: integer, minimum: 0 }
+        response:
+          allOf:
+            - $ref: '#/components/schemas/OpenAIResponse'
+            - type: object
+              required: [status, usage]
+              properties:
+                status: { type: string, const: completed }
+                usage: { $ref: '#/components/schemas/OpenAIUsage' }
     ResponseErrorEvent:
       type: object
       additionalProperties: false
@@ -3507,6 +4153,22 @@ components:
         sequence_number:
           type: integer
           minimum: 0
+    PoolResponseErrorEvent:
+      description: PoolAI R1 允许在 Responses SSE Header 提交后发送的严格终止错误；保留通用 ResponseErrorEvent 兼容面。
+      allOf:
+        - $ref: '#/components/schemas/ResponseErrorEvent'
+        - type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - upstream_usage_out_of_range
+                - upstream_stream_error
+                - upstream_first_byte_timeout
+                - upstream_stream_idle_timeout
+            message:
+              type: string
+              minLength: 1
 
     ResponseCreateRequest:
       type: object
@@ -3668,6 +4330,30 @@ components:
         output:
           type: string
           description: 客户端执行同一 call_id 对应函数后的结果文本
+    ResponseOutputFunctionCall:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, arguments, call_id, name]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          const: function_call
+        status:
+          type: string
+          enum: [in_progress, completed, incomplete]
+        arguments:
+          type: string
+          description: JSON 对象序列化后的字符串；网关不执行函数
+        call_id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
     FunctionTool:
       type: object
       additionalProperties: false
@@ -3780,6 +4466,7 @@ components:
           properties:
             cache_write_tokens:
               $ref: '#/components/schemas/SafeTokenCount'
+              description: 上游明确返回时原值透传；缺失时由 PoolAI 规范化为 0，使 R1 响应契约保持稳定。
             cached_tokens:
               $ref: '#/components/schemas/SafeTokenCount'
         output_tokens_details:
@@ -3847,7 +4534,7 @@ components:
             include_usage:
               type: boolean
               default: false
-              description: true 时在 [DONE] 前追加 choices=[] 的独立 usage chunk；此前 chunk 的 usage 为 null
+              description: false 时不发送独立 usage chunk，正常 chunk 的 usage 可省略或为 null；true 时在 [DONE] 前追加 choices=[] 的独立 usage chunk，且此前每个正常 chunk 必须显式为 usage=null
             include_obfuscation:
               type: boolean
               default: true
@@ -4015,6 +4702,7 @@ components:
       type: object
       additionalProperties: true
       required: [prompt_tokens, completion_tokens, total_tokens]
+      description: "`total_tokens` 必须等于 `prompt_tokens + completion_tokens`；fixture validator 执行关系校验。"
       properties:
         prompt_tokens:
           $ref: '#/components/schemas/SafeTokenCount'
@@ -4025,9 +4713,145 @@ components:
         prompt_tokens_details:
           type: object
           additionalProperties: true
+          properties:
+            cached_tokens:
+              $ref: '#/components/schemas/SafeTokenCount'
+            cache_write_tokens:
+              $ref: '#/components/schemas/SafeTokenCount'
+              description: 上游明确返回时原值透传；缺失时保持缺失，不伪造为 0。
         completion_tokens_details:
           type: object
           additionalProperties: true
+          properties:
+            reasoning_tokens:
+              $ref: '#/components/schemas/SafeTokenCount'
+            accepted_prediction_tokens:
+              $ref: '#/components/schemas/SafeTokenCount'
+            rejected_prediction_tokens:
+              $ref: '#/components/schemas/SafeTokenCount'
+    ChatCompletionChunk:
+      type: object
+      additionalProperties: false
+      required: [id, object, created, model, choices]
+      description: Chat SSE 的正常 JSON 帧；内容帧 usage 省略或固定 null，独立 usage 帧 choices 固定为空数组。
+      oneOf:
+        - properties:
+            choices:
+              type: array
+              minItems: 1
+            usage:
+              type: 'null'
+        - required: [usage]
+          properties:
+            choices:
+              type: array
+              maxItems: 0
+            usage:
+              $ref: '#/components/schemas/ChatCompletionUsage'
+      properties:
+        id:
+          type: string
+          minLength: 1
+        object:
+          type: string
+          const: chat.completion.chunk
+        created:
+          type: integer
+          format: int64
+        model:
+          type: string
+          minLength: 1
+        obfuscation:
+          type: string
+          minLength: 1
+          description: "`stream_options.include_obfuscation=true` 时可返回的流填充字段"
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatCompletionChunkChoice'
+        usage:
+          oneOf:
+            - $ref: '#/components/schemas/ChatCompletionUsage'
+            - type: 'null'
+    ChatCompletionChunkChoice:
+      type: object
+      additionalProperties: false
+      required: [index, delta, finish_reason]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        delta:
+          $ref: '#/components/schemas/ChatCompletionChunkDelta'
+        finish_reason:
+          type: [string, 'null']
+          enum: [stop, length, tool_calls, content_filter, function_call, null]
+    ChatCompletionChunkDelta:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          const: assistant
+        content:
+          type: [string, 'null']
+        tool_calls:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatCompletionChunkToolCallDelta'
+    ChatCompletionChunkToolCallDelta:
+      type: object
+      additionalProperties: false
+      required: [index]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          const: function
+        function:
+          $ref: '#/components/schemas/ChatCompletionChunkFunctionDelta'
+    ChatCompletionChunkFunctionDelta:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        arguments:
+          type: string
+    ChatCompletionErrorEvent:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ChatCompletionStreamError'
+    ChatCompletionStreamError:
+      type: object
+      additionalProperties: false
+      required: [message, type, param, code]
+      properties:
+        message:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          const: server_error
+        param:
+          type: 'null'
+        code:
+          type: string
+          enum:
+            [upstream_stream_error, upstream_first_byte_timeout,
+             upstream_stream_idle_timeout, upstream_usage_out_of_range]
     Model:
       type: object
       required: [id, object, created, owned_by]
@@ -4246,6 +5070,49 @@ components:
           type: [string, 'null']
         has_more:
           type: boolean
+    SecurityEventSummary:
+      type: object
+      additionalProperties: false
+      description: 当前用户可见的脱敏安全事件投影；不是完整 AuditEvent。
+      required:
+        [id, event_type, request_id, source, source_ip_summary, user_agent_summary, occurred_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        event_type:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 登录、会话、密码、TOTP、API Key 或账户安全相关的稳定事件类型
+        request_id:
+          description: 非 HTTP 后台安全事件可为 null
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        source:
+          type: string
+          enum: [web, api, gateway, scheduler, worker, system]
+        source_ip_summary:
+          type: [string, 'null']
+          maxLength: 64
+          description: 已截断或掩码的网络来源摘要，不返回完整 IP
+        user_agent_summary:
+          type: [string, 'null']
+          maxLength: 200
+          description: 已清洗并截断的客户端摘要，不含认证信息
+        occurred_at:
+          $ref: '#/components/schemas/Timestamp'
+    SecurityEventPage:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityEventSummary'
+        page:
+          $ref: '#/components/schemas/PageInfo'
     Role:
       type: string
       enum: [admin, operator, auditor, user]
@@ -4374,6 +5241,17 @@ components:
           minLength: 1
           maxLength: 500
           pattern: '.*\S.*'
+    AdminPasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '.*\S.*'
+          description: 管理员代理发起目标用户密码重置的强制审计理由
     UserPage:
       type: object
       additionalProperties: false
@@ -4797,6 +5675,33 @@ components:
           items:
             type: string
             maxLength: 64
+    AdminUserApiKeyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, group_id, reason]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        group_id:
+          $ref: '#/components/schemas/Uuid'
+        expires_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        allowed_cidrs:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 64
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '.*\S.*'
+          description: 管理员代理创建目标用户 API Key 的强制审计理由
     ApiKeyCreated:
       type: object
       additionalProperties: false
@@ -4831,9 +5736,55 @@ components:
           items:
             type: string
             maxLength: 64
+    AdminUserApiKeyUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 2
+      required: [reason]
+      anyOf:
+        - required: [name]
+        - required: [status]
+        - required: [expires_at]
+        - required: [allowed_cidrs]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        status:
+          type: string
+          enum: [active, disabled]
+        expires_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        allowed_cidrs:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 64
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '.*\S.*'
+          description: 管理员代理修改目标用户 API Key 的强制审计理由
     ApiKeyPage:
       type: object
       additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    AdminUserApiKeyPage:
+      type: object
+      additionalProperties: false
+      description: 管理员读取目标用户 API Key 的脱敏分页；永不返回 secret。
       required: [data, page]
       properties:
         data:

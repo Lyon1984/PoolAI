@@ -1,0 +1,15 @@
+{
+  "type": "https://poolai.example/problems/validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "请求字段未通过校验。",
+  "instance": "/api/v1/admin/users",
+  "code": "validation_failed",
+  "request_id": "0190f8bf-a040-7444-a2ca-c4bc32e48b47",
+  "retryable": false,
+  "errors": {
+    "/email": [
+      "必须是有效的电子邮件地址。"
+    ]
+  }
+}

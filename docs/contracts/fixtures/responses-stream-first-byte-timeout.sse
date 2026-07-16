@@ -1,0 +1,2 @@
+event: error
+data: {"type":"error","code":"upstream_first_byte_timeout","message":"上游在首个可验证业务字节前超时。","param":null,"sequence_number":0}
