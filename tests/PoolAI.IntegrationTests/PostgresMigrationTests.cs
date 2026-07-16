@@ -34,6 +34,8 @@ public sealed class PostgresMigrationTests
             .ConfigureAwait(true);
         await AssertMigrationCountAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertNumeric78BoundaryAsync(connectionString, cancellationToken).ConfigureAwait(true);
+        await AssertRefreshSessionForeignKeysAreIndexedAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertRuntimeRolePermissionsAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertAppliedMetadataDriftRejectedAsync(
@@ -168,6 +170,70 @@ public sealed class PostgresMigrationTests
             connectionString,
             "SET ROLE poolai_worker; UPDATE public.groups SET status = status WHERE false;",
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask AssertRefreshSessionForeignKeysAreIndexedAsync(
+        string connectionString,
+        CancellationToken cancellationToken)
+    {
+        // Governing contract: docs/database/README.md sections 1 and 10 require
+        // bounded runtime session cleanup under the poolai_api permission model.
+        string[] expectedConstraints =
+        [
+            "fk_refresh_sessions_parent",
+            "fk_refresh_sessions_replacement",
+        ];
+        const string Sql = """
+            SELECT constraint_definition.conname,
+                   EXISTS (
+                       SELECT 1
+                       FROM pg_catalog.pg_index AS index_definition
+                       WHERE index_definition.indrelid = constraint_definition.conrelid
+                         AND index_definition.indisvalid
+                         AND index_definition.indisready
+                         AND index_definition.indnkeyatts >= 1
+                         AND index_definition.indexprs IS NULL
+                         AND (index_definition.indkey::smallint[])[0]
+                             = constraint_definition.conkey[1]
+                         AND (
+                             index_definition.indpred IS NULL
+                             OR pg_catalog.pg_get_expr(
+                                 index_definition.indpred,
+                                 index_definition.indrelid
+                             ) = pg_catalog.format(
+                                 '(%I IS NOT NULL)',
+                                 foreign_key_column.attname
+                             )
+                         )
+                   ) AS has_prefix_index
+            FROM pg_catalog.pg_constraint AS constraint_definition
+            JOIN pg_catalog.pg_attribute AS foreign_key_column
+              ON foreign_key_column.attrelid = constraint_definition.conrelid
+             AND foreign_key_column.attnum = constraint_definition.conkey[1]
+            WHERE constraint_definition.connamespace = 'public'::regnamespace
+              AND constraint_definition.conrelid = 'public.refresh_sessions'::regclass
+              AND constraint_definition.contype = 'f'
+              AND constraint_definition.conname = ANY ($1::text[])
+            ORDER BY constraint_definition.conname;
+            """;
+
+        using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
+        using NpgsqlCommand command = dataSource.CreateCommand(Sql);
+        command.Parameters.AddWithValue(expectedConstraints);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        int observedConstraints = 0;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            observedConstraints++;
+            Assert.True(
+                reader.GetBoolean(1),
+                $"Foreign key {reader.GetString(0)} is missing a usable prefix index.");
+        }
+
+        Assert.Equal(expectedConstraints.Length, observedConstraints);
     }
 
     private static async ValueTask AssertScalarSucceedsAsync(

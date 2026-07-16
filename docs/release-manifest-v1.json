@@ -15,7 +15,7 @@
         "version": 1,
         "name": "0001_baseline.sql",
         "source": "docs/database/0001_baseline.sql",
-        "sha256": "ca4ff86efd22c82ebf3b414415cb96087ce5ef5d582704cde934540b692ac543"
+        "sha256": "dca0952a49ea6dfeb7e274128efd93241afd9cd447af542a89bae36a84c1696a"
       },
       {
         "version": 2,
