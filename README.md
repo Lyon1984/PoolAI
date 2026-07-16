@@ -2,11 +2,12 @@
 
 PoolAI is a non-commercial subscription access and shared Group Token pool platform. The target implementation is a .NET 10 modular monolith with independent Api, Worker, and Migrator Hosts, a Vue 3 frontend, PostgreSQL 18, and Redis.
 
-The repository is in active M0 implementation. Product, API, database, runtime,
-and architecture contracts are present together with the locked .NET/Vue
-workspace, executable quality gate, real-container integration tests, and local
-seven-service Compose topology. This is a verified development scaffold, not a
-completed M0 or production-ready Release 1 implementation.
+The repository has passed its independent M0 Exit gate and is authorized to
+begin M1 development. Product, API, database, runtime, and architecture
+contracts are present together with the locked .NET/Vue workspace, executable
+quality gate, real-container integration tests, and local seven-service Compose
+topology. No M1 business Epic or production-ready Release 1 implementation is
+claimed complete.
 
 ## Repository map
 

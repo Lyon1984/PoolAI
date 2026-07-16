@@ -2,12 +2,6 @@
 
 Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delivery backlog remains authoritative in `docs/开发执行规格-v1.0.md`.
 
-## M0 exit blockers
-
-1. GitHub Issues #6–#43 provide the 38 unique Epic task IDs and read-back owner `@Lyon1984`; Issue #44 indexes the import, and its separate permanent DEC, database, and OpenAPI approval comments close those three baseline sign-off gates. The M0 exit approval remains pending and must be last.
-
-The non-secret R1.1 logical certification environment, exact reference hardware/data profile, and durable load-report archive policy are declared in [`../release-evidence/r1.1-certification-plan.json`](../release-evidence/r1.1-certification-plan.json). This closes the M0 planning input only; provisioning and performance certification remain M6 work.
-
 ## Repository publication
 
 - The authorized public GitHub repository `Lyon1984/PoolAI` and protected bootstrap `main` branch exist. Six strict checks are required for administrators and other actors, conversations must be resolved, and force pushes/deletion are disabled. PR #1 and PR #2 validated the protected delivery and security-remediation paths; PR #4 validated the first production-source path with exact 1/1 changed-line coverage. Subsequent changes must use pull requests rather than direct pushes to `main`.
