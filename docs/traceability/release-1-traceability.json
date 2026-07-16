@@ -10,7 +10,7 @@
     "taskSystem": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44" },
     "decisionSignoff": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4989364159" },
     "databaseReview": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4990098502" },
-    "openApiReview": { "status": "pending", "evidence": null },
+    "openApiReview": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992036352" },
     "targetCi": { "status": "verified", "evidence": "https://github.com/Lyon1984/PoolAI/pull/4" },
     "m0ExitReview": { "status": "pending", "evidence": null }
   },
