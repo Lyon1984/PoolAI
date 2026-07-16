@@ -10,6 +10,9 @@ public sealed class ConfigurationValidationTests
 {
     [Theory]
     [InlineData("Auth:Jwt:SigningKey")]
+    [InlineData("Auth:PasswordReset:RateLimitScopePepper")]
+    [InlineData("Auth:TokenHash:CurrentPepper")]
+    [InlineData("Idempotency:RequestHashPepper")]
     [InlineData("ApiKeys:CurrentPepper")]
     [InlineData("Secrets:Envelope:CurrentKey")]
     public void MissingCriticalSecretFailsStartupValidation(string key)
@@ -161,6 +164,40 @@ public sealed class ConfigurationValidationTests
     }
 
     [Theory]
+    [InlineData("PoolAI <no-reply@poolai.example.test>")]
+    [InlineData(" no-reply@poolai.example.test")]
+    [InlineData("\"no-reply\"@poolai.example.test")]
+    [InlineData("nö-reply@poolai.example.test")]
+    [InlineData("no..reply@poolai.example.test")]
+    [InlineData("no-reply@[127.0.0.1]")]
+    [InlineData("no-reply@invalid_domain.test")]
+    public void EmailFromAddressRejectsMailboxesTheWorkerCannotDeliver(string address)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Email:FromAddress"] = address;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Email:FromAddress", exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EmailFromAddressAcceptsIdnaDomainNormalizedByTheWorker()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Email:FromAddress"] = "no-reply@BÜCHER.Example";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production");
+    }
+
+    [Theory]
     [InlineData("foo")]
     [InlineData("poolai:r1:Test:")]
     [InlineData("poolai:r1:test_:")]
@@ -277,9 +314,191 @@ public sealed class ConfigurationValidationTests
         Assert.DoesNotContain(SensitiveValue, exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PreviousTokenPepperRequiresADistinctVersionAndCompletePair()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Auth:TokenHash:PreviousPepperVersion"] = "1";
+        values["Auth:TokenHash:PreviousPepper"] = values["Auth:TokenHash:CurrentPepper"];
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Auth:TokenHash:PreviousPepperVersion", exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("Auth:PasswordReset:IpRequestsPerMinute", "0")]
+    [InlineData("Auth:PasswordReset:AccountRequestsPerMinute", "21")]
+    public void PasswordResetRateLimitsAreBounded(string key, string value)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values[key] = value;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains(key, exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void SecurityPurposesCannotReuseTheSameKeyMaterial()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Auth:TokenHash:CurrentPepper"] = values["Auth:Jwt:SigningKey"];
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Auth:Jwt:SigningKey", exception.InvalidKeys);
+        Assert.Contains("Auth:TokenHash:CurrentPepper", exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void ApiPurposeSecretCannotReuseAnyHistoricalEnvelopeRingKey()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Secrets:Envelope:DecryptKeyRing:retired-kek"] =
+            values["Idempotency:RequestHashPepper"];
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Idempotency:RequestHashPepper", exception.InvalidKeys);
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing:retired-kek",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EnvelopeCurrentKeyMustMatchTheRingEntrySelectedByCurrentKeyId()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Secrets:Envelope:DecryptKeyRing:test-kek-v1"] =
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Secrets:Envelope:CurrentKey", exception.InvalidKeys);
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing:test-kek-v1",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EnvelopeKeysMustBeExactly256Bits()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        string oversizedKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(33));
+        values["Secrets:Envelope:CurrentKey"] = oversizedKey;
+        values["Secrets:Envelope:DecryptKeyRing:test-kek-v1"] = oversizedKey;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Secrets:Envelope:CurrentKey", exception.InvalidKeys);
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing:test-kek-v1",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EnvelopeRingKeysMustContainDistinctKeyMaterial()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Secrets:Envelope:DecryptKeyRing:retired-kek"] =
+            values["Secrets:Envelope:DecryptKeyRing:test-kek-v1"];
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production",
+                PoolAiRuntimeConfigurationValidator.HostProfile.Worker));
+
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing:test-kek-v1",
+            exception.InvalidKeys);
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing:retired-kek",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void WorkerProfileDoesNotRequireApiAuthenticationConfiguration()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        foreach (string key in values.Keys
+                     .Where(static key =>
+                         key.StartsWith("Auth:", StringComparison.OrdinalIgnoreCase)
+                         || key.StartsWith("ApiKeys:", StringComparison.OrdinalIgnoreCase)
+                         || key.StartsWith("Idempotency:", StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            values.Remove(key);
+        }
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production",
+            PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
+    }
+
+    [Theory]
+    [InlineData("Data:Postgres:ConnectionString")]
+    [InlineData("Data:Redis:ConnectionString")]
+    [InlineData("Email:Smtp:Host")]
+    [InlineData("Secrets:Envelope:CurrentKey")]
+    public void WorkerProfileStillRequiresItsRuntimeInputs(string key)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values.Remove(key);
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production",
+                PoolAiRuntimeConfigurationValidator.HostProfile.Worker));
+
+        Assert.Contains(key, exception.InvalidKeys);
+    }
+
     internal static Dictionary<string, string?> ValidConfiguration()
     {
-        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string jwtSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string rateLimitPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string tokenPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string apiKeyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string idempotencyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string envelopeKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -287,8 +506,12 @@ public sealed class ConfigurationValidationTests
             ["App:TimeZone"] = "Asia/Shanghai",
             ["App:AllowedHosts:0"] = "poolai.example.test",
             ["Cors:AllowedOrigins:0"] = "https://poolai.example.test",
-            ["Auth:Jwt:SigningKey"] = secret,
-            ["ApiKeys:CurrentPepper"] = secret,
+            ["Auth:Jwt:SigningKey"] = jwtSecret,
+            ["Auth:PasswordReset:RateLimitScopePepper"] = rateLimitPepper,
+            ["Auth:TokenHash:CurrentPepperVersion"] = "1",
+            ["Auth:TokenHash:CurrentPepper"] = tokenPepper,
+            ["ApiKeys:CurrentPepper"] = apiKeyPepper,
+            ["Idempotency:RequestHashPepper"] = idempotencyPepper,
             ["Data:Postgres:ConnectionString"] =
                 $"Host=postgres;Database=poolai;Username=poolai;Password={password};SSL Mode=Require;Trust Server Certificate=true",
             ["Data:Redis:ConnectionString"] =
@@ -300,8 +523,8 @@ public sealed class ConfigurationValidationTests
             ["Email:Smtp:Password"] = password,
             ["Email:FromAddress"] = "noreply@poolai.example.test",
             ["Secrets:Envelope:CurrentKeyId"] = "test-kek-v1",
-            ["Secrets:Envelope:CurrentKey"] = secret,
-            ["Secrets:Envelope:DecryptKeyRing:test-kek-v1"] = secret,
+            ["Secrets:Envelope:CurrentKey"] = envelopeKey,
+            ["Secrets:Envelope:DecryptKeyRing:test-kek-v1"] = envelopeKey,
             ["Health:Ntp:Server"] = "time.poolai.example.test",
         };
     }

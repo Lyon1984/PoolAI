@@ -7,6 +7,7 @@ const SQL_FILES = [
   '0001_baseline.sql',
   '0002_quota_functions.sql',
   '0003_runtime_permissions.sql',
+  '0004_identity_m1_e1.sql',
 ]
 
 function exposeDollarQuotedBodies(source) {
@@ -346,7 +347,7 @@ export function validateSqlErrorMapping({ errorCodes, mapping, sqlSources }) {
     wrongSources.length === 0,
     `P0001 mappings declare the wrong SQL source: ${wrongSources.join(', ')}`,
   )
-  invariant(mapped.size === 90, `Expected 90 mapped P0001 codes; found ${mapped.size}.`)
+  invariant(mapped.size === 94, `Expected 94 mapped P0001 codes; found ${mapped.size}.`)
 
   return { mappedCodes: mapped.size }
 }

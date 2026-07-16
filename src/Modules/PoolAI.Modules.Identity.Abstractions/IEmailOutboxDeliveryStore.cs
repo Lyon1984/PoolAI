@@ -23,13 +23,20 @@ public interface IEmailOutboxDeliveryStore
     ValueTask<bool> ReleaseForRetryAsync(
         EmailOutboxDeliveryLease lease,
         TimeSpan retryDelay,
+        string failureClass,
         string errorSummary,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 
     ValueTask<bool> MarkDeadAsync(
         EmailOutboxDeliveryLease lease,
+        string failureClass,
+        string terminalReason,
         string errorSummary,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<EmailOutboxObservabilitySnapshot> ReadObservabilityAsync(
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 }

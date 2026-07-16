@@ -5,8 +5,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using PoolAI.Migrator;
+using System.Text;
 
-HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+MigratorInvocation invocation = MigratorCommandParser.Parse(args);
+HostApplicationBuilder builder = Host.CreateApplicationBuilder([]);
 builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole();
@@ -19,6 +21,7 @@ MigrationCatalog catalog = await MigrationCatalog
     .ConfigureAwait(false);
 builder.Services.AddSingleton(catalog);
 builder.Services.AddSingleton<PostgresMigrator>();
+builder.Services.AddSingleton<AdminBootstrapWriter>();
 builder.Services.AddPoolAiObservability(builder.Configuration);
 
 using IHost host = builder.Build();
@@ -26,6 +29,29 @@ PostgresMigrator migrator = host.Services.GetRequiredService<PostgresMigrator>()
 await migrator
     .ApplyAsync(connectionString, "PoolAI.Migrator", CancellationToken.None)
     .ConfigureAwait(false);
+
+if (invocation.ShouldBootstrapAdmin)
+{
+    if (!Console.IsInputRedirected)
+    {
+        throw new InvalidOperationException(
+            "Admin bootstrap requires redirected standard input.");
+    }
+
+    Console.InputEncoding = new UTF8Encoding(false, true);
+    AdminBootstrapSecrets secrets = await BootstrapAdminSecretReader
+        .ReadAsync(Console.In, CancellationToken.None)
+        .ConfigureAwait(false);
+    AdminBootstrapRequest request = new(
+        invocation.Email!,
+        invocation.DisplayName!,
+        secrets);
+    AdminBootstrapWriter bootstrapWriter = host.Services
+        .GetRequiredService<AdminBootstrapWriter>();
+    _ = await bootstrapWriter
+        .CreateAsync(connectionString, request, CancellationToken.None)
+        .ConfigureAwait(false);
+}
 
 static string ValidateConnectionString(IConfiguration configuration, bool isProduction)
 {

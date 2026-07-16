@@ -13,7 +13,7 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 ## Environment inputs still required later
 
 - Secret Provider/KMS implementation and key identifiers
-- SMTP sender and delivery policy
+- Production SMTP endpoint, credentials, certificate trust policy, and delivery/alert thresholds
 - Production ingress, TLS, CORS allowlist, trusted proxy, and observability destinations
 
 Do not put values for these inputs in this file.

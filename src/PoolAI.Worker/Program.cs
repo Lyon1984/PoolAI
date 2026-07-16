@@ -16,7 +16,8 @@ builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole();
 PoolAiRuntimeConfigurationValidator.Validate(
     builder.Configuration,
-    builder.Environment.EnvironmentName);
+    builder.Environment.EnvironmentName,
+    PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
 
 builder.Services
     .AddPoolAiPostgresRuntime(
@@ -24,6 +25,7 @@ builder.Services
         builder.Configuration.GetValue("Data:Postgres:CommandTimeoutSeconds", 30),
         builder.Configuration.GetValue("Data:Postgres:MaxPoolSize", 100))
     .AddIdentityModule()
+    .AddIdentityEmailOutboxWorker(builder.Configuration)
     .AddGroupQuotaModule()
     .AddSupplyModule()
     .AddUsageModule()

@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poolai.example/contracts/identity-events-v1.json",
+  "title": "PoolAI Identity Integration Event v1",
+  "description": "Canonical Published Language for Identity integration events. Payloads deliberately exclude email, display name, password/hash, one-time token, IP address, user agent, administrator reason, and encrypted delivery material.",
+  "x-poolai-topic": "poolai.identity.v1",
+  "x-poolai-schema-version": 1,
+  "x-poolai-event-types": [
+    "user_created",
+    "user_updated",
+    "password_reset_requested",
+    "password_reset_completed"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "message_id",
+    "topic",
+    "event_type",
+    "schema_version",
+    "event_sequence",
+    "source_event_sequence",
+    "aggregate_type",
+    "aggregate_id",
+    "aggregate_version",
+    "deduplication_key",
+    "occurred_at",
+    "correlation_id",
+    "causation_id",
+    "payload",
+    "replay_of"
+  ],
+  "properties": {
+    "message_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "topic": {
+      "const": "poolai.identity.v1"
+    },
+    "event_type": {
+      "$ref": "#/$defs/eventType"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "event_sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_event_sequence": {
+      "type": "null",
+      "description": "Identity has no separate source ledger sequence in v1."
+    },
+    "aggregate_type": {
+      "const": "user"
+    },
+    "aggregate_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "aggregate_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "deduplication_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Opaque non-sensitive key derived only from event type and UUID/version identifiers."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "causation_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/userCreatedPayload"
+        },
+        {
+          "$ref": "#/$defs/userUpdatedPayload"
+        },
+        {
+          "$ref": "#/$defs/passwordResetRequestedPayload"
+        },
+        {
+          "$ref": "#/$defs/passwordResetCompletedPayload"
+        }
+      ]
+    },
+    "replay_of": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "user_created"
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/userCreatedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "user_updated"
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/userUpdatedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "password_reset_requested"
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/passwordResetRequestedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "password_reset_completed"
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/passwordResetCompletedPayload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "user_created",
+        "user_updated",
+        "password_reset_requested",
+        "password_reset_completed"
+      ]
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "operator",
+        "auditor",
+        "user"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "disabled"
+      ]
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "bootstrap_cli",
+        "admin_api",
+        "anonymous_api",
+        "system"
+      ]
+    },
+    "userCreatedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "event_type",
+        "user_id",
+        "role",
+        "status",
+        "version",
+        "origin"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_type": {
+          "const": "user_created"
+        },
+        "user_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        }
+      }
+    },
+    "userUpdatedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "event_type",
+        "user_id",
+        "role",
+        "status",
+        "version",
+        "changed_fields",
+        "origin"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_type": {
+          "const": "user_updated"
+        },
+        "user_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "changed_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "display_name",
+              "role",
+              "status"
+            ]
+          }
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        }
+      }
+    },
+    "passwordResetRequestedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "event_type",
+        "user_id",
+        "password_reset_id",
+        "version",
+        "origin"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_type": {
+          "const": "password_reset_requested"
+        },
+        "user_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "password_reset_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        }
+      }
+    },
+    "passwordResetCompletedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "event_type",
+        "user_id",
+        "password_reset_id",
+        "version",
+        "changed_fields",
+        "origin"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_type": {
+          "const": "password_reset_completed"
+        },
+        "user_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "password_reset_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "changed_fields": {
+          "type": "array",
+          "const": [
+            "password"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        }
+      }
+    }
+  }
+}

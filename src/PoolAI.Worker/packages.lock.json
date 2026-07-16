@@ -394,7 +394,7 @@
       "poolai.modules.identity": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.10, )",
+          "Npgsql": "[10.0.3, )",
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
           "PoolAI.Infrastructure.Postgres": "[1.0.0, )",

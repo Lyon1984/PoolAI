@@ -61,6 +61,7 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
             recipient_envelope = NULL,
             delivery_secret_envelope = NULL,
             sent_at = clock_timestamp(),
+            last_failure_class = NULL,
             last_error = NULL,
             updated_at = clock_timestamp()
         WHERE id = $1
@@ -72,38 +73,76 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
         """;
 
     private const string RetrySql = """
-        UPDATE public.email_outbox
-        SET status = 'pending',
-            next_attempt_at = clock_timestamp() + $5,
-            lock_owner = NULL,
-            locked_until = NULL,
-            last_error = $6,
-            updated_at = clock_timestamp()
-        WHERE id = $1
-          AND status = 'processing'
-          AND lock_owner = $2
-          AND lock_generation = $3
-          AND attempts = $4
-          AND locked_until > clock_timestamp();
+        WITH transitioned AS (
+            UPDATE public.email_outbox
+            SET status = 'pending',
+                next_attempt_at = clock_timestamp() + $5,
+                lock_owner = NULL,
+                locked_until = NULL,
+                last_failure_class = $6,
+                last_error = $7,
+                updated_at = clock_timestamp()
+            WHERE id = $1
+              AND status = 'processing'
+              AND lock_owner = $2
+              AND lock_generation = $3
+              AND attempts = $4
+              AND locked_until > clock_timestamp()
+            RETURNING id
+        )
+        INSERT INTO public.email_outbox_delivery_failures (
+            email_id, lock_generation, attempt, failure_class, outcome, terminal_reason
+        )
+        SELECT id, $3, $4, $6, 'retry', NULL
+        FROM transitioned;
         """;
 
     private const string MarkDeadSql = """
-        UPDATE public.email_outbox
-        SET status = 'dead',
-            next_attempt_at = NULL,
-            lock_owner = NULL,
-            locked_until = NULL,
-            recipient_envelope = NULL,
-            delivery_secret_envelope = NULL,
-            dead_at = clock_timestamp(),
-            last_error = $5,
-            updated_at = clock_timestamp()
-        WHERE id = $1
-          AND status = 'processing'
-          AND lock_owner = $2
-          AND lock_generation = $3
-          AND attempts = $4
-          AND locked_until > clock_timestamp();
+        WITH transitioned AS (
+            UPDATE public.email_outbox
+            SET status = 'dead',
+                next_attempt_at = NULL,
+                lock_owner = NULL,
+                locked_until = NULL,
+                recipient_envelope = NULL,
+                delivery_secret_envelope = NULL,
+                dead_at = clock_timestamp(),
+                last_failure_class = $5,
+                last_error = $7,
+                updated_at = clock_timestamp()
+            WHERE id = $1
+              AND status = 'processing'
+              AND lock_owner = $2
+              AND lock_generation = $3
+              AND attempts = $4
+              AND locked_until > clock_timestamp()
+            RETURNING id
+        )
+        INSERT INTO public.email_outbox_delivery_failures (
+            email_id, lock_generation, attempt, failure_class, outcome, terminal_reason
+        )
+        SELECT id, $3, $4, $5, 'dead', $6
+        FROM transitioned;
+        """;
+
+    private const string ObservabilitySql = """
+        SELECT
+            count(*) FILTER (WHERE status IN ('pending', 'processing')),
+            coalesce(
+                extract(epoch FROM clock_timestamp()
+                    - min(created_at) FILTER (WHERE status IN ('pending', 'processing'))),
+                0
+            )::double precision,
+            count(*) FILTER (WHERE status = 'dead')
+        FROM public.email_outbox;
+
+        SELECT failure_class,
+               outcome,
+               coalesce(terminal_reason, 'not_terminal'),
+               count(*)
+        FROM public.email_outbox_delivery_failures
+        GROUP BY failure_class, outcome, terminal_reason
+        ORDER BY failure_class, outcome, terminal_reason;
         """;
 
     public async ValueTask<IReadOnlyList<EmailOutboxMessage>> ClaimDueAsync(
@@ -175,12 +214,14 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
     public async ValueTask<bool> ReleaseForRetryAsync(
         EmailOutboxDeliveryLease lease,
         TimeSpan retryDelay,
+        string failureClass,
         string errorSummary,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken)
     {
         Validate(lease);
         Positive(retryDelay, nameof(retryDelay));
+        ValidateClassification(failureClass, nameof(failureClass));
         ValidateError(errorSummary);
         return await ExecuteAsync(
             RetrySql,
@@ -189,6 +230,7 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
             command =>
             {
                 command.Parameters.AddWithValue(retryDelay);
+                command.Parameters.AddWithValue(failureClass);
                 command.Parameters.AddWithValue(errorSummary);
             },
             cancellationToken).ConfigureAwait(false);
@@ -196,18 +238,66 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
 
     public async ValueTask<bool> MarkDeadAsync(
         EmailOutboxDeliveryLease lease,
+        string failureClass,
+        string terminalReason,
         string errorSummary,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken)
     {
         Validate(lease);
+        ValidateClassification(failureClass, nameof(failureClass));
+        ValidateClassification(terminalReason, nameof(terminalReason));
         ValidateError(errorSummary);
         return await ExecuteAsync(
             MarkDeadSql,
             lease,
             unitOfWorkContext,
-            command => command.Parameters.AddWithValue(errorSummary),
+            command =>
+            {
+                command.Parameters.AddWithValue(failureClass);
+                command.Parameters.AddWithValue(terminalReason);
+                command.Parameters.AddWithValue(errorSummary);
+            },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<EmailOutboxObservabilitySnapshot> ReadObservabilityAsync(
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(ObservabilitySql);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("Email outbox observability query returned no totals.");
+        }
+
+        long pendingCount = reader.GetInt64(0);
+        double oldestAgeSeconds = Math.Max(0, reader.GetDouble(1));
+        long deadCount = reader.GetInt64(2);
+        if (!await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("Email outbox observability query returned no failures.");
+        }
+
+        List<EmailOutboxFailureMetric> failures = [];
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            failures.Add(new EmailOutboxFailureMetric(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetInt64(3)));
+        }
+
+        return new EmailOutboxObservabilitySnapshot(
+            pendingCount,
+            oldestAgeSeconds,
+            deadCount,
+            failures);
     }
 
     private static async ValueTask<bool> ExecuteAsync(
@@ -257,6 +347,17 @@ internal sealed class PostgresEmailOutboxDeliveryStore : IEmailOutboxDeliverySto
             || errorSummary.Length > 2048)
         {
             throw new ArgumentException("The non-secret error summary is invalid.", nameof(errorSummary));
+        }
+    }
+
+    private static void ValidateClassification(string value, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        if (!string.Equals(value, value.Trim(), StringComparison.Ordinal) || value.Length > 64)
+        {
+            throw new ArgumentException(
+                "The email delivery classification is invalid.",
+                parameterName);
         }
     }
 }

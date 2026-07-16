@@ -330,7 +330,10 @@ const forbiddenEnvironmentKeys = [
   "Data__Postgres__ConnectionString",
   "Data__Redis__ConnectionString",
   "Auth__Jwt__SigningKey",
+  "Auth__PasswordReset__RateLimitScopePepper",
+  "Auth__TokenHash__CurrentPepper",
   "ApiKeys__CurrentPepper",
+  "Idempotency__RequestHashPepper",
   "Secrets__Envelope__CurrentKey",
 ];
 for (const host of ["api", "worker", "migrator"]) {
@@ -350,19 +353,50 @@ function secretTargets(serviceName) {
   );
 }
 
-for (const host of ["api", "worker"]) {
+const apiOnlySecretTargets = [
+  "Auth__Jwt__SigningKey",
+  "Auth__PasswordReset__RateLimitScopePepper",
+  "Auth__TokenHash__CurrentPepper",
+  "ApiKeys__CurrentPepper",
+  "Idempotency__RequestHashPepper",
+];
+const commonRuntimeSecretTargets = [
+  "Data__Postgres__ConnectionString",
+  "Data__Redis__ConnectionString",
+  "Secrets__Envelope__CurrentKey",
+  "Secrets__Envelope__DecryptKeyRing__local-compose-v1",
+  "local-compose-ca-bundle.pem",
+];
+
+for (const [host, expectedTargets] of [
+  ["api", [...commonRuntimeSecretTargets, ...apiOnlySecretTargets]],
+  ["worker", commonRuntimeSecretTargets],
+]) {
   const targets = secretTargets(host);
-  for (const expectedTarget of [
-    "Data__Postgres__ConnectionString",
-    "Data__Redis__ConnectionString",
-    "Auth__Jwt__SigningKey",
-    "ApiKeys__CurrentPepper",
-    "Secrets__Envelope__CurrentKey",
-    "Secrets__Envelope__DecryptKeyRing__local-compose-v1",
-    "local-compose-ca-bundle.pem",
-  ]) {
+  for (const expectedTarget of expectedTargets) {
     check(targets.has(expectedTarget), `${host} is missing secret target ${expectedTarget}.`);
   }
+}
+
+const workerSecretTargets = secretTargets("worker");
+for (const apiOnlyTarget of apiOnlySecretTargets) {
+  check(
+    !workerSecretTargets.has(apiOnlyTarget),
+    `worker must not mount API-only secret target ${apiOnlyTarget}.`,
+  );
+}
+
+const workerEnvironment = services.worker?.environment ?? {};
+for (const [key, expectedValue] of Object.entries({
+  Email__Smtp__Host: "mock-smtp",
+  Email__Smtp__Port: "1025",
+  Email__Smtp__Security: "starttls",
+  Email__FromAddress: "no-reply@poolai.local",
+})) {
+  check(
+    workerEnvironment[key] === expectedValue,
+    `worker must set ${key}=${expectedValue} for SMTP delivery.`,
+  );
 }
 check(
   secretTargets("migrator").has("Data__Postgres__ConnectionString"),

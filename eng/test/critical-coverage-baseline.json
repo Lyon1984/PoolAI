@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "capturedAt": "2026-07-16",
+  "capturedAt": "2026-07-17",
   "areas": {
     "quota": {
       "pathIncludes": [
@@ -19,12 +19,12 @@
         "PoolAI.Modules.Identity"
       ],
       "pathEndsWith": [],
-      "linesCovered": 103,
-      "linesValid": 111,
-      "lineRate": 92.7927927927928,
-      "branchesCovered": 12,
-      "branchesValid": 20,
-      "branchRate": 60
+      "linesCovered": 4382,
+      "linesValid": 4722,
+      "lineRate": 92.7996611605252,
+      "branchesCovered": 1349,
+      "branchesValid": 1710,
+      "branchRate": 78.88888888888889
     },
     "secret": {
       "pathIncludes": [],
@@ -32,12 +32,12 @@
         "/PoolAiRuntimeConfigurationValidator.cs",
         "/PostgresEmailOutboxDeliveryStore.cs"
       ],
-      "linesCovered": 510,
-      "linesValid": 602,
-      "lineRate": 84.71760797342192,
-      "branchesCovered": 185,
-      "branchesValid": 258,
-      "branchRate": 71.70542635658916
+      "linesCovered": 722,
+      "linesValid": 831,
+      "lineRate": 86.8832731648616,
+      "branchesCovered": 302,
+      "branchesValid": 401,
+      "branchRate": 75.31172069825436
     }
   }
 }

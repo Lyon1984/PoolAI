@@ -32,6 +32,24 @@ public sealed class CanonicalContractLocationTests
             SearchOption.AllDirectories));
     }
 
+    [Fact]
+    public void IdentityEventSchemaExistsOnlyInTheDocumentedContractAreaAndIsValidJson()
+    {
+        string root = FindRepositoryRoot();
+        string fileName = "identity-events-v1.json";
+        string schema = Path.Combine(root, "docs", "contracts", fileName);
+
+        Assert.True(File.Exists(schema), $"Missing authoritative contract: {schema}");
+        using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(schema));
+        Assert.Equal(
+            "poolai.identity.v1",
+            document.RootElement.GetProperty("x-poolai-topic").GetString());
+        Assert.Equal(1, document.RootElement.GetProperty("x-poolai-schema-version").GetInt32());
+        Assert.Empty(Directory.GetFiles(Path.Combine(root, "src"), fileName, SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetFiles(Path.Combine(root, "tests"), fileName, SearchOption.AllDirectories));
+    }
+
     private static string FindRepositoryRoot()
     {
         DirectoryInfo? current = new(AppContext.BaseDirectory);

@@ -16,8 +16,9 @@
     <PackageReference Include="coverlet.collector" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/PoolAI.Api/PoolAI.Api.csproj" />
+    <ProjectReference Include="../../src/PoolAI.Api/PoolAI.Api.csproj" Aliases="PoolAiApi" />
     <ProjectReference Include="../../src/PoolAI.Contracts/PoolAI.Contracts.csproj" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Identity/PoolAI.Modules.Identity.csproj" />
     <ProjectReference Include="../../src/PoolAI.Worker/PoolAI.Worker.csproj" />
     <ProjectReference Include="../../src/PoolAI.Migrator/PoolAI.Migrator.csproj" />
   </ItemGroup>

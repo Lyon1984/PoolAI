@@ -72,6 +72,9 @@ public sealed class PostgresWorkerFencingTests
         await DeadLetterEmailAsync(store, environment, prepared, cancellationToken)
             .ConfigureAwait(true);
 
+        await AssertDurableEmailObservabilityAsync(store, environment, cancellationToken)
+            .ConfigureAwait(true);
+
         Assert.Empty(await ClaimAndCommitAsync(
             store,
             environment.WorkerUnitOfWorkFactory,
@@ -162,11 +165,14 @@ public sealed class PostgresWorkerFencingTests
         Assert.False(await store.ReleaseForRetryAsync(
             staleLease,
             TimeSpan.FromSeconds(5),
+            "smtp_4xx",
             "stale retry",
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false));
         Assert.False(await store.MarkDeadAsync(
             staleLease,
+            "smtp_5xx",
+            "smtp_5xx",
             "stale dead",
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false));
@@ -185,6 +191,7 @@ public sealed class PostgresWorkerFencingTests
             (context, token) => store.ReleaseForRetryAsync(
                 takeover.Lease,
                 TimeSpan.FromMinutes(1),
+                "smtp_4xx",
                 "temporary smtp failure",
                 context,
                 token),
@@ -266,6 +273,8 @@ public sealed class PostgresWorkerFencingTests
             environment.WorkerUnitOfWorkFactory,
             (context, token) => store.MarkDeadAsync(
                 takeover.Lease,
+                "smtp_5xx",
+                "smtp_5xx",
                 "permanent smtp failure",
                 context,
                 token),
@@ -315,6 +324,41 @@ public sealed class PostgresWorkerFencingTests
             secondProvider,
             environment.AdministratorDataSource,
             cancellationToken).ConfigureAwait(true);
+    }
+
+    private static async ValueTask AssertDurableEmailObservabilityAsync(
+        IEmailOutboxDeliveryStore store,
+        WorkerPostgresEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await environment.WorkerUnitOfWorkFactory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        EmailOutboxObservabilitySnapshot snapshot = await store.ReadObservabilityAsync(
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+
+        Assert.Equal(0, snapshot.PendingCount);
+        Assert.Equal(0, snapshot.OldestAgeSeconds);
+        Assert.Equal(1, snapshot.DeadCount);
+        Assert.Contains(snapshot.Failures, static failure =>
+            string.Equals(failure.FailureClass, "smtp_4xx", StringComparison.Ordinal)
+                && string.Equals(failure.Outcome, "retry", StringComparison.Ordinal)
+                && string.Equals(
+                    failure.TerminalReason,
+                    "not_terminal",
+                    StringComparison.Ordinal)
+                && failure.Count == 1);
+        Assert.Contains(snapshot.Failures, static failure =>
+            string.Equals(failure.FailureClass, "smtp_5xx", StringComparison.Ordinal)
+                && string.Equals(failure.Outcome, "dead", StringComparison.Ordinal)
+                && string.Equals(
+                    failure.TerminalReason,
+                    "smtp_5xx",
+                    StringComparison.Ordinal)
+                && failure.Count == 1);
     }
 
     private static async ValueTask AssertSessionLockLifecycleAsync(

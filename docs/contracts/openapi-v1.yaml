@@ -1095,6 +1095,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3253,7 +3255,7 @@ components:
 
   headers:
     XRequestId:
-      description: 服务端生成的 UUIDv7 请求标识；日志、trace 和错误响应保持一致
+      description: 服务端为本次入站请求生成的 UUIDv7 标识；日志、trace、错误 body 与 Header 保持一致。幂等重放也使用本次请求的新标识，不复用首次请求的关联 ID。
       schema:
         $ref: '#/components/schemas/Uuid'
     Location:
@@ -3807,6 +3809,14 @@ components:
       type: string
       format: date-time
       description: RFC 3339 UTC 时间；响应统一使用 Z
+    MailboxInput:
+      type: string
+      maxLength: 254
+      pattern: "^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[^@\\s]+$"
+      description: >-
+        Identity 邮箱输入。local-part 必须是最长 64 字符的 ASCII dot-atom，不接受 quoted local-part、
+        comment 或 domain literal；domain 使用 IDNA/STD3 转为小写 ASCII DNS 名，规范化后的完整 mailbox
+        最长 254 字符。服务端以规范化值做身份比较。
     ControlPlaneProblem:
       type: object
       additionalProperties: false
@@ -3835,7 +3845,9 @@ components:
           pattern: '^[a-z][a-z0-9_]*$'
           description: 客户端唯一可依赖的稳定业务错误码
         request_id:
-          $ref: '#/components/schemas/Uuid'
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: 本次入站请求的关联标识；幂等重放重新生成，并与 X-Request-Id、日志和 trace 一致。
         retryable:
           type: boolean
         retry_after_seconds:
@@ -3891,7 +3903,9 @@ components:
           pattern: '^[a-z][a-z0-9_]*$'
           description: 客户端唯一可依赖的稳定业务错误码
         request_id:
-          $ref: '#/components/schemas/Uuid'
+          allOf:
+            - $ref: '#/components/schemas/Uuid'
+          description: 本次入站请求的关联标识；幂等重放重新生成，并与 X-Request-Id、日志和 trace 一致。
         retryable:
           type: boolean
         retry_after_seconds:
@@ -4886,9 +4900,7 @@ components:
       required: [email, password]
       properties:
         email:
-          type: string
-          format: email
-          maxLength: 320
+          $ref: '#/components/schemas/MailboxInput'
         password:
           type: string
           format: password
@@ -4930,9 +4942,7 @@ components:
       required: [email]
       properties:
         email:
-          type: string
-          format: email
-          maxLength: 320
+          $ref: '#/components/schemas/MailboxInput'
     ResetPasswordRequest:
       type: object
       additionalProperties: false
@@ -5197,9 +5207,7 @@ components:
       required: [email, display_name, role, temporary_password]
       properties:
         email:
-          type: string
-          format: email
-          maxLength: 320
+          $ref: '#/components/schemas/MailboxInput'
         display_name:
           type: string
           minLength: 1

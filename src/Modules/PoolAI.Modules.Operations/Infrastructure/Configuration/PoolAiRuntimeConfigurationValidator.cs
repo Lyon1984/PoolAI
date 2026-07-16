@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Mail;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 using StackExchange.Redis;
@@ -9,6 +10,12 @@ namespace PoolAI.Modules.Operations.Infrastructure.Configuration;
 
 public static class PoolAiRuntimeConfigurationValidator
 {
+    public enum HostProfile
+    {
+        Api,
+        Worker,
+    }
+
     private const long JavaScriptSafeIntegerMax = 9_007_199_254_740_991;
 
     private static readonly string[] ForbiddenSections =
@@ -26,10 +33,18 @@ public static class PoolAiRuntimeConfigurationValidator
         "UserQuota",     // poolai-forbidden-scope-guard
     ];
 
-    public static void Validate(IConfiguration configuration, string environmentName)
+    public static void Validate(
+        IConfiguration configuration,
+        string environmentName,
+        HostProfile hostProfile = HostProfile.Api)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(environmentName);
+        if (hostProfile is not HostProfile.Api
+            and not HostProfile.Worker)
+        {
+            throw new ArgumentOutOfRangeException(nameof(hostProfile), hostProfile, null);
+        }
 
         Validation validation = new(configuration);
         bool isProduction = string.Equals(
@@ -38,10 +53,33 @@ public static class PoolAiRuntimeConfigurationValidator
             StringComparison.OrdinalIgnoreCase);
 
         ValidateApplication(validation, isProduction);
-        ValidateAuthentication(validation);
+        if (hostProfile is HostProfile.Api)
+        {
+            ValidateAuthentication(validation);
+        }
+
         ValidateDataStores(validation, isProduction, environmentName);
         ValidateEmail(validation, isProduction);
-        ValidateEnvelope(validation);
+        string[] envelopeRingKeyPaths = ValidateEnvelope(validation);
+        if (hostProfile is HostProfile.Api)
+        {
+            validation.RequireDistinctBase64Secrets(
+            [
+                "Auth:Jwt:SigningKey",
+                "Auth:PasswordReset:RateLimitScopePepper",
+                "Auth:TokenHash:CurrentPepper",
+                "Auth:TokenHash:PreviousPepper",
+                "Idempotency:RequestHashPepper",
+                "ApiKeys:CurrentPepper",
+                "ApiKeys:PreviousPepper",
+                .. envelopeRingKeyPaths,
+            ]);
+        }
+        else
+        {
+            validation.RequireDistinctBase64Secrets(envelopeRingKeyPaths);
+        }
+
         ValidateOutbox(validation);
         ValidateQuotaAndGateway(validation);
         ValidateAdmissionAndRouting(validation);
@@ -105,6 +143,39 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Base64Secret("Auth:Jwt:SigningKey", 32);
         validation.Range("Auth:Password:MinLength", 12, 12, 128);
         validation.Range("Auth:PasswordReset:TokenMinutes", 30, 5, 60);
+        validation.Range("Auth:PasswordReset:IpRequestsPerMinute", 5, 1, 60);
+        validation.Range("Auth:PasswordReset:AccountRequestsPerMinute", 3, 1, 20);
+        validation.Base64Secret("Auth:PasswordReset:RateLimitScopePepper", 32);
+        int currentTokenPepperVersion = validation.Range(
+            "Auth:TokenHash:CurrentPepperVersion",
+            1,
+            1,
+            short.MaxValue);
+        validation.Base64Secret("Auth:TokenHash:CurrentPepper", 32);
+        string? previousTokenPepperVersion = validation.Optional(
+            "Auth:TokenHash:PreviousPepperVersion");
+        string? previousTokenPepper = validation.Optional("Auth:TokenHash:PreviousPepper");
+        if (string.IsNullOrWhiteSpace(previousTokenPepperVersion)
+            != string.IsNullOrWhiteSpace(previousTokenPepper))
+        {
+            validation.Invalid("Auth:TokenHash:PreviousPepperVersion");
+            validation.Invalid("Auth:TokenHash:PreviousPepper");
+        }
+        else if (!string.IsNullOrWhiteSpace(previousTokenPepperVersion))
+        {
+            if (!int.TryParse(
+                    previousTokenPepperVersion,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out int parsedPreviousVersion)
+                || parsedPreviousVersion is < 1 or > short.MaxValue
+                || parsedPreviousVersion == currentTokenPepperVersion)
+            {
+                validation.Invalid("Auth:TokenHash:PreviousPepperVersion");
+            }
+
+            validation.OptionalBase64Secret("Auth:TokenHash:PreviousPepper", 32);
+        }
         validation.Length("Auth:TOTP:Issuer", "PoolAI", 1, 64);
         validation.Fixed("Auth:TOTP:StepSeconds", 30);
         validation.Fixed("Auth:TOTP:AllowedAdjacentSteps", 1);
@@ -119,6 +190,7 @@ public static class PoolAiRuntimeConfigurationValidator
 
         validation.Base64Secret("ApiKeys:CurrentPepper", 32);
         validation.OptionalBase64Secret("ApiKeys:PreviousPepper", 32);
+        validation.Base64Secret("Idempotency:RequestHashPepper", 32);
     }
 
     private static void ValidateDataStores(
@@ -205,7 +277,7 @@ public static class PoolAiRuntimeConfigurationValidator
         }
 
         string fromAddress = validation.Required("Email:FromAddress");
-        if (!MailAddress.TryCreate(fromAddress, out _))
+        if (!string.IsNullOrWhiteSpace(fromAddress) && !IsSupportedMailbox(fromAddress))
         {
             validation.Invalid("Email:FromAddress");
         }
@@ -221,10 +293,10 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Range("Email:Outbox:ClaimSeconds", 30, 10, 300);
     }
 
-    private static void ValidateEnvelope(Validation validation)
+    private static string[] ValidateEnvelope(Validation validation)
     {
         string currentKeyId = validation.Required("Secrets:Envelope:CurrentKeyId");
-        validation.Base64Secret("Secrets:Envelope:CurrentKey", 32);
+        validation.Base64SecretExact("Secrets:Envelope:CurrentKey", 32);
         validation.Fixed("Secrets:Envelope:SchemaVersion", 1);
 
         string algorithm = validation.String(
@@ -238,17 +310,28 @@ public static class PoolAiRuntimeConfigurationValidator
         IConfigurationSection ring = validation.Configuration
             .GetSection("Secrets:Envelope:DecryptKeyRing");
         IConfigurationSection[] children = ring.GetChildren().ToArray();
+        IConfigurationSection? currentRingKey = children.FirstOrDefault(child =>
+            string.Equals(child.Key, currentKeyId, StringComparison.Ordinal));
         if (children.Length == 0
             || string.IsNullOrWhiteSpace(currentKeyId)
-            || children.All(child => !string.Equals(child.Key, currentKeyId, StringComparison.Ordinal)))
+            || currentRingKey is null)
         {
             validation.Invalid("Secrets:Envelope:DecryptKeyRing");
         }
 
         foreach (IConfigurationSection child in children)
         {
-            validation.Base64Secret(child.Path, 32);
+            validation.Base64SecretExact(child.Path, 32);
         }
+
+        if (currentRingKey is not null)
+        {
+            validation.RequireEqualBase64Secrets(
+                "Secrets:Envelope:CurrentKey",
+                currentRingKey.Path);
+        }
+
+        return children.Select(static child => child.Path).ToArray();
     }
 
     private static void ValidateOutbox(Validation validation)
@@ -424,6 +507,76 @@ public static class PoolAiRuntimeConfigurationValidator
         return Uri.CheckHostName(value) == UriHostNameType.Dns;
     }
 
+    private static bool IsSupportedMailbox(string value)
+    {
+        if (value.Length > 320
+            || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+            || value.Any(static character => character is '\r' or '\n' or '\0'
+                || char.IsControl(character)))
+        {
+            return false;
+        }
+
+        MailAddress address;
+        try
+        {
+            address = new MailAddress(value);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        int separator = address.Address.LastIndexOf('@');
+        return string.Equals(address.Address, value, StringComparison.Ordinal)
+            && separator > 0
+            && separator < address.Address.Length - 1
+            && IsSupportedMailboxLocalPart(address.Address[..separator])
+            && TryNormalizeMailboxDomain(
+                address.Address[(separator + 1)..],
+                out string asciiDomain)
+            && separator + 1 + asciiDomain.Length <= 254;
+    }
+
+    private static bool IsSupportedMailboxLocalPart(string localPart) =>
+        localPart.Length is >= 1 and <= 64
+            && localPart[0] != '.'
+            && localPart[^1] != '.'
+            && !localPart.Contains("..", StringComparison.Ordinal)
+            && localPart.All(static character =>
+                char.IsAsciiLetterOrDigit(character)
+                    || character is '.' or '!' or '#' or '$' or '%' or '&' or '\'' or '*'
+                        or '+' or '-' or '/' or '=' or '?' or '^' or '_' or '`' or '{'
+                        or '|' or '}' or '~');
+
+    private static bool TryNormalizeMailboxDomain(string domain, out string asciiDomain)
+    {
+        try
+        {
+            asciiDomain = new IdnMapping
+            {
+                UseStd3AsciiRules = true,
+            }.GetAscii(domain).ToLowerInvariant();
+            return IsCanonicalDnsDomain(asciiDomain);
+        }
+        catch (ArgumentException)
+        {
+            asciiDomain = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool IsCanonicalDnsDomain(string domain) =>
+        domain.Length is >= 1 and <= 253
+            && domain[0] != '.'
+            && domain[^1] != '.'
+            && domain.Split('.').All(static label =>
+                label.Length is >= 1 and <= 63
+                    && char.IsAsciiLetterOrDigit(label[0])
+                    && char.IsAsciiLetterOrDigit(label[^1])
+                    && label.All(static character =>
+                        char.IsAsciiLetterOrDigit(character) || character == '-'));
+
     private static bool IsRedisKeyPrefix(string value)
     {
         const string Prefix = "poolai:r1:";
@@ -587,12 +740,84 @@ public static class PoolAiRuntimeConfigurationValidator
             }
         }
 
+        public void Base64SecretExact(string key, int exactBytes)
+        {
+            string value = Required(key);
+            if (!string.IsNullOrWhiteSpace(value) && !IsBase64Exact(value, exactBytes))
+            {
+                Invalid(key);
+            }
+        }
+
         public void OptionalBase64Secret(string key, int minimumBytes)
         {
             string? value = Optional(key);
             if (!string.IsNullOrWhiteSpace(value) && !IsBase64AtLeast(value, minimumBytes))
             {
                 Invalid(key);
+            }
+        }
+
+        public void RequireEqualBase64Secrets(string leftKey, string rightKey)
+        {
+            string? leftEncoded = Optional(leftKey);
+            string? rightEncoded = Optional(rightKey);
+            if (string.IsNullOrWhiteSpace(leftEncoded)
+                || string.IsNullOrWhiteSpace(rightEncoded))
+            {
+                return;
+            }
+
+            try
+            {
+                byte[] left = Convert.FromBase64String(leftEncoded);
+                byte[] right = Convert.FromBase64String(rightEncoded);
+                if (!CryptographicOperations.FixedTimeEquals(left, right))
+                {
+                    Invalid(leftKey);
+                    Invalid(rightKey);
+                }
+            }
+            catch (FormatException)
+            {
+                // Base64 shape is reported by Base64Secret; avoid duplicating
+                // parsing errors here while still aggregating all invalid keys.
+            }
+        }
+
+        public void RequireDistinctBase64Secrets(params string[] keys)
+        {
+            List<(string Key, byte[] Value)> values = [];
+            foreach (string key in keys)
+            {
+                string? encoded = Optional(key);
+                if (string.IsNullOrWhiteSpace(encoded))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    values.Add((key, Convert.FromBase64String(encoded)));
+                }
+                catch (FormatException)
+                {
+                    continue;
+                }
+            }
+
+            for (int left = 0; left < values.Count; left++)
+            {
+                for (int right = left + 1; right < values.Count; right++)
+                {
+                    if (CryptographicOperations.FixedTimeEquals(
+                            values[left].Value,
+                            values[right].Value))
+                    {
+                        Invalid(values[left].Key);
+                        Invalid(values[right].Key);
+                    }
+                }
             }
         }
 
@@ -643,6 +868,18 @@ public static class PoolAiRuntimeConfigurationValidator
             try
             {
                 return Convert.FromBase64String(value).Length >= minimumBytes;
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
+        private static bool IsBase64Exact(string value, int exactBytes)
+        {
+            try
+            {
+                return Convert.FromBase64String(value).Length == exactBytes;
             }
             catch (FormatException)
             {
