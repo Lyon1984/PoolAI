@@ -956,7 +956,9 @@ public sealed class IdentityEmailOutboxWorkerTests
             SmtpEmailTransport transport = new(CreateOptions(
                 smtpHost: "localhost",
                 smtpPort: port,
-                smtpTimeout: TimeSpan.FromMilliseconds(250)));
+                // These cases prove SMTP reply classification, not timeout behavior. Keep enough
+                // budget for a loaded CI runner to complete the greeting/EHLO handshake.
+                smtpTimeout: TimeSpan.FromSeconds(5)));
             return await transport.SendAsync(
                 new EmailTransportMessage(
                     "no-reply@poolai.example.test",
