@@ -4,7 +4,7 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## M0 exit blockers
 
-1. GitHub Issues #6–#43 provide the 38 unique Epic task IDs and read-back owner `@Lyon1984`; Issue #44 indexes the import, and its permanent DEC approval comment closes the DEC-001..042 baseline sign-off gate. Database and OpenAPI approval comments by `@Lyon1984`, followed last by the M0 exit approval comment, still require external human-review evidence.
+1. GitHub Issues #6–#43 provide the 38 unique Epic task IDs and read-back owner `@Lyon1984`; Issue #44 indexes the import, and its separate permanent DEC and database approval comments close those two baseline sign-off gates. The OpenAPI approval comment by `@Lyon1984`, followed last by the M0 exit approval comment, still require external human-review evidence.
 2. M0 exit also requires the R1.1 release environment, reference hardware, and load-report archive location to be explicit and reviewable; those production inputs are not yet recorded as verified evidence.
 
 ## Repository publication
