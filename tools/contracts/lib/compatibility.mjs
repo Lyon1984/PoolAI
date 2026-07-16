@@ -864,14 +864,25 @@ function compareResponse(baseDocument, headDocument, baseResponse, headResponse,
 }
 
 function compareResponses(baseDocument, headDocument, baseResponses, headResponses, pointer, failures) {
-  for (const [status, baseResponse] of Object.entries(baseResponses ?? {})) {
+  const baseEntries = baseResponses ?? {}
+  const headEntries = headResponses ?? {}
+  for (const [status, baseResponse] of Object.entries(baseEntries)) {
     const responsePointer = `${pointer}/${escapePointerSegment(status)}`
-    const headResponse = headResponses?.[status]
+    const headResponse = headEntries[status]
     if (headResponse === undefined) {
       addFailure(failures, responsePointer, 'existing response status was removed or changed')
       continue
     }
     compareResponse(baseDocument, headDocument, baseResponse, headResponse, responsePointer, failures)
+  }
+  for (const status of Object.keys(headEntries)) {
+    if (!Object.hasOwn(baseEntries, status)) {
+      addFailure(
+        failures,
+        `${pointer}/${escapePointerSegment(status)}`,
+        'new response status was added to an existing operation',
+      )
+    }
   }
 }
 
