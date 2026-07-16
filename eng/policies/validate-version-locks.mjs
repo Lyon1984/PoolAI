@@ -70,6 +70,10 @@ const workflows = await Promise.all(workflowNames.map(async (name) => ({
   name,
   contents: await read(`.github/workflows/${name}`),
 })))
+const qualityGate = await read('eng/test/quality-gate.sh')
+if (!qualityGate.split('\n').includes('node eng/test/verify-verified-download.mjs')) {
+  failures.push('The quality gate must execute the verified release download policy probe')
+}
 
 const readJobPermissions = (workflow, jobName) => {
   const lines = workflow.contents.split('\n')

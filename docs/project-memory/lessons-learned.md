@@ -4,13 +4,13 @@
 
 - Evidence: successive target quality logs reported `rg: command not found` in the coverage-integrity and forbidden-scope gates, but command substitutions ending in `|| true` converted the failures into empty output and both negative scanners reported success.
 - Durable lesson: a negative scanner may tolerate its tool's documented no-match status only after distinguishing it from startup/read/parse failures; missing tools and unreadable roots must fail closed. Prefer an already locked runtime when that removes an undeclared runner dependency.
-- Scope and verification: coverage-suppression and forbidden-product-scope policies; replaced with Node standard-library scanners and verified with clean, denied-input, and explicit-guard probes, with a target rerun still required.
+- Scope and verification: coverage-suppression and forbidden-product-scope policies; replaced with Node standard-library scanners and verified with clean, denied-input, and explicit-guard probes plus passing PR and default-branch target logs.
 
 ## Private-repository CodeQL upload needs Actions read access
 
 - Evidence: the initial target CodeQL run completed extraction, builds, queries, and SARIF export, then failed while reading its workflow run with `Resource not accessible by integration`; the job token had `contents: read` and `security-events: write` but not `actions: read`.
 - Durable lesson: a private-repository CodeQL/SARIF job must explicitly grant `actions: read` in addition to `contents: read` and `security-events: write`; this token permission is separate from GitHub Code Security entitlement and must be verified before diagnosing an entitlement failure.
-- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; after the authorized visibility change to public, the rerun uploaded successfully and produced zero CodeQL results.
+- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; after the authorized visibility change to public, the incremental rerun uploaded successfully and produced zero PR results, while the later full default-branch analysis correctly remained able to surface pre-existing findings.
 
 ## Central package changes require Solution-wide lock refresh
 
