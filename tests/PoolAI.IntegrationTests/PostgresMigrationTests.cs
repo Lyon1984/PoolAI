@@ -37,6 +37,8 @@ public sealed class PostgresMigrationTests
         await AssertRefreshSessionForeignKeysAreIndexedAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
         await AssertRuntimeRolePermissionsAsync(connectionString, cancellationToken).ConfigureAwait(true);
+        await AssertIdentityEntryPointSecurityAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertAppliedMetadataDriftRejectedAsync(
             migrator,
@@ -89,6 +91,9 @@ public sealed class PostgresMigrationTests
         await AssertQuotaEntryPointSecurityAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
+        await AssertIdentityEntryPointSecurityAsync(
+            administratorConnectionString,
+            cancellationToken).ConfigureAwait(true);
         await AssertRuntimeSchemaCreateRevokedAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
@@ -124,7 +129,7 @@ public sealed class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(3L, Assert.IsType<long>(scalar));
+        Assert.Equal(4L, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(
@@ -169,6 +174,40 @@ public sealed class PostgresMigrationTests
         await AssertPermissionDeniedAsync(
             connectionString,
             "SET ROLE poolai_worker; UPDATE public.groups SET status = status WHERE false;",
+            cancellationToken).ConfigureAwait(false);
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            """
+            SET ROLE poolai_api;
+            UPDATE public.user_roles
+            SET role_id = role_id,
+                assigned_by = assigned_by,
+                assigned_at = assigned_at
+            WHERE false;
+            """,
+            cancellationToken).ConfigureAwait(false);
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            "SET ROLE poolai_api; UPDATE public.user_roles SET user_id = user_id WHERE false;",
+            cancellationToken).ConfigureAwait(false);
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            "SET ROLE poolai_api; DELETE FROM public.user_roles WHERE false;",
+            cancellationToken).ConfigureAwait(false);
+        await AssertScalarSucceedsAsync(
+            connectionString,
+            """
+            SET ROLE poolai_api;
+            SELECT disposition
+            FROM public.poolai_identity_update_user(
+                '01900000-0000-7000-8000-000000000099'::uuid,
+                1,
+                NULL,
+                NULL,
+                NULL,
+                '01900000-0000-7000-8000-000000000099'::uuid
+            );
+            """,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -374,7 +413,7 @@ public sealed class PostgresMigrationTests
         using NpgsqlCommand future = dataSource.CreateCommand("""
             INSERT INTO public.poolai_schema_migrations (
                 version, name, checksum_sha256, applied_by
-            ) VALUES (4, '0004_future.sql', repeat('a', 64), 'future-release');
+            ) VALUES (5, '0005_future.sql', repeat('a', 64), 'future-release');
             """);
         await future.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -451,7 +490,7 @@ public sealed class PostgresMigrationTests
         Assert.Equal(1, affected);
     }
 
-    private static async ValueTask ProvisionRuntimeRolesAsync(
+    internal static async ValueTask ProvisionRuntimeRolesAsync(
         string connectionString,
         CancellationToken cancellationToken)
     {
@@ -468,7 +507,7 @@ public sealed class PostgresMigrationTests
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask<string> ProvisionComposeMigratorAsync(
+    internal static async ValueTask<string> ProvisionComposeMigratorAsync(
         string administratorConnectionString,
         string migratorPassword,
         CancellationToken cancellationToken)
@@ -613,6 +652,43 @@ public sealed class PostgresMigrationTests
         }
     }
 
+    private static async ValueTask AssertIdentityEntryPointSecurityAsync(
+        string connectionString,
+        CancellationToken cancellationToken)
+    {
+        const string Sql = """
+            SELECT owner.rolname,
+                   function.prosecdef,
+                   function.proconfig,
+                   pg_catalog.has_function_privilege(
+                       'poolai_api',
+                       function.oid,
+                       'EXECUTE')
+            FROM pg_catalog.pg_proc AS function
+            JOIN pg_catalog.pg_namespace AS schema
+              ON schema.oid = function.pronamespace
+            JOIN pg_catalog.pg_roles AS owner
+              ON owner.oid = function.proowner
+            WHERE schema.nspname = 'public'
+              AND function.proname = 'poolai_identity_update_user';
+            """;
+        using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
+        using NpgsqlCommand command = dataSource.CreateCommand(Sql);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal("poolai_runtime_owner", reader.GetString(0));
+        Assert.True(reader.GetBoolean(1));
+        string[] settings = reader.GetFieldValue<string[]>(2);
+        Assert.Contains(
+            "search_path=pg_catalog, public, pg_temp",
+            settings,
+            StringComparer.Ordinal);
+        Assert.True(reader.GetBoolean(3));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+    }
+
     private static async ValueTask AssertRuntimeSchemaCreateRevokedAsync(
         string connectionString,
         CancellationToken cancellationToken)
@@ -643,7 +719,7 @@ public sealed class PostgresMigrationTests
         Assert.Equal(3, roleCount);
     }
 
-    private static string ReadPostgresImage()
+    internal static string ReadPostgresImage()
     {
         string root = MigrationCatalogTests.FindRepositoryRoot();
         using JsonDocument versions = JsonDocument.Parse(File.ReadAllText(

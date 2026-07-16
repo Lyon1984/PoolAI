@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process'
+import { readFileSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
+import { promisify, TextDecoder } from 'node:util'
 
-import { ContractFailure, invariant, repoRoot, stableJson, YAML } from './context.mjs'
+import { withReadOnlyRepositoryFile } from '../../../eng/policies/repository-file.mjs'
+import { ContractFailure, invariant, repoRoot, sha256, stableJson, YAML } from './context.mjs'
 
 const execFileAsync = promisify(execFile)
 const HTTP_METHODS = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace'])
@@ -16,6 +18,21 @@ const DOCUMENTATION_KEYS = new Set([
   'externalDocs',
   'summary',
 ])
+const COMPATIBILITY_RESET_RELATIVE_PATH = 'docs/contracts/compatibility-resets-v1.json'
+const EXACT_RESET_APPROVAL_ISSUE = 'https://github.com/Lyon1984/PoolAI/issues/44'
+const EXACT_RESET_ID = 'm1-e1-pre-release-mailbox-and-list-query'
+const RESET_REGISTRY_KEYS = ['resets', 'schemaVersion']
+const RESET_KEYS = [
+  'adr',
+  'allowedFailures',
+  'approvalIssue',
+  'baseOpenApiSha256',
+  'baseRef',
+  'headOpenApiSha256',
+  'id',
+  'scope',
+  'status',
+]
 
 function escapePointerSegment(value) {
   return value.replaceAll('~', '~0').replaceAll('/', '~1')
@@ -42,6 +59,249 @@ function withoutDocumentation(value) {
 
 function sameSemantics(left, right) {
   return sameValue(withoutDocumentation(left), withoutDocumentation(right))
+}
+
+function requireExactKeys(value, keys, label) {
+  invariant(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${label} must be an object.`,
+  )
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  invariant(
+    sameValue(actual, expected),
+    `${label} must contain exactly these keys: ${expected.join(', ')}.`,
+  )
+}
+
+export function parseCompatibilityResetRegistry(source) {
+  invariant(typeof source === 'string', 'Compatibility reset registry source is required.')
+  let json
+  try {
+    json = JSON.parse(source)
+  } catch (error) {
+    throw new ContractFailure(`Compatibility reset registry is not valid JSON: ${error.message}`)
+  }
+  const document = YAML.parseDocument(source, {
+    prettyErrors: true,
+    strict: true,
+    uniqueKeys: true,
+  })
+  invariant(
+    document.errors.length === 0,
+    `Compatibility reset registry is invalid: ${document.errors
+      .map((error) => error.message)
+      .join('; ')}`,
+  )
+  invariant(
+    sameValue(json, document.toJS({ maxAliasCount: 0 })),
+    'Compatibility reset registry JSON and strict parser results differ.',
+  )
+  requireExactKeys(json, RESET_REGISTRY_KEYS, 'Compatibility reset registry')
+  invariant(json.schemaVersion === 1, 'Compatibility reset registry must use schemaVersion 1.')
+  invariant(Array.isArray(json.resets), 'Compatibility reset registry resets must be an array.')
+  invariant(
+    json.resets.length === 1,
+    'Compatibility reset registry schemaVersion 1 must contain exactly one accepted reset.',
+  )
+
+  const ids = new Set()
+  const baseRefs = new Set()
+  for (const [index, reset] of json.resets.entries()) {
+    const label = `Compatibility reset registry resets[${index}]`
+    requireExactKeys(reset, RESET_KEYS, label)
+    invariant(
+      typeof reset.id === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(reset.id),
+      `${label}.id must be lower kebab-case.`,
+    )
+    invariant(reset.id === EXACT_RESET_ID, `${label}.id must be ${EXACT_RESET_ID}.`)
+    invariant(!ids.has(reset.id), `${label}.id duplicates ${reset.id}.`)
+    ids.add(reset.id)
+    invariant(reset.status === 'accepted', `${label}.status must be accepted.`)
+    invariant(
+      reset.scope === 'pre-external-release-v1',
+      `${label}.scope must be pre-external-release-v1.`,
+    )
+    invariant(
+      typeof reset.baseRef === 'string' && /^[0-9a-f]{40}$/u.test(reset.baseRef),
+      `${label}.baseRef must be an exact lowercase 40-character Git SHA.`,
+    )
+    invariant(!baseRefs.has(reset.baseRef), `${label}.baseRef duplicates ${reset.baseRef}.`)
+    baseRefs.add(reset.baseRef)
+    for (const key of ['baseOpenApiSha256', 'headOpenApiSha256']) {
+      invariant(
+        typeof reset[key] === 'string' && /^[0-9a-f]{64}$/u.test(reset[key]),
+        `${label}.${key} must be an exact lowercase SHA-256 digest.`,
+      )
+    }
+    const adrName = typeof reset.adr === 'string' ? path.basename(reset.adr) : ''
+    invariant(
+      reset.adr === `docs/architecture/adr/${adrName}` &&
+        /^[0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*[.]md$/u.test(adrName),
+      `${label}.adr must name one repository ADR.`,
+    )
+    const issueParts = typeof reset.approvalIssue === 'string'
+      ? reset.approvalIssue.split('/')
+      : []
+    invariant(
+      issueParts.length === 7 && issueParts[0] === 'https:' && issueParts[1] === '' &&
+        issueParts[2] === 'github.com' && /^[A-Za-z0-9_.-]+$/u.test(issueParts[3]) &&
+        /^[A-Za-z0-9_.-]+$/u.test(issueParts[4]) && issueParts[5] === 'issues' &&
+        /^[0-9]+$/u.test(issueParts[6]),
+      `${label}.approvalIssue must be one exact GitHub Issue URL.`,
+    )
+    invariant(
+      reset.approvalIssue === EXACT_RESET_APPROVAL_ISSUE,
+      `${label}.approvalIssue must be ${EXACT_RESET_APPROVAL_ISSUE}.`,
+    )
+    invariant(
+      Array.isArray(reset.allowedFailures) && reset.allowedFailures.length > 0,
+      `${label}.allowedFailures must be a non-empty array.`,
+    )
+    const sortedFailures = [...reset.allowedFailures].sort()
+    invariant(
+      sameValue(reset.allowedFailures, sortedFailures),
+      `${label}.allowedFailures must be sorted.`,
+    )
+    invariant(
+      new Set(reset.allowedFailures).size === reset.allowedFailures.length,
+      `${label}.allowedFailures must not contain duplicates.`,
+    )
+    for (const [failureIndex, failure] of reset.allowedFailures.entries()) {
+      invariant(
+        typeof failure === 'string' && failure.startsWith('#/') &&
+          failure.includes(': ') && !failure.includes('\n') && !failure.includes('\r'),
+        `${label}.allowedFailures[${failureIndex}] must be one exact OpenAPI diagnostic.`,
+      )
+      invariant(
+        !failure.includes('*') && !failure.includes('?'),
+        `${label}.allowedFailures[${failureIndex}] must not contain wildcards.`,
+      )
+    }
+  }
+
+  return json
+}
+
+export function validateCompatibilityResetDecisionSource(reset, source) {
+  invariant(typeof source === 'string', `Compatibility reset ${reset.id} ADR source is required.`)
+  const requiredLines = [
+    '- Status: **Accepted**',
+    `- Reset ID: \`${reset.id}\``,
+    `- Base Git commit: \`${reset.baseRef}\``,
+    `- Base OpenAPI SHA-256: \`${reset.baseOpenApiSha256}\``,
+    `- Target OpenAPI SHA-256: \`${reset.headOpenApiSha256}\``,
+    `- Approval control: [Issue #44](${reset.approvalIssue})`,
+  ]
+  const lines = source.split(/\r?\n/u)
+  for (const requiredLine of requiredLines) {
+    invariant(
+      lines.filter((line) => line === requiredLine).length === 1,
+      `Compatibility reset ${reset.id} accepted ADR must contain exactly one line: ${requiredLine}`,
+    )
+  }
+}
+
+function readCompatibilityResetDecision(reset) {
+  let result
+  try {
+    const adrRoot = `${realpathSync(path.resolve(repoRoot, 'docs/architecture/adr'))}${path.sep}`
+    result = withReadOnlyRepositoryFile(repoRoot, reset.adr, (descriptor, canonical) => {
+      invariant(
+        canonical.startsWith(adrRoot),
+        `Compatibility reset ${reset.id} ADR escaped its canonical directory.`,
+      )
+      return readFileSync(descriptor)
+    })
+  } catch (error) {
+    throw new ContractFailure(
+      `Compatibility reset ${reset.id} cannot safely read accepted ADR ${reset.adr}: ${error.message}`,
+    )
+  }
+  let source
+  try {
+    source = new TextDecoder('utf-8', { fatal: true }).decode(result)
+  } catch (error) {
+    throw new ContractFailure(
+      `Compatibility reset ${reset.id} accepted ADR must be valid UTF-8: ${error.message}`,
+    )
+  }
+  validateCompatibilityResetDecisionSource(reset, source)
+  return result
+}
+
+export function validateCompatibilityResetDecisions(registrySource) {
+  const registry = parseCompatibilityResetRegistry(registrySource)
+  const adrSources = new Map(
+    registry.resets.map((reset) => [reset.id, readCompatibilityResetDecision(reset)]),
+  )
+  return { adrSources, registry }
+}
+
+export function validateCompatibilityResetHistory({
+  baseRegistrySource,
+  headRegistrySource,
+}) {
+  const headRegistry = parseCompatibilityResetRegistry(headRegistrySource)
+  if (baseRegistrySource === undefined) {
+    return { baseRegistry: undefined, headRegistry }
+  }
+
+  const baseRegistry = parseCompatibilityResetRegistry(baseRegistrySource)
+  const [baseReset] = baseRegistry.resets
+  invariant(
+    sameValue(baseReset, headRegistry.resets[0]),
+    `Compatibility reset history is immutable; sole accepted reset ${baseReset.id} changed.`,
+  )
+  return { baseRegistry, headRegistry }
+}
+
+export function validateCompatibilityResetAdrHistory({
+  baseAdrSources,
+  baseRegistry,
+  headAdrSources,
+}) {
+  invariant(baseAdrSources instanceof Map, 'Base compatibility reset ADR sources must be a Map.')
+  invariant(headAdrSources instanceof Map, 'Head compatibility reset ADR sources must be a Map.')
+  for (const reset of baseRegistry.resets) {
+    const baseSource = baseAdrSources.get(reset.id)
+    const headSource = headAdrSources.get(reset.id)
+    invariant(
+      Buffer.isBuffer(baseSource) && Buffer.isBuffer(headSource) && headSource.equals(baseSource),
+      `Compatibility reset history is immutable; accepted ADR ${reset.adr} changed.`,
+    )
+  }
+}
+
+export function resolveCompatibilityReset({
+  baseOpenApiSource,
+  baseRef,
+  headOpenApiSource,
+  registrySource,
+}) {
+  invariant(
+    typeof baseRef === 'string' && /^[0-9a-f]{40}$/u.test(baseRef),
+    'Compatibility reset baseRef must be an exact lowercase 40-character Git SHA.',
+  )
+  invariant(typeof baseOpenApiSource === 'string', 'Compatibility reset base OpenAPI source is required.')
+  invariant(typeof headOpenApiSource === 'string', 'Compatibility reset head OpenAPI source is required.')
+  const registry = parseCompatibilityResetRegistry(registrySource)
+  const reset = registry.resets.find((entry) => entry.baseRef === baseRef)
+  if (reset === undefined) {
+    return undefined
+  }
+
+  const baseDigest = sha256(baseOpenApiSource)
+  const headDigest = sha256(headOpenApiSource)
+  invariant(
+    baseDigest === reset.baseOpenApiSha256,
+    `Compatibility reset mismatch for ${reset.id}: base OpenAPI SHA-256 is ${baseDigest}, expected ${reset.baseOpenApiSha256}.`,
+  )
+  invariant(
+    headDigest === reset.headOpenApiSha256,
+    `Compatibility reset mismatch for ${reset.id}: head OpenAPI SHA-256 is ${headDigest}, expected ${reset.headOpenApiSha256}.`,
+  )
+  return reset
 }
 
 function plainCell(value) {
@@ -1101,6 +1361,7 @@ function compareSseFixtures(baseFixtures, headFixtures, failures) {
 }
 
 export function validateContractCompatibility({
+  allowedFailures = [],
   baseErrorCatalogSource,
   baseOpenApi,
   baseSseFixtures = new Map(),
@@ -1113,6 +1374,15 @@ export function validateContractCompatibility({
   invariant(headOpenApi && typeof headOpenApi === 'object', 'Head OpenAPI document is required.')
   invariant(typeof baseErrorCatalogSource === 'string', 'Base error catalog source is required.')
   invariant(typeof headErrorCatalogSource === 'string', 'Head error catalog source is required.')
+  invariant(Array.isArray(allowedFailures), 'Compatibility reset allowed failures must be an array.')
+  invariant(
+    allowedFailures.every((failure) => typeof failure === 'string'),
+    'Compatibility reset allowed failures must contain only strings.',
+  )
+  invariant(
+    new Set(allowedFailures).size === allowedFailures.length,
+    'Compatibility reset allowed failures must not contain duplicates.',
+  )
 
   if (baseOpenApi.openapi !== headOpenApi.openapi) {
     addFailure(failures, '#/openapi', 'OpenAPI dialect/version changed')
@@ -1132,13 +1402,35 @@ export function validateContractCompatibility({
   const errorCodes = compareErrorCatalog(baseErrorCatalogSource, headErrorCatalogSource, failures)
   const sseFixtures = compareSseFixtures(baseSseFixtures, headSseFixtures, failures)
 
-  if (failures.length > 0) {
+  if (allowedFailures.length > 0) {
+    const actual = [...failures].sort()
+    const expected = [...allowedFailures].sort()
+    if (!sameValue(actual, expected)) {
+      const actualSet = new Set(actual)
+      const expectedSet = new Set(expected)
+      const unexpected = actual.filter((failure) => !expectedSet.has(failure))
+      const unused = expected.filter((failure) => !actualSet.has(failure))
+      const details = [
+        ...unexpected.map((failure) => `- unexpected: ${failure}`),
+        ...unused.map((failure) => `- registered but absent: ${failure}`),
+      ]
+      throw new ContractFailure(
+        `Compatibility reset mismatch: expected exactly ${expected.length} breaking diagnostics, received ${actual.length}.\n${details.join('\n')}`,
+      )
+    }
+  } else if (failures.length > 0) {
     throw new ContractFailure(
       `Breaking contract changes detected (${failures.length}):\n${failures.map((failure) => `- ${failure}`).join('\n')}`,
     )
   }
 
-  return { errorCodes, operations, schemas, sseFixtures }
+  return {
+    errorCodes,
+    operations,
+    schemas,
+    sseFixtures,
+    waivedFailures: allowedFailures.length,
+  }
 }
 
 function parseOpenApiSource(source, label) {
@@ -1154,6 +1446,16 @@ function parseOpenApiSource(source, label) {
   return document.toJS({ maxAliasCount: 0 })
 }
 
+export function validateHeadOpenApiSource({ headOpenApi, headOpenApiSource }) {
+  invariant(typeof headOpenApiSource === 'string', 'Head OpenAPI source is required.')
+  const parsedHeadOpenApi = parseOpenApiSource(headOpenApiSource, 'Head')
+  invariant(
+    sameValue(parsedHeadOpenApi, headOpenApi),
+    'Head OpenAPI source differs from the validated head OpenAPI document.',
+  )
+  return parsedHeadOpenApi
+}
+
 async function readBaseBlob(baseRef, relativePath) {
   try {
     const result = await execFileAsync('git', ['show', `${baseRef}:${relativePath}`], {
@@ -1167,6 +1469,32 @@ async function readBaseBlob(baseRef, relativePath) {
       `Unable to read ${relativePath} from CONTRACT_DIFF_BASE ${baseRef}; ensure the exact base commit was fetched.`,
     )
   }
+}
+
+async function readOptionalBaseBlob(baseRef, relativePath) {
+  let result
+  try {
+    result = await execFileAsync(
+      'git',
+      ['ls-tree', '-z', '--name-only', baseRef, '--', relativePath],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    )
+  } catch {
+    throw new ContractFailure(
+      `Unable to inspect ${relativePath} at CONTRACT_DIFF_BASE ${baseRef}; ensure the exact base commit was fetched.`,
+    )
+  }
+
+  const entries = result.stdout.split('\0').filter((entry) => entry.length > 0)
+  invariant(
+    entries.length <= 1 && (entries.length === 0 || entries[0] === relativePath),
+    `Git returned an invalid inventory for ${relativePath} at CONTRACT_DIFF_BASE ${baseRef}.`,
+  )
+  return entries.length === 0 ? undefined : readBaseBlob(baseRef, relativePath)
 }
 
 async function listBaseSseFixturePaths(baseRef) {
@@ -1257,26 +1585,67 @@ async function loadSseFixturesAgainstGitBase(baseRef) {
 
 export async function validateContractsAgainstGitBase({
   baseRef,
+  compatibilityResetSource,
   headErrorCatalogSource,
   headOpenApi,
+  headOpenApiSource,
 }) {
   invariant(
     typeof baseRef === 'string' && /^[0-9a-f]{40}$/iu.test(baseRef),
     'CONTRACT_DIFF_BASE must be an exact 40-character Git commit SHA.',
   )
   const normalizedBaseRef = baseRef.toLowerCase()
-  const [baseOpenApiSource, baseErrorCatalogSource, sseFixtures] = await Promise.all([
+  invariant(typeof headOpenApiSource === 'string', 'Head OpenAPI source is required.')
+  const resetState = validateCompatibilityResetDecisions(compatibilityResetSource)
+  const [
+    baseOpenApiSource,
+    baseErrorCatalogSource,
+    baseResetRegistrySource,
+    sseFixtures,
+  ] = await Promise.all([
     readBaseBlob(normalizedBaseRef, 'docs/contracts/openapi-v1.yaml'),
     readBaseBlob(normalizedBaseRef, 'docs/contracts/error-catalog.md'),
+    readOptionalBaseBlob(normalizedBaseRef, COMPATIBILITY_RESET_RELATIVE_PATH),
     loadSseFixturesAgainstGitBase(normalizedBaseRef),
   ])
+  const resetHistory = validateCompatibilityResetHistory({
+    baseRegistrySource: baseResetRegistrySource,
+    headRegistrySource: compatibilityResetSource,
+  })
+  if (resetHistory.baseRegistry !== undefined) {
+    const baseAdrSources = new Map(
+      await Promise.all(
+        resetHistory.baseRegistry.resets.map(async (reset) => [
+          reset.id,
+          await readBaseBlobBytes(normalizedBaseRef, reset.adr),
+        ]),
+      ),
+    )
+    validateCompatibilityResetAdrHistory({
+      baseAdrSources,
+      baseRegistry: resetHistory.baseRegistry,
+      headAdrSources: resetState.adrSources,
+    })
+  }
+  const parsedHeadOpenApi = validateHeadOpenApiSource({ headOpenApi, headOpenApiSource })
+  const reset = resolveCompatibilityReset({
+    baseOpenApiSource,
+    baseRef: normalizedBaseRef,
+    headOpenApiSource,
+    registrySource: compatibilityResetSource,
+  })
   const result = validateContractCompatibility({
+    allowedFailures: reset?.allowedFailures,
     baseErrorCatalogSource,
     baseOpenApi: parseOpenApiSource(baseOpenApiSource, 'Base'),
     baseSseFixtures: sseFixtures.baseSseFixtures,
     headErrorCatalogSource,
-    headOpenApi,
+    headOpenApi: parsedHeadOpenApi,
     headSseFixtures: sseFixtures.headSseFixtures,
   })
-  return { ...result, baseRef: normalizedBaseRef }
+  return {
+    ...result,
+    baseRef: normalizedBaseRef,
+    resetId: reset?.id,
+  }
 }

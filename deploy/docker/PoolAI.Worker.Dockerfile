@@ -1,4 +1,4 @@
-ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra@sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b
+ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0.10-noble-chiseled-extra@sha256:f9bd6be9b5ab75b8196bff0f0972580edaea7fa8ca04e6ef530950e33caee5b0
 FROM ${RUNTIME_IMAGE}
 
 ARG PUBLISH_DIR=artifacts/publish/PoolAI.Worker

@@ -32,7 +32,7 @@
 约束：
 
 - 程序只依赖 `status`、外层 `code`、`retryable` 和 `Retry-After`；`title/detail` 可改文案。
-- `request_id` 与 `X-Request-Id` 必须相同；由服务端生成 UUIDv7。
+- `request_id` 与 `X-Request-Id` 必须相同；由服务端为每次入站请求生成 UUIDv7。幂等重放使用本次请求的新关联 ID，不复用首次请求 ID。
 - 数据面 `error.code` 非 null 时必须等于外层 `code`；`error.message` 等于安全的 `detail`。
 - 不做错误媒体类型协商：控制面错误不得返回 `application/json`，数据面错误不得返回
   `application/problem+json`；成功响应仍按各 operation 声明的媒体类型返回。
@@ -228,7 +228,8 @@ Golden fixtures：
 ## 5. Idempotency 与并发控制
 
 - `Idempotency-Key` 作用域：`principal_id + HTTP method + normalized path + key`；ASCII 1..128。
-- 至少保留 24 小时。相同请求摘要重放原 status/body/关键 Header；API Key secret、TOTP setup
+- 至少保留 24 小时。相同请求摘要重放原业务 status/body/关键 Header；请求级 `request_id`/`X-Request-Id`
+  按本次入站请求重新生成，`instance` 由当前 normalized path 生成，不属于持久业务响应快照。API Key secret、TOTP setup
   secret 与 recovery codes 等一次性结果需加密保存，以便安全重放。不同摘要返回
   `409 idempotency_conflict`。已完成记录的同摘要重放先于当前 `If-Match` 比较，返回原 ETag；
   首次执行仍必须校验当前版本。

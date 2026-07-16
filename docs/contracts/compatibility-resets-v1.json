@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "resets": [
+    {
+      "id": "m1-e1-pre-release-mailbox-and-list-query",
+      "status": "accepted",
+      "scope": "pre-external-release-v1",
+      "baseRef": "b1b329fac954ff22c94e6c317a81f56ea5e9c449",
+      "baseOpenApiSha256": "19f01348d83d03c81fa7146586cfdcf9e40edcb3cc12f2bc8a2c1bf9fb9dc3b2",
+      "headOpenApiSha256": "e2b0d295eff895cbe2608aee4c8e702df17afb791138b6d2c1338c7af35d441c",
+      "adr": "docs/architecture/adr/0003-approve-one-exact-pre-external-openapi-v1-reset.md",
+      "approvalIssue": "https://github.com/Lyon1984/PoolAI/issues/44",
+      "allowedFailures": [
+        "#/components/schemas/ForgotPasswordRequest/properties/email/format: format changed from email to undefined",
+        "#/components/schemas/ForgotPasswordRequest/properties/email/maxLength: maxLength response guarantee relaxed from 320 to <none>",
+        "#/components/schemas/ForgotPasswordRequest/properties/email/type: type changed from \"string\" to undefined",
+        "#/components/schemas/ForgotPasswordRequest/properties/email: reference changed from <inline> to #/components/schemas/MailboxInput",
+        "#/components/schemas/LoginRequest/properties/email/format: format changed from email to undefined",
+        "#/components/schemas/LoginRequest/properties/email/maxLength: maxLength response guarantee relaxed from 320 to <none>",
+        "#/components/schemas/LoginRequest/properties/email/type: type changed from \"string\" to undefined",
+        "#/components/schemas/LoginRequest/properties/email: reference changed from <inline> to #/components/schemas/MailboxInput",
+        "#/components/schemas/UserCreateRequest/properties/email/format: format changed from email to undefined",
+        "#/components/schemas/UserCreateRequest/properties/email/maxLength: maxLength response guarantee relaxed from 320 to <none>",
+        "#/components/schemas/UserCreateRequest/properties/email/type: type changed from \"string\" to undefined",
+        "#/components/schemas/UserCreateRequest/properties/email: reference changed from <inline> to #/components/schemas/MailboxInput",
+        "#/paths/~1api~1v1~1admin~1users/get/responses/400: new response status was added to an existing operation"
+      ]
+    }
+  ]
+}

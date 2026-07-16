@@ -8,6 +8,7 @@ internal sealed class InvalidTimeZoneApiFactory : PoolAiApiFactory
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
+        builder.UseSetting("App:TimeZone", "Invalid/PoolAI-Time-Zone");
         builder.ConfigureAppConfiguration((_, configuration) =>
             configuration.AddInMemoryCollection(new Dictionary<string, string?>(StringComparer.Ordinal)
             {

@@ -15,6 +15,7 @@
 - Release 1 DEC/AC 到证据或计划测试的机器索引：[`traceability/README.md`](traceability/README.md)
 - M0–M7 全部 Epic 的已验证 GitHub Issues 导入登记与索引：[`traceability/delivery-epics.json`](traceability/delivery-epics.json)
 - R1.1 认证逻辑环境、参考硬件与负载证据归档约定：[`release-evidence/README.md`](release-evidence/README.md)
+- Identity Integration Event v1 的机器可验证 Published Language：[`contracts/identity-events-v1.json`](contracts/identity-events-v1.json)
 
 项目记忆只用于导航和交接，不能覆盖下列契约优先级。
 
@@ -24,12 +25,13 @@
 
 1. HTTP 路由、字段、状态码、认证和 Header：以 [`contracts/openapi-v1.yaml`](contracts/openapi-v1.yaml) 为准。
 2. 错误 code、重试性和流中错误：以 [`contracts/error-catalog.md`](contracts/error-catalog.md) 与 [`contracts/fixtures/`](contracts/fixtures/) 为准。
-3. 表、列、约束、索引、数据库函数和运行时授权：以 [`database/0001_baseline.sql`](database/0001_baseline.sql)、[`database/0002_quota_functions.sql`](database/0002_quota_functions.sql) 和 [`database/0003_runtime_permissions.sql`](database/0003_runtime_permissions.sql) 为准。
-4. 状态转换与数据库并发语义：以 [`database/README.md`](database/README.md) 为准。
-5. Bounded Context、Clean/Hexagonal 依赖、Aggregate、CQRS、UoW、事件与 Composition Root：以 [`architecture/design-pattern-baseline.md`](architecture/design-pattern-baseline.md) 为准。
-6. Redis key、Lua、TTL 与故障开闭：以 [`runtime/redis-contract.md`](runtime/redis-contract.md) 为准。
-7. Release 范围、RBAC、配置、前端状态、SLO、验收和 Backlog：以 [`开发执行规格-v1.0.md`](开发执行规格-v1.0.md) 为准。
-8. 重构目标、能力处置、实施工作流、切换策略和验收追踪：以 [`系统重构方案-v1.0.md`](系统重构方案-v1.0.md) 为准。
+3. Identity Integration Event 的 topic、schema、event type 与 payload：以 [`contracts/identity-events-v1.json`](contracts/identity-events-v1.json) 为准。
+4. 表、列、约束、索引、数据库函数和运行时授权：以 [`database/0001_baseline.sql`](database/0001_baseline.sql)、[`database/0002_quota_functions.sql`](database/0002_quota_functions.sql) 和 [`database/0003_runtime_permissions.sql`](database/0003_runtime_permissions.sql) 及其已登记前向 migration 为准。
+5. 状态转换与数据库并发语义：以 [`database/README.md`](database/README.md) 为准。
+6. Bounded Context、Clean/Hexagonal 依赖、Aggregate、CQRS、UoW、事件与 Composition Root：以 [`architecture/design-pattern-baseline.md`](architecture/design-pattern-baseline.md) 为准。
+7. Redis key、Lua、TTL 与故障开闭：以 [`runtime/redis-contract.md`](runtime/redis-contract.md) 为准。
+8. Release 范围、RBAC、配置、前端状态、SLO、验收和 Backlog：以 [`开发执行规格-v1.0.md`](开发执行规格-v1.0.md) 为准。
+9. 重构目标、能力处置、实施工作流、切换策略和验收追踪：以 [`系统重构方案-v1.0.md`](系统重构方案-v1.0.md) 为准。
 
 若高优先级资产内部或彼此矛盾，应先提交 ADR/契约修订并让相关资产在同一变更中同步，不能通过实现细节静默改变公开行为。
 
@@ -53,7 +55,9 @@ Anthropic Messages 属于 Release 1.2。Gemini、Antigravity、Grok、图片/视
 
 - `openapi-v1.yaml`、错误目录和 JSON/SSE fixture 已由 [Issue #44 OpenAPI 批准评论](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992036352) 完成合同基线签收；该签收不表示对应 endpoint、handler、adapter 或运行时行为已经实现或验收。
 - `/v1` 内只能增加可选字段、可选 endpoint 或新的稳定 error code；删除、重命名、改变类型/状态码、收紧既有合法输入、改变 SSE event 形状均视为 breaking change，必须进入 `/v2` 或经过明确兼容窗口。
+- 唯一的一次性例外是 [`ADR 0003`](architecture/adr/0003-approve-one-exact-pre-external-openapi-v1-reset.md) 定义的 M1-E1 首次外部发布前 OpenAPI v1 基线重置。该例外必须同时匹配机器登记的完整 Git base SHA、base/target OpenAPI SHA-256 和全部精确兼容诊断；禁止通配、额外差异、部分匹配或复用于其他 base。合并后目标文档按普通 `/v1` 兼容规则成为新基线。该例外不改写 DEC、数据库、M0 OpenAPI 或 M0 Exit 的既有签核范围，也不构成 M1 或发布验收。
 - `openapi-v1.yaml`、错误目录和 fixture 必须在同一变更中更新；contract test 对 fixture 做字节级或规范化事件级比较。
+- `identity-events-v1.json` 是 `poolai.identity.v1`/schema v1 的唯一 Published Language；payload 新增字段只能是可选且非敏感字段，event type、字段删除/重命名/改型或语义收紧必须发布新的 major topic/schema，不能由实现私自扩展。
 - 已在任何环境执行的 SQL migration 内容与 checksum 永不改写；修正通过新 migration 前向演进。`0001/0002/0003` 已由 [Issue #44 数据库批准评论](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4990098502) 完成首次实现签收，自该评论起进入不可变状态；后续修正只能新增前向 migration，不得改写已签收 SQL 或 checksum。
 - 数据库、Redis 和公开 API 的 schema/version 必须进入唯一机器清单
   [`release-manifest-v1.json`](release-manifest-v1.json)。该文件只登记权威契约的版本、来源与
@@ -66,7 +70,8 @@ Anthropic Messages 属于 Release 1.2。Gemini、Antigravity、Grok、图片/视
 - Redis 兼容性由清单中的 Redis major、key schema version、contract SHA-256 和登记脚本
   `{name, logical_version, source, body_sha256}` 决定。共享 Redis 不写可被滚动版本互相覆盖的
   全局 manifest key，也不因存在额外 content-addressed script 而判定不兼容；每个 Host 只证明
-  自身清单要求可用。M0 尚无业务 Lua，`scripts` 必须显式为空数组，M2 起随权威 Lua 正文前向登记。
+  自身清单要求可用。M0 Exit 时尚无业务 Lua，`scripts` 显式为空数组；从 M1-E1 的
+  `fixed_window_increment_v1` 起，任何 Lua 都必须把权威正文与摘要前向登记后才能启用。
 - Api 通过 `/health/ready` 暴露上述结果且不影响 liveness；Worker 无公开 HTTP endpoint，必须在
   启动任何 job 前执行同一门禁并在不兼容或依赖不可用时非零退出。Api、Worker、Migrator 的
   清单或兼容窗口不匹配时不得继续放量。
@@ -114,8 +119,8 @@ Anthropic Messages 属于 Release 1.2。Gemini、Antigravity、Grok、图片/视
 ## 5. 开发启动顺序
 
 1. 先执行执行规格中的 M0 契约校验和决策签收。
-2. 由平台先预置 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`，再由具备 owner 切换/授权能力的 Migrator 按 `0001_baseline.sql`、`0002_quota_functions.sql`、`0003_runtime_permissions.sql` 顺序建立空库，并生成 EF Core 映射；0003 不创建角色，API/Worker 不得执行迁移，也不得让 EF migration 反向改变 baseline。
-3. M0 按 `runtime/redis-contract.md` 建立 Redis 连接、时间、versioned script 登记和测试框架，同时建立 Solution、模块依赖测试、配置启动校验、认证和审计基座；Account lease、Group RPM、breaker 的业务 Lua/TTL 与完整故障矩阵在 M2 实现并验收。
+2. 由平台先预置 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`，再由具备 owner 切换/授权能力的 Migrator 按 manifest 顺序执行 `0001_baseline.sql`、`0002_quota_functions.sql`、`0003_runtime_permissions.sql` 及后续已登记前向 migration（当前 M1-E1 为 `0004_identity_m1_e1.sql`），并生成 EF Core 映射；0003 不创建角色，API/Worker 不得执行迁移，也不得让 EF migration 反向改变 baseline。
+3. M0 按 `runtime/redis-contract.md` 建立 Redis 连接、时间、versioned script 登记和测试框架，同时建立 Solution、模块依赖测试、配置启动校验、认证和审计基座；M1-E1 只前向加入密码重置共用的 `fixed_window_increment_v1`，Account lease、Group RPM、breaker 的其余业务 Lua/TTL 与完整故障矩阵仍在 M2 实现并验收。
 4. 实现控制面，再实现 Group reservation/settlement 与 `/v1/usage`。
 5. 最后接入 OpenAI/Codex Gateway 垂直切片，并用 fixture、并发、故障和长流测试验收。
 6. 达到执行规格的质量门、SLO 认证和 M6 生产门后才可标记 Release 1 可上线。

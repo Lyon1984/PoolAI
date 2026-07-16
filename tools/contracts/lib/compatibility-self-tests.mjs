@@ -1,5 +1,14 @@
-import { ContractFailure, invariant } from './context.mjs'
-import { parseStableErrorSemantics, validateContractCompatibility } from './compatibility.mjs'
+import { ContractFailure, invariant, sha256 } from './context.mjs'
+import {
+  parseCompatibilityResetRegistry,
+  parseStableErrorSemantics,
+  resolveCompatibilityReset,
+  validateCompatibilityResetAdrHistory,
+  validateCompatibilityResetDecisionSource,
+  validateCompatibilityResetHistory,
+  validateContractCompatibility,
+  validateHeadOpenApiSource,
+} from './compatibility.mjs'
 
 function expectBreakingChange(action, expectedMessage) {
   try {
@@ -24,6 +33,39 @@ function firstOperation(openApi) {
     }
   }
   throw new Error('Compatibility self-test could not find an operation.')
+}
+
+function operationPointer({ method, route }) {
+  const escapedRoute = route.replaceAll('~', '~0').replaceAll('/', '~1')
+  return `#/paths/${escapedRoute}/${method}`
+}
+
+function makeResetRegistry({
+  allowedFailures,
+  baseOpenApiSource,
+  baseRef,
+  headOpenApiSource,
+}) {
+  return JSON.stringify(
+    {
+      schemaVersion: 1,
+      resets: [
+        {
+          id: 'm1-e1-pre-release-mailbox-and-list-query',
+          status: 'accepted',
+          scope: 'pre-external-release-v1',
+          baseRef,
+          baseOpenApiSha256: sha256(baseOpenApiSource),
+          headOpenApiSha256: sha256(headOpenApiSource),
+          adr: 'docs/architecture/adr/9999-compatibility-self-test.md',
+          approvalIssue: 'https://github.com/Lyon1984/PoolAI/issues/44',
+          allowedFailures: [...allowedFailures].sort(),
+        },
+      ],
+    },
+    null,
+    2,
+  )
 }
 
 function firstInlineResponseSchema(openApi, predicate) {
@@ -88,7 +130,12 @@ function removeStableErrorCode(source, code) {
   return filtered.join('\n')
 }
 
-export function runCompatibilitySelfTests({ errorCatalogSource, openApi }) {
+export function runCompatibilitySelfTests({
+  compatibilityResetSource,
+  errorCatalogSource,
+  openApi,
+  openApiSource,
+}) {
   const validate = (headOpenApi, headErrorCatalogSource = errorCatalogSource) =>
     validateContractCompatibility({
       baseErrorCatalogSource: errorCatalogSource,
@@ -99,6 +146,7 @@ export function runCompatibilitySelfTests({ errorCatalogSource, openApi }) {
 
   let additiveCases = 0
   let breakingCases = 0
+  let resetCases = 0
   const additive = (headOpenApi, headErrorCatalogSource) => {
     validate(headOpenApi, headErrorCatalogSource)
     additiveCases += 1
@@ -143,6 +191,48 @@ export function runCompatibilitySelfTests({ errorCatalogSource, openApi }) {
     'new response status was added to an existing operation',
     errorCatalogSource,
   )
+
+  const addedStatusOperation = firstOperation(addedResponseStatus)
+  const addedStatusFailure =
+    `${operationPointer(addedStatusOperation)}/responses/418: ` +
+    'new response status was added to an existing operation'
+  const resetResult = validateContractCompatibility({
+    allowedFailures: [addedStatusFailure],
+    baseErrorCatalogSource: errorCatalogSource,
+    baseOpenApi: openApi,
+    headErrorCatalogSource: errorCatalogSource,
+    headOpenApi: addedResponseStatus,
+  })
+  invariant(resetResult.waivedFailures === 1, 'Exact compatibility reset did not consume one failure.')
+  resetCases += 1
+
+  expectBreakingChange(
+    () =>
+      validateContractCompatibility({
+        allowedFailures: [addedStatusFailure],
+        baseErrorCatalogSource: errorCatalogSource,
+        baseOpenApi: openApi,
+        headErrorCatalogSource: errorCatalogSource,
+        headOpenApi: structuredClone(openApi),
+      }),
+    'Compatibility reset mismatch',
+  )
+  resetCases += 1
+
+  const extraResetFailure = structuredClone(addedResponseStatus)
+  firstOperation(extraResetFailure).operation.operationId = 'compatibilityResetExtraFailure'
+  expectBreakingChange(
+    () =>
+      validateContractCompatibility({
+        allowedFailures: [addedStatusFailure],
+        baseErrorCatalogSource: errorCatalogSource,
+        baseOpenApi: openApi,
+        headErrorCatalogSource: errorCatalogSource,
+        headOpenApi: extraResetFailure,
+      }),
+    'Compatibility reset mismatch',
+  )
+  resetCases += 1
 
   const deletedProperty = structuredClone(openApi)
   delete deletedProperty.components.schemas.ControlPlaneProblem.properties.detail
@@ -276,5 +366,196 @@ export function runCompatibilitySelfTests({ errorCatalogSource, openApi }) {
   )
   breakingCases += 1
 
-  return { additiveCases, breakingCases }
+  const parsedRegistry = parseCompatibilityResetRegistry(compatibilityResetSource)
+  invariant(parsedRegistry.resets.length > 0, 'Compatibility reset registry self-test found no records.')
+  resetCases += 1
+
+  const resetBaseRef = 'a'.repeat(40)
+  const resetBaseSource = 'base-openapi-source\n'
+  const resetHeadSource = 'head-openapi-source\n'
+  const resetRegistrySource = makeResetRegistry({
+    allowedFailures: [addedStatusFailure],
+    baseOpenApiSource: resetBaseSource,
+    baseRef: resetBaseRef,
+    headOpenApiSource: resetHeadSource,
+  })
+  const resolvedReset = resolveCompatibilityReset({
+    baseOpenApiSource: resetBaseSource,
+    baseRef: resetBaseRef,
+    headOpenApiSource: resetHeadSource,
+    registrySource: resetRegistrySource,
+  })
+  invariant(
+    resolvedReset?.id === 'm1-e1-pre-release-mailbox-and-list-query',
+    'Exact compatibility reset was not selected.',
+  )
+  resetCases += 1
+
+  expectBreakingChange(
+    () =>
+      resolveCompatibilityReset({
+        baseOpenApiSource: resetBaseSource,
+        baseRef: resetBaseRef,
+        headOpenApiSource: `${resetHeadSource}stale`,
+        registrySource: resetRegistrySource,
+      }),
+    'head OpenAPI SHA-256',
+  )
+  resetCases += 1
+
+  expectBreakingChange(
+    () =>
+      resolveCompatibilityReset({
+        baseOpenApiSource: `${resetBaseSource}stale`,
+        baseRef: resetBaseRef,
+        headOpenApiSource: resetHeadSource,
+        registrySource: resetRegistrySource,
+      }),
+    'base OpenAPI SHA-256',
+  )
+  resetCases += 1
+
+  const unrelatedReset = resolveCompatibilityReset({
+    baseOpenApiSource: resetBaseSource,
+    baseRef: 'b'.repeat(40),
+    headOpenApiSource: resetHeadSource,
+    registrySource: resetRegistrySource,
+  })
+  invariant(unrelatedReset === undefined, 'A compatibility reset leaked to another Git base.')
+  resetCases += 1
+
+  const wildcardRegistry = JSON.parse(resetRegistrySource)
+  wildcardRegistry.resets[0].allowedFailures = ['#/paths/*: compatibility self-test']
+  expectBreakingChange(
+    () => parseCompatibilityResetRegistry(JSON.stringify(wildcardRegistry)),
+    'must not contain wildcards',
+  )
+  resetCases += 1
+
+  const unknownKeyRegistry = JSON.parse(resetRegistrySource)
+  unknownKeyRegistry.resets[0].allowFutureChanges = false
+  expectBreakingChange(
+    () => parseCompatibilityResetRegistry(JSON.stringify(unknownKeyRegistry)),
+    'must contain exactly these keys',
+  )
+  resetCases += 1
+
+  const secondResetRegistry = JSON.parse(resetRegistrySource)
+  secondResetRegistry.resets.push({
+    ...secondResetRegistry.resets[0],
+    id: 'm1-e1-pre-release-mailbox-and-list-query-duplicate',
+  })
+  expectBreakingChange(
+    () => parseCompatibilityResetRegistry(JSON.stringify(secondResetRegistry)),
+    'must contain exactly one accepted reset',
+  )
+  resetCases += 1
+
+  const wrongResetIdRegistry = JSON.parse(resetRegistrySource)
+  wrongResetIdRegistry.resets[0].id = 'another-pre-release-reset'
+  expectBreakingChange(
+    () => parseCompatibilityResetRegistry(JSON.stringify(wrongResetIdRegistry)),
+    '.id must be m1-e1-pre-release-mailbox-and-list-query',
+  )
+  resetCases += 1
+
+  const wrongApprovalIssueRegistry = JSON.parse(resetRegistrySource)
+  wrongApprovalIssueRegistry.resets[0].approvalIssue =
+    'https://github.com/Lyon1984/PoolAI/issues/45'
+  expectBreakingChange(
+    () => parseCompatibilityResetRegistry(JSON.stringify(wrongApprovalIssueRegistry)),
+    '.approvalIssue must be https://github.com/Lyon1984/PoolAI/issues/44',
+  )
+  resetCases += 1
+
+  const selfTestRegistry = parseCompatibilityResetRegistry(resetRegistrySource)
+  const [selfTestReset] = selfTestRegistry.resets
+  const selfTestAdrSource = [
+    '- Status: **Accepted**',
+    `- Reset ID: \`${selfTestReset.id}\``,
+    `- Base Git commit: \`${selfTestReset.baseRef}\``,
+    `- Base OpenAPI SHA-256: \`${selfTestReset.baseOpenApiSha256}\``,
+    `- Target OpenAPI SHA-256: \`${selfTestReset.headOpenApiSha256}\``,
+    `- Approval control: [Issue #44](${selfTestReset.approvalIssue})`,
+  ].join('\n')
+  validateCompatibilityResetDecisionSource(selfTestReset, selfTestAdrSource)
+  resetCases += 1
+
+  expectBreakingChange(
+    () =>
+      validateCompatibilityResetDecisionSource(
+        selfTestReset,
+        selfTestAdrSource.replace('- Status: **Accepted**\n', ''),
+      ),
+    'must contain exactly one line',
+  )
+  resetCases += 1
+
+  validateCompatibilityResetHistory({
+    baseRegistrySource: resetRegistrySource,
+    headRegistrySource: resetRegistrySource,
+  })
+  resetCases += 1
+
+  const removedHistoryRegistry = JSON.parse(resetRegistrySource)
+  removedHistoryRegistry.resets = []
+  expectBreakingChange(
+    () =>
+      validateCompatibilityResetHistory({
+        baseRegistrySource: resetRegistrySource,
+        headRegistrySource: JSON.stringify(removedHistoryRegistry),
+      }),
+    'must contain exactly one accepted reset',
+  )
+  resetCases += 1
+
+  const changedHistoryRegistry = JSON.parse(resetRegistrySource)
+  changedHistoryRegistry.resets[0].allowedFailures = [
+    '#/paths/~1changed: compatibility self-test changed',
+  ]
+  expectBreakingChange(
+    () =>
+      validateCompatibilityResetHistory({
+        baseRegistrySource: resetRegistrySource,
+        headRegistrySource: JSON.stringify(changedHistoryRegistry),
+      }),
+    'sole accepted reset m1-e1-pre-release-mailbox-and-list-query changed',
+  )
+  resetCases += 1
+
+  const adrBytes = Buffer.from(selfTestAdrSource)
+  validateCompatibilityResetAdrHistory({
+    baseAdrSources: new Map([[selfTestReset.id, adrBytes]]),
+    baseRegistry: selfTestRegistry,
+    headAdrSources: new Map([[selfTestReset.id, Buffer.from(adrBytes)]]),
+  })
+  resetCases += 1
+
+  expectBreakingChange(
+    () =>
+      validateCompatibilityResetAdrHistory({
+        baseAdrSources: new Map([[selfTestReset.id, adrBytes]]),
+        baseRegistry: selfTestRegistry,
+        headAdrSources: new Map([[selfTestReset.id, Buffer.from(`${selfTestAdrSource}\nchanged`)]]),
+      }),
+    'accepted ADR',
+  )
+  resetCases += 1
+
+  validateHeadOpenApiSource({ headOpenApi: openApi, headOpenApiSource: openApiSource })
+  resetCases += 1
+
+  const mismatchedHeadOpenApi = structuredClone(openApi)
+  mismatchedHeadOpenApi.info.title = 'Compatibility source mismatch self-test'
+  expectBreakingChange(
+    () =>
+      validateHeadOpenApiSource({
+        headOpenApi: mismatchedHeadOpenApi,
+        headOpenApiSource: openApiSource,
+      }),
+    'source differs from the validated head OpenAPI document',
+  )
+  resetCases += 1
+
+  return { additiveCases, breakingCases, resetCases }
 }

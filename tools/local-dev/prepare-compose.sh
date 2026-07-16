@@ -88,7 +88,10 @@ ensure_random_hex postgres-worker-password
 ensure_random_hex postgres-migrator-password
 ensure_random_hex redis-password
 ensure_random_base64 auth-jwt-signing-key
+ensure_random_base64 auth-password-reset-rate-scope-pepper
+ensure_random_base64 auth-token-hash-current-pepper
 ensure_random_base64 api-keys-current-pepper
+ensure_random_base64 idempotency-request-hash-pepper
 ensure_random_base64 envelope-current-key
 
 postgres_api_password=$(tr -d '\r\n' < "$secret_dir/postgres-api-password")
@@ -269,7 +272,10 @@ chmod 644 \
     "$secret_dir/redis.conf" \
     "$secret_dir/redis-connection-string" \
     "$secret_dir/auth-jwt-signing-key" \
+    "$secret_dir/auth-password-reset-rate-scope-pepper" \
+    "$secret_dir/auth-token-hash-current-pepper" \
     "$secret_dir/api-keys-current-pepper" \
+    "$secret_dir/idempotency-request-hash-pepper" \
     "$secret_dir/envelope-current-key" \
     "$secret_dir/local-compose-ca-bundle.pem" \
     "$secret_dir/mock-smtp-cert.pem" \

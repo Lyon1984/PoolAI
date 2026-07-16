@@ -116,6 +116,11 @@
     { "source": "0003_runtime_permissions.sql", "sql_code": "poolai_runtime_roles_not_provisioned", "classification": "migrator_only", "public_code": null },
     { "source": "0003_runtime_permissions.sql", "sql_code": "poolai_runtime_schema_create_forbidden", "classification": "migrator_only", "public_code": null },
     { "source": "0003_runtime_permissions.sql", "sql_code": "poolai_runtime_sensitive_column_read_forbidden", "classification": "migrator_only", "public_code": null },
-    { "source": "0003_runtime_permissions.sql", "sql_code": "poolai_supply_write_boundary_forbidden", "classification": "migrator_only", "public_code": null }
+    { "source": "0003_runtime_permissions.sql", "sql_code": "poolai_supply_write_boundary_forbidden", "classification": "migrator_only", "public_code": null },
+
+    { "source": "0004_identity_m1_e1.sql", "sql_code": "identity_role_assignment_missing", "classification": "internal", "public_code": "internal_error" },
+    { "source": "0004_identity_m1_e1.sql", "sql_code": "identity_update_arguments_invalid", "classification": "internal", "public_code": "internal_error" },
+    { "source": "0004_identity_m1_e1.sql", "sql_code": "identity_update_role_invalid", "classification": "internal", "public_code": "internal_error" },
+    { "source": "0004_identity_m1_e1.sql", "sql_code": "identity_update_status_invalid", "classification": "internal", "public_code": "internal_error" }
   ]
 }

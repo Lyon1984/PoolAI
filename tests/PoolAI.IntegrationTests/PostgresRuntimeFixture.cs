@@ -156,6 +156,19 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true);
     }
 
+    public async ValueTask DeferOtherPendingEmailOutboxAsync(
+        Guid emailId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = AdministratorDataSource.CreateCommand("""
+            UPDATE public.email_outbox
+            SET next_attempt_at = clock_timestamp() + interval '1 hour'
+            WHERE status = 'pending' AND id <> $1;
+            """);
+        command.Parameters.AddWithValue(emailId);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true);
+    }
+
     private static ServiceProvider BuildApiServices(
         string connectionString,
         string redisConnectionString)
@@ -164,6 +177,7 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
             connectionString,
             redisConnectionString);
         ServiceCollection services = new();
+        services.AddLogging();
         services.AddSingleton<IConfiguration>(configuration);
         services.AddPoolAiPostgresRuntime(connectionString);
         services.AddOperationsModule(configuration, "Integration");
@@ -182,6 +196,7 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
             connectionString,
             redisConnectionString);
         ServiceCollection services = new();
+        services.AddLogging();
         services.AddSingleton<IConfiguration>(configuration);
         services.AddPoolAiPostgresRuntime(connectionString);
         services.AddOperationsModule(configuration, "Integration");

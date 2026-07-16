@@ -15,6 +15,9 @@ x-common-app-environment: &common-app-environment
   Auth__Jwt__ClockSkewSeconds: "30"
   Auth__Password__MinLength: "12"
   Auth__PasswordReset__TokenMinutes: "30"
+  Auth__PasswordReset__IpRequestsPerMinute: "5"
+  Auth__PasswordReset__AccountRequestsPerMinute: "3"
+  Auth__TokenHash__CurrentPepperVersion: "1"
   Auth__TOTP__Issuer: PoolAI
   Auth__TOTP__StepSeconds: "30"
   Auth__TOTP__AllowedAdjacentSteps: "1"
@@ -285,8 +288,14 @@ services:
         target: Data__Redis__ConnectionString
       - source: jwt-signing-key
         target: Auth__Jwt__SigningKey
+      - source: auth-password-reset-rate-scope-pepper
+        target: Auth__PasswordReset__RateLimitScopePepper
+      - source: auth-token-hash-current-pepper
+        target: Auth__TokenHash__CurrentPepper
       - source: api-key-current-pepper
         target: ApiKeys__CurrentPepper
+      - source: idempotency-request-hash-pepper
+        target: Idempotency__RequestHashPepper
       - source: envelope-current-key
         target: Secrets__Envelope__CurrentKey
       - source: envelope-current-key
@@ -327,7 +336,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/PoolAI.Worker.Dockerfile
       args:
-        RUNTIME_IMAGE: mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra@sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b
+        RUNTIME_IMAGE: mcr.microsoft.com/dotnet/aspnet:10.0.10-noble-chiseled-extra@sha256:f9bd6be9b5ab75b8196bff0f0972580edaea7fa8ca04e6ef530950e33caee5b0
         PUBLISH_DIR: artifacts/publish/PoolAI.Worker
     restart: unless-stopped
     environment:
@@ -339,10 +348,6 @@ services:
         target: Data__Postgres__ConnectionString
       - source: redis-connection
         target: Data__Redis__ConnectionString
-      - source: jwt-signing-key
-        target: Auth__Jwt__SigningKey
-      - source: api-key-current-pepper
-        target: ApiKeys__CurrentPepper
       - source: envelope-current-key
         target: Secrets__Envelope__CurrentKey
       - source: envelope-current-key
@@ -403,8 +408,14 @@ secrets:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/redis-connection-string
   jwt-signing-key:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-jwt-signing-key
+  auth-password-reset-rate-scope-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-password-reset-rate-scope-pepper
+  auth-token-hash-current-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-token-hash-current-pepper
   api-key-current-pepper:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/api-keys-current-pepper
+  idempotency-request-hash-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/idempotency-request-hash-pepper
   envelope-current-key:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/envelope-current-key
   local-ca-bundle:

@@ -41,5 +41,21 @@ public sealed class ApiCompositionSmokeTests : IAsyncDisposable
         Assert.Contains("App:TimeZone", exception.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void CentralValidationRunsBeforeAuthenticationRegistrationParsesSecrets()
+    {
+        using InvalidJwtSigningKeyApiFactory invalidFactory = new();
+
+        Exception exception = Assert.ThrowsAny<Exception>(() => invalidFactory.CreateClient());
+        string failure = exception.ToString();
+
+        Assert.Contains("PoolAiConfigurationException", failure, StringComparison.Ordinal);
+        Assert.Contains("Auth:Jwt:SigningKey", failure, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            InvalidJwtSigningKeyApiFactory.InvalidValue,
+            failure,
+            StringComparison.Ordinal);
+    }
+
     public ValueTask DisposeAsync() => factory.DisposeAsync();
 }

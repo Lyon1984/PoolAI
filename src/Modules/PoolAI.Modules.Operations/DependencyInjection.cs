@@ -56,8 +56,10 @@ public static class DependencyInjection
         services.AddSingleton<IInboxReceiptAppender, PostgresInboxReceiptAppender>();
         services.AddSingleton<IOutboxDeliveryStore, PostgresOutboxDeliveryStore>();
         services.AddSingleton<IWorkerSessionLockProvider, PostgresWorkerSessionLockProvider>();
+        services.AddSingleton<IOperationalEventWriter, LoggingOperationalEventWriter>();
         services.AddSingleton<RedisConnectionProvider>();
         services.AddSingleton<RedisScriptRegistry>();
+        services.AddSingleton<IFixedWindowCounter, RedisFixedWindowCounter>();
         services.AddSingleton<IRuntimeDependencyReadiness, RuntimeDependencyReadinessProbe>();
         services.AddSingleton<INtpOffsetProbe, SntpOffsetProbe>();
         return services;

@@ -26,6 +26,8 @@ Each host must load the KeyPerFile-compatible Secret Provider directory at
 `/run/secrets`; filenames containing `__` map to configuration `:` separators.
 Api must expose `/health/live` and `/health/ready`. Worker has no public HTTP
 endpoint, and Migrator must terminate after applying or verifying migrations.
-The `noble-chiseled-extra` runtime variants are intentional: the frozen
-`Asia/Shanghai` configuration requires tzdata, and globalization-sensitive
-validation requires ICU data to exist before Host startup.
+Api and Worker use the locked ASP.NET shared-framework image; Migrator remains
+on the smaller .NET runtime image. The `noble-chiseled-extra` variants are
+intentional: the frozen `Asia/Shanghai` configuration requires tzdata, and
+globalization-sensitive validation requires ICU data to exist before Host
+startup.

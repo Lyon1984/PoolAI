@@ -9,3 +9,13 @@ condition = "AND"
 regexTarget = "match"
 paths = ['''^docs/traceability/release-1-traceability\.json$''']
 regexes = ['''openapi-v1\.yaml", "docs/contracts/fixtures''']
+
+[[allowlists]]
+description = "ADR 0003 public OpenAPI digests are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0003-approve-one-exact-pre-external-openapi-v1-reset\.md$''',
+  '''^docs/contracts/compatibility-resets-v1\.json$''',
+]
+regexes = ['''^(19f01348d83d03c81fa7146586cfdcf9e40edcb3cc12f2bc8a2c1bf9fb9dc3b2|e2b0d295eff895cbe2608aee4c8e702df17afb791138b6d2c1338c7af35d441c)$''']
