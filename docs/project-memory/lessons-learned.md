@@ -12,6 +12,12 @@
 - Durable lesson: a private-repository CodeQL/SARIF job must explicitly grant `actions: read` in addition to `contents: read` and `security-events: write`; this token permission is separate from GitHub Code Security entitlement and must be verified before diagnosing an entitlement failure.
 - Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; after the authorized visibility change to public, the incremental rerun uploaded successfully and produced zero PR results, while the later full default-branch analysis correctly remained able to surface pre-existing findings.
 
+## Incremental CodeQL needs default-branch readback
+
+- Evidence: PR #1 analyzed 166 rules with zero results, but its first post-merge default-branch analysis surfaced four pre-existing JavaScript findings. PR #2 also produced zero PR results; only its post-merge default-branch analysis established that all four findings became `fixed`, no dismissal was used, and no new finding appeared.
+- Durable lesson: a successful pull-request CodeQL analysis proves the proposed merge introduces no reported result in that PR context; it does not replace full default-branch analysis or the open-alert API readback needed to claim repository-wide closure.
+- Scope and verification: protected security delivery; verify the PR analysis, merge through required checks, then retain the matching default-branch analysis and alert-state evidence.
+
 ## Central package changes require Solution-wide lock refresh
 
 - Evidence: adding a centrally managed direct package with `CentralPackageTransitivePinningEnabled` made otherwise untouched project lock files fail `dotnet restore --locked-mode` with NU1004.
