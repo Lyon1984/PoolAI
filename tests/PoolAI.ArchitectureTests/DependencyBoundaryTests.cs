@@ -131,6 +131,23 @@ public sealed partial class DependencyBoundaryTests
     }
 
     [Fact]
+    public void MigratorRuntimeImageDoesNotRequireTheAspNetCoreSharedFramework()
+    {
+        string projectPath = Path.Combine(
+            RepositoryRoot.Find(),
+            "src",
+            "PoolAI.Database.Migrations",
+            "PoolAI.Database.Migrations.csproj");
+        XDocument project = XDocument.Load(projectPath, LoadOptions.None);
+        string[] frameworkReferences = project
+            .Descendants("FrameworkReference")
+            .Select(element => element.Attribute("Include")?.Value ?? string.Empty)
+            .ToArray();
+
+        Assert.DoesNotContain("Microsoft.AspNetCore.App", frameworkReferences);
+    }
+
+    [Fact]
     public void ReleaseManifestIsCanonicalAndSharedWithoutHostOrMigratorCoupling()
     {
         string root = RepositoryRoot.Find();

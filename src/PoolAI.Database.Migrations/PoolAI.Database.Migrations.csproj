@@ -1,9 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Npgsql" />
-  </ItemGroup>
-  <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../docs/release-manifest-v1.json" Link="ReleaseManifest/poolai-release-manifest-v1.json" />
