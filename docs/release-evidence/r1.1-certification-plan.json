@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "release_id": "r1.1",
+  "governing_contract": {
+    "path": "docs/开发执行规格-v1.0.md",
+    "section": "8.2"
+  },
+  "reference_environment": {
+    "logical_environment_id": "r1.1-reference",
+    "environment_class": "dedicated-pre-production",
+    "topology": "production-equivalent",
+    "provisioning_status": "not-provisioned",
+    "host_inventory": []
+  },
+  "reference_hardware": {
+    "api": {
+      "sizing_basis": "per-instance",
+      "vcpu": 4,
+      "memory_gib": 8
+    },
+    "worker": {
+      "sizing_basis": "per-instance",
+      "vcpu": 2,
+      "memory_gib": 4
+    },
+    "postgresql": {
+      "sizing_basis": "single-instance",
+      "vcpu": 4,
+      "memory_gib": 16,
+      "storage": "local-ssd",
+      "connection_limit": "deployment-configured"
+    },
+    "redis": {
+      "sizing_basis": "single-instance",
+      "vcpu": 2,
+      "memory_gib": 4
+    }
+  },
+  "network": {
+    "service_to_service_rtt_p95_ms_max": 1
+  },
+  "upstream": {
+    "kind": "controlled-mock",
+    "response_model": "fixed",
+    "traffic_model": "fixed"
+  },
+  "minimum_data_scale": {
+    "groups": 100,
+    "users": 1000,
+    "api_keys": 5000,
+    "accounts": 100,
+    "attempt_aggregate_records": 10000000
+  },
+  "execution_policy": {
+    "independent_runs_per_scenario": 3,
+    "same_build_required": true,
+    "build_identity_fields": [
+      "commit_sha",
+      "api_image_digest",
+      "worker_image_digest",
+      "migrator_image_digest"
+    ],
+    "all_runs_must_pass": true,
+    "averages_only_are_sufficient": false
+  },
+  "scenarios": [
+    {
+      "id": "same-group-hot-reservation",
+      "name": "同 Group 热点预留",
+      "workload": "100 RPS，全部命中同一 Group，非流式，持续 15 分钟",
+      "pass_threshold": "无超发、无负计数、无重复核销；平台错误 ≤ 0.1%；满足网关延迟 SLO"
+    },
+    {
+      "id": "mixed-non-streaming",
+      "name": "混合非流式",
+      "workload": "100 RPS，Responses 70%、Chat 30%，20 个 Group，持续 30 分钟",
+      "pass_threshold": "CPU p95 < 75%，RSS < 6 GiB，DB pool 等待 p99 < 50 ms，平台错误 ≤ 0.1%"
+    },
+    {
+      "id": "sse-concurrency",
+      "name": "SSE 并发",
+      "workload": "单实例 500 条并发流，每秒 1 个 1 KiB event，持续 30 分钟",
+      "pass_threshold": "无非预期断流；CPU p95 < 75%，RSS < 6 GiB；首事件附加延迟达标；reservation 持续续租并最终结算"
+    },
+    {
+      "id": "bulkhead-isolation",
+      "name": "舱壁隔离",
+      "workload": "占满 data-stream permits 并保持 30 分钟，同时以 20 RPS 登录/控制面和 50 RPS `/v1/usage`",
+      "pass_threshold": "新数据流快速 `gateway_overloaded`；既有流稳定；控制面与 usage 仍满足各自 SLO，队列/DB pool 无跨舱壁饥饿"
+    },
+    {
+      "id": "breaker-herd",
+      "name": "breaker 惊群",
+      "workload": "两个 API 实例对同一 Account 注入 60% 5xx、429 与恢复",
+      "pass_threshold": "只出现一个 half-open probe owner；open 期间不打上游；恢复满足连续成功阈值后关闭，无 retry storm"
+    },
+    {
+      "id": "long-non-streaming",
+      "name": "长非流",
+      "workload": "100 并发 mock 请求持续 8～11 分钟，回收器每 30s 运行",
+      "pass_threshold": "每 60s 续租；600s 前不误回收；600s 取消/drain/结算；无 pending 泄漏或重复核销"
+    },
+    {
+      "id": "usage-query",
+      "name": "`/v1/usage`",
+      "workload": "50 RPS，80% 热缓存/20%冷查询，持续 15 分钟",
+      "pass_threshold": "p95 ≤ 300 ms、p99 ≤ 1 s；不扫原始 attempt 大表；数据 lag p99 ≤ 60 s"
+    },
+    {
+      "id": "worker-backlog-recovery",
+      "name": "Worker 积压恢复",
+      "workload": "暂停聚合 5 分钟后恢复，同时保持 50 RPS 网关流量",
+      "pass_threshold": "10 分钟内清空积压，不影响 quota 正确性，API p99 不劣化超过 20%"
+    },
+    {
+      "id": "worker-single-owner",
+      "name": "Worker 单 owner",
+      "workload": "两个 Worker 竞争 sweeper/aggregate/email job，中途中断持锁 PostgreSQL 连接",
+      "pass_threshold": "同时仅一 owner；接管时间 p99 ≤ 30s；无重复副作用；Redis 不参与 leader 选举"
+    },
+    {
+      "id": "failover",
+      "name": "故障切换",
+      "workload": "10% attempt 分别注入可证零字节建连失败、capability 证明未执行的 429、无证据首包超时，总 attempt 上限 3",
+      "pass_threshold": "只有前两类允许同 Group 新 attempt，每 attempt 独立事实/预留并先 settle；首包歧义不切换；无跨 Group；开始输出后不透明切换"
+    },
+    {
+      "id": "process-crash",
+      "name": "进程崩溃",
+      "workload": "分别在 reserve 后、dispatch fence 后、上游接受后、首事件后随机 kill API",
+      "pass_threshold": "dispatch 前可零消耗回收；dispatch 后至少按 estimate 计入 consumed 并有 immutable fact，迟到 usage 可 adjustment；无永久泄漏、无低记实际消耗"
+    }
+  ],
+  "reporting": {
+    "execution_status": "not-run",
+    "reports": [],
+    "required_report_fields": [
+      "commit_sha",
+      "api_image_digest",
+      "worker_image_digest",
+      "migrator_image_digest",
+      "configuration",
+      "hardware",
+      "data_scale",
+      "scripts",
+      "raw_metrics",
+      "conclusion"
+    ]
+  },
+  "archive": {
+    "authoritative_store": "github-release-assets",
+    "repository": "Lyon1984/PoolAI",
+    "releases_url": "https://github.com/Lyon1984/PoolAI/releases",
+    "retention": "long-term",
+    "release_tag_pattern": "r1.1-rc.*",
+    "asset_name_pattern": "poolai-r1.1-certification-{commit_sha}.tar.zst",
+    "index_path": "docs/release-evidence/r1.1-certification-index.json",
+    "digest_algorithm": "sha256",
+    "github_actions_artifacts": {
+      "role": "transport-only",
+      "authoritative": false
+    }
+  }
+}

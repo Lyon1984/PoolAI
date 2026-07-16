@@ -14,6 +14,7 @@
 - 项目维护记忆与当前状态：[`project-memory/README.md`](project-memory/README.md)
 - Release 1 DEC/AC 到证据或计划测试的机器索引：[`traceability/README.md`](traceability/README.md)
 - M0–M7 全部 Epic 的已验证 GitHub Issues 导入登记与索引：[`traceability/delivery-epics.json`](traceability/delivery-epics.json)
+- R1.1 认证逻辑环境、参考硬件与负载证据归档约定：[`release-evidence/README.md`](release-evidence/README.md)
 
 项目记忆只用于导航和交接，不能覆盖下列契约优先级。
 
