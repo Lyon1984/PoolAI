@@ -141,6 +141,13 @@ CREATE INDEX ix_refresh_sessions_user_active
     ON refresh_sessions(user_id, expires_at)
     WHERE status = 'active';
 CREATE INDEX ix_refresh_sessions_family ON refresh_sessions(family_id, issued_at);
+-- Runtime session retention uses DELETE; index both ON DELETE SET NULL self references.
+CREATE INDEX ix_refresh_sessions_parent
+    ON refresh_sessions(parent_session_id)
+    WHERE parent_session_id IS NOT NULL;
+CREATE INDEX ix_refresh_sessions_replacement
+    ON refresh_sessions(replaced_by_session_id)
+    WHERE replaced_by_session_id IS NOT NULL;
 
 CREATE TABLE one_time_tokens (
     id                  uuid PRIMARY KEY,
