@@ -10,7 +10,7 @@
 
 - Evidence: the initial target CodeQL run completed extraction, builds, queries, and SARIF export, then failed while reading its workflow run with `Resource not accessible by integration`; the job token had `contents: read` and `security-events: write` but not `actions: read`.
 - Durable lesson: a private-repository CodeQL/SARIF job must explicitly grant `actions: read` in addition to `contents: read` and `security-events: write`; this token permission is separate from GitHub Code Security entitlement and must be verified before diagnosing an entitlement failure.
-- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; the remaining failure is the separate private-repository Code Security entitlement/enablement gate.
+- Scope and verification: GitHub Actions security evidence; enforced by `eng/policies/validate-version-locks.mjs`. PR #1 verified the permission correction through SARIF upload initiation; after the authorized visibility change to public, the rerun uploaded successfully and produced zero CodeQL results.
 
 ## Central package changes require Solution-wide lock refresh
 
