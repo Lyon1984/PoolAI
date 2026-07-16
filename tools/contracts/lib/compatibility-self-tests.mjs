@@ -134,6 +134,16 @@ export function runCompatibilitySelfTests({ errorCatalogSource, openApi }) {
   firstOperation(renamedOperation).operation.operationId = 'renamedCompatibilityOperation'
   breaking(renamedOperation, 'operationId changed', errorCatalogSource)
 
+  const addedResponseStatus = structuredClone(openApi)
+  firstOperation(addedResponseStatus).operation.responses['418'] = {
+    description: 'Compatibility self-test only',
+  }
+  breaking(
+    addedResponseStatus,
+    'new response status was added to an existing operation',
+    errorCatalogSource,
+  )
+
   const deletedProperty = structuredClone(openApi)
   delete deletedProperty.components.schemas.ControlPlaneProblem.properties.detail
   breaking(deletedProperty, 'existing property was removed or renamed', errorCatalogSource)
