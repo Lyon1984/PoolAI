@@ -26,6 +26,10 @@ export const addFormats = loadFrontendDependency('ajv-formats').default
 export const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
 export const contractPaths = Object.freeze({
   openApi: path.join(repoRoot, 'docs/contracts/openapi-v1.yaml'),
+  compatibilityResets: path.join(
+    repoRoot,
+    'docs/contracts/compatibility-resets-v1.json',
+  ),
   errorCatalog: path.join(repoRoot, 'docs/contracts/error-catalog.md'),
   fixtures: path.join(repoRoot, 'docs/contracts/fixtures'),
   database: path.join(repoRoot, 'docs/database'),
@@ -61,9 +65,10 @@ export function invariant(condition, message) {
 }
 
 export async function loadContractSources() {
-  const [openApiSource, errorCatalogSource] = await Promise.all([
+  const [openApiSource, errorCatalogSource, compatibilityResetSource] = await Promise.all([
     readFile(contractPaths.openApi, 'utf8'),
     readFile(contractPaths.errorCatalog, 'utf8'),
+    readFile(contractPaths.compatibilityResets, 'utf8'),
   ])
 
   const document = YAML.parseDocument(openApiSource, {
@@ -80,6 +85,7 @@ export async function loadContractSources() {
     openApi: document.toJS({ maxAliasCount: 0 }),
     openApiSource,
     errorCatalogSource,
+    compatibilityResetSource,
   }
 }
 

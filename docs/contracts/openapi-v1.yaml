@@ -3845,9 +3845,7 @@ components:
           pattern: '^[a-z][a-z0-9_]*$'
           description: 客户端唯一可依赖的稳定业务错误码
         request_id:
-          allOf:
-            - $ref: '#/components/schemas/Uuid'
-          description: 本次入站请求的关联标识；幂等重放重新生成，并与 X-Request-Id、日志和 trace 一致。
+          $ref: '#/components/schemas/Uuid'
         retryable:
           type: boolean
         retry_after_seconds:
@@ -3903,9 +3901,7 @@ components:
           pattern: '^[a-z][a-z0-9_]*$'
           description: 客户端唯一可依赖的稳定业务错误码
         request_id:
-          allOf:
-            - $ref: '#/components/schemas/Uuid'
-          description: 本次入站请求的关联标识；幂等重放重新生成，并与 X-Request-Id、日志和 trace 一致。
+          $ref: '#/components/schemas/Uuid'
         retryable:
           type: boolean
         retry_after_seconds:

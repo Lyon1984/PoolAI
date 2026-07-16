@@ -2,7 +2,10 @@
 
 import { parseErrorCatalog } from './lib/catalog.mjs'
 import { runCompatibilitySelfTests } from './lib/compatibility-self-tests.mjs'
-import { validateContractsAgainstGitBase } from './lib/compatibility.mjs'
+import {
+  validateCompatibilityResetDecisions,
+  validateContractsAgainstGitBase,
+} from './lib/compatibility.mjs'
 import { ContractFailure, loadContractSources } from './lib/context.mjs'
 import { validateFixtures } from './lib/fixtures.mjs'
 import { generateContracts } from './lib/generator.mjs'
@@ -27,10 +30,14 @@ if (!supportedCommands.has(command)) {
     const sources = await loadContractSources()
     const catalog = parseErrorCatalog(sources.errorCatalogSource)
     const openApiResult = validateOpenApi(sources.openApi, catalog)
+    const resetState = validateCompatibilityResetDecisions(sources.compatibilityResetSource)
     process.stdout.write(
       `OpenAPI valid: ${openApiResult.operations} operations, ${openApiResult.compiledSchemas} AJV-compiled component schemas, ${openApiResult.references} local refs.\n`,
     )
     process.stdout.write(`Error catalog valid: ${catalog.entries.length} stable codes.\n`)
+    process.stdout.write(
+      `Compatibility reset registry valid: ${resetState.registry.resets.length} accepted exact transition.\n`,
+    )
 
     if (command === 'compatibility') {
       const baseRef = process.env.CONTRACT_DIFF_BASE
@@ -39,12 +46,19 @@ if (!supportedCommands.has(command)) {
       }
       const compatibilityResult = await validateContractsAgainstGitBase({
         baseRef,
+        compatibilityResetSource: sources.compatibilityResetSource,
         headErrorCatalogSource: sources.errorCatalogSource,
         headOpenApi: sources.openApi,
+        headOpenApiSource: sources.openApiSource,
       })
       process.stdout.write(
         `Contract compatibility valid against ${compatibilityResult.baseRef}: ${compatibilityResult.operations} existing operations, ${compatibilityResult.schemas} existing schemas, ${compatibilityResult.errorCodes} existing stable error codes, and ${compatibilityResult.sseFixtures} existing SSE fixtures preserved.\n`,
       )
+      if (compatibilityResult.resetId !== undefined) {
+        process.stdout.write(
+          `Exact compatibility reset applied: ${compatibilityResult.resetId}; ${compatibilityResult.waivedFailures} registered breaking diagnostics consumed.\n`,
+        )
+      }
     }
 
     if (command === 'test' || command === 'all') {
@@ -66,7 +80,7 @@ if (!supportedCommands.has(command)) {
         `Validator self-tests passed: ${selfTestResult.negativeCases} negative cases, ${selfTestResult.deterministicGenerators} deterministic generators.\n`,
       )
       process.stdout.write(
-        `Compatibility self-tests passed: ${compatibilitySelfTestResult.additiveCases} additive cases, ${compatibilitySelfTestResult.breakingCases} breaking cases.\n`,
+        `Compatibility self-tests passed: ${compatibilitySelfTestResult.additiveCases} additive cases, ${compatibilitySelfTestResult.breakingCases} breaking cases, ${compatibilitySelfTestResult.resetCases} exact-reset cases.\n`,
       )
     }
 

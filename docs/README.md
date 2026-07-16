@@ -55,6 +55,7 @@ Anthropic Messages 属于 Release 1.2。Gemini、Antigravity、Grok、图片/视
 
 - `openapi-v1.yaml`、错误目录和 JSON/SSE fixture 已由 [Issue #44 OpenAPI 批准评论](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4992036352) 完成合同基线签收；该签收不表示对应 endpoint、handler、adapter 或运行时行为已经实现或验收。
 - `/v1` 内只能增加可选字段、可选 endpoint 或新的稳定 error code；删除、重命名、改变类型/状态码、收紧既有合法输入、改变 SSE event 形状均视为 breaking change，必须进入 `/v2` 或经过明确兼容窗口。
+- 唯一的一次性例外是 [`ADR 0003`](architecture/adr/0003-approve-one-exact-pre-external-openapi-v1-reset.md) 定义的 M1-E1 首次外部发布前 OpenAPI v1 基线重置。该例外必须同时匹配机器登记的完整 Git base SHA、base/target OpenAPI SHA-256 和全部精确兼容诊断；禁止通配、额外差异、部分匹配或复用于其他 base。合并后目标文档按普通 `/v1` 兼容规则成为新基线。该例外不改写 DEC、数据库、M0 OpenAPI 或 M0 Exit 的既有签核范围，也不构成 M1 或发布验收。
 - `openapi-v1.yaml`、错误目录和 fixture 必须在同一变更中更新；contract test 对 fixture 做字节级或规范化事件级比较。
 - `identity-events-v1.json` 是 `poolai.identity.v1`/schema v1 的唯一 Published Language；payload 新增字段只能是可选且非敏感字段，event type、字段删除/重命名/改型或语义收紧必须发布新的 major topic/schema，不能由实现私自扩展。
 - 已在任何环境执行的 SQL migration 内容与 checksum 永不改写；修正通过新 migration 前向演进。`0001/0002/0003` 已由 [Issue #44 数据库批准评论](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-4990098502) 完成首次实现签收，自该评论起进入不可变状态；后续修正只能新增前向 migration，不得改写已签收 SQL 或 checksum。
