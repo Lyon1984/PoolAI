@@ -1,5 +1,11 @@
 # Lessons learned
 
+## Changed-line coverage must report a non-zero evaluated denominator
+
+- Evidence: PRs #1 and #2 contained no production-source changes and correctly left modified-line coverage unevaluated, while production-source PR #4 compared its committed head with the real pull-request base and reported exact 1/1 (100%) modified-line coverage.
+- Durable lesson: a green coverage job is not by itself evidence that changed source was measured. For a production-source PR, inspect the generated summary or log and require `evaluated: true`, a non-zero denominator, and the expected base-to-head range; the selector evaluates committed Git state, not uncommitted working-tree edits.
+- Scope and verification: pull-request quality evidence; PR #4 passed all six protected checks and its target `verify` log retained the base SHA and 1/1 result.
+
 ## Integrity scanners must distinguish no matches from execution failure
 
 - Evidence: successive target quality logs reported `rg: command not found` in the coverage-integrity and forbidden-scope gates, but command substitutions ending in `|| true` converted the failures into empty output and both negative scanners reported success.
