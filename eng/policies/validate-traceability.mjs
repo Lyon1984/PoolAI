@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, resolve, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
 import {
   auditableReferencePolicyCases,
   canonicalAuditableTaskId,
@@ -11,6 +11,11 @@ import {
   namedOwnerPolicyCases,
   taskIdPolicyCases,
 } from './auditable-reference.mjs'
+import {
+  repositoryFileErrorCodes,
+  resolveCanonicalRepositoryPath,
+  withReadOnlyRepositoryFile,
+} from './repository-file.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
 const manifestPath = resolve(root, 'docs/traceability/release-1-traceability.json')
@@ -59,6 +64,9 @@ if (xunitRunnerConfig.failSkips !== true) {
 }
 if (!qualityGate.split('\n').includes('node eng/test/verify-fail-skips.mjs')) {
   fail('The quality gate must execute the dynamic xUnit skip policy probe.')
+}
+if (!qualityGate.split('\n').includes('node eng/test/verify-repository-file-safety.mjs')) {
+  fail('The quality gate must execute the repository evidence file safety probe.')
 }
 
 let compiledTestInventory = null
@@ -128,27 +136,22 @@ for (const line of systemPlan.split('\n')) {
 }
 
 const validatePath = (path, label) => {
-  if (typeof path !== 'string' || path.length === 0 || path.startsWith('/') || path.includes('..')) {
-    fail(`${label} must be a non-empty repository-relative path.`)
+  try {
+    return resolveCanonicalRepositoryPath(root, path)
+  } catch (error) {
+    if (error?.code === repositoryFileErrorCodes.invalidRelativePath) {
+      fail(`${label} must be a non-empty repository-relative path.`)
+    } else if (error?.code === repositoryFileErrorCodes.lexicalEscape) {
+      fail(`${label} resolves outside the repository: ${path}`)
+    } else if (error?.code === repositoryFileErrorCodes.canonicalEscape) {
+      fail(`${label} points outside the repository: ${path}`)
+    } else if (error?.code === 'ENOENT') {
+      fail(`${label} does not exist: ${path}`)
+    } else {
+      fail(`${label} cannot be resolved safely (${error?.code ?? 'UNKNOWN'}): ${path}`)
+    }
     return null
   }
-
-  const resolved = resolve(root, path)
-  if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
-    fail(`${label} resolves outside the repository: ${path}`)
-    return null
-  }
-  if (!existsSync(resolved)) {
-    fail(`${label} does not exist: ${path}`)
-    return null
-  }
-
-  const real = realpathSync(resolved)
-  if (real !== root && !real.startsWith(`${root}${sep}`)) {
-    fail(`${label} points outside the repository: ${path}`)
-    return null
-  }
-  return resolved
 }
 
 const validateMapping = (entry, label) => {
@@ -393,12 +396,27 @@ const validateEvidence = (evidence, label) => {
   ])
   for (const [index, item] of evidence.entries()) {
     const itemLabel = `${label}[${index}]`
-    const resolved = validatePath(item?.path, `${itemLabel}.path`)
-    if (resolved === null) {
-      continue
-    }
-    if (!statSync(resolved).isFile()) {
-      fail(`${itemLabel}.path must identify a file, not a directory.`)
+    let source
+    try {
+      source = withReadOnlyRepositoryFile(
+        root,
+        item?.path,
+        (descriptor) => readFileSync(descriptor, 'utf8'),
+      )
+    } catch (error) {
+      if (error?.code === repositoryFileErrorCodes.invalidRelativePath) {
+        fail(`${itemLabel}.path must be a non-empty repository-relative path.`)
+      } else if (error?.code === repositoryFileErrorCodes.lexicalEscape) {
+        fail(`${itemLabel}.path resolves outside the repository: ${item?.path}`)
+      } else if (error?.code === repositoryFileErrorCodes.canonicalEscape) {
+        fail(`${itemLabel}.path points outside the repository: ${item?.path}`)
+      } else if (error?.code === 'ENOENT') {
+        fail(`${itemLabel}.path does not exist: ${item?.path}`)
+      } else if (error?.code === repositoryFileErrorCodes.notRegularFile) {
+        fail(`${itemLabel}.path must identify a file, not a directory.`)
+      } else {
+        fail(`${itemLabel}.path could not be opened safely (${error?.code ?? 'UNKNOWN'}).`)
+      }
       continue
     }
 
@@ -411,7 +429,6 @@ const validateEvidence = (evidence, label) => {
         fail(`${itemLabel}.symbol must be a stable PascalCase xUnit method name.`)
         continue
       }
-      const source = readFileSync(resolved, 'utf8')
       if (!isXunitTestMethod(source, item.symbol)) {
         fail(`${itemLabel}.symbol is not an xUnit [Fact]/[Theory] method in ${item.path}: ${item.symbol}`)
       }

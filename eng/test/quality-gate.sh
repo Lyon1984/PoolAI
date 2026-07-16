@@ -30,6 +30,8 @@ if [[ -S "$local_docker_socket" && -z "${DOCKER_HOST:-}" ]]; then
 fi
 
 node eng/policies/validate-version-locks.mjs
+node eng/test/verify-verified-download.mjs
+node eng/test/verify-repository-file-safety.mjs
 node eng/release/validate-release-manifest.mjs
 node eng/policies/validate-traceability.mjs --structure-only
 node eng/release/prepare-task-import.mjs --check
