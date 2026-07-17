@@ -540,6 +540,7 @@ public sealed class IdentitySessionAuthenticationUseCaseTests
     [Theory]
     [InlineData(SystemRole.Admin, false, false, AuditActorType.Admin, "identity.logout.current")]
     [InlineData(SystemRole.Operator, true, false, AuditActorType.Operator, "identity.logout.all")]
+    [InlineData(SystemRole.Auditor, false, false, AuditActorType.Auditor, "identity.logout.current")]
     [InlineData(SystemRole.User, false, true, AuditActorType.User, "identity.logout.current")]
     public async Task ChangedLogoutRevokesRequestedScopeAndAuditsActor(
         SystemRole role,
@@ -643,14 +644,15 @@ public sealed class IdentitySessionAuthenticationUseCaseTests
         Guid userId = userMarker == 0 ? Guid.Empty : Guid.NewGuid();
         Guid familyId = familyMarker == 0 ? Guid.Empty : Guid.NewGuid();
 
-        bool active = await fixture.Service.IsActiveAsync(
+        UserStatusSnapshot? authorization = await fixture.Service
+            .ReadCanonicalAuthorizationAsync(
             userId,
             familyId,
             tokenVersion,
             TestContext.Current.CancellationToken).ConfigureAwait(true);
 
-        Assert.False(active);
-        Assert.Equal(0, fixture.Repository.IsSessionFamilyActiveCalls);
+        Assert.Null(authorization);
+        Assert.Equal(0, fixture.Repository.CanonicalAuthorizationCalls);
     }
 
     [Theory]
@@ -663,17 +665,24 @@ public sealed class IdentitySessionAuthenticationUseCaseTests
         Fixture fixture = new(user);
         fixture.Repository.SessionFamilyActive = repositoryResult;
 
-        bool active = await fixture.Service.IsActiveAsync(
+        UserStatusSnapshot? authorization = await fixture.Service
+            .ReadCanonicalAuthorizationAsync(
             user.Id.Value,
             familyId.Value,
             user.TokenVersion,
             TestContext.Current.CancellationToken).ConfigureAwait(true);
 
-        Assert.Equal(repositoryResult, active);
+        Assert.Equal(repositoryResult, authorization is not null);
+        if (repositoryResult)
+        {
+            Assert.Equal(user.Id, authorization!.UserId);
+            Assert.Equal(user.Role, authorization.Role);
+            Assert.Equal(user.TokenVersion, authorization.TokenVersion);
+        }
         Assert.Equal(user.Id, fixture.Repository.ActiveSessionUserId);
         Assert.Equal(familyId, fixture.Repository.ActiveSessionFamilyId);
         Assert.Equal(user.TokenVersion, fixture.Repository.ActiveSessionTokenVersion);
-        Assert.Equal(1, fixture.Repository.IsSessionFamilyActiveCalls);
+        Assert.Equal(1, fixture.Repository.CanonicalAuthorizationCalls);
     }
 
     private static LoginCommand Login(
@@ -875,7 +884,7 @@ public sealed class IdentitySessionAuthenticationUseCaseTests
 
         internal int GetAuthenticationUserCalls { get; private set; }
 
-        internal int IsSessionFamilyActiveCalls { get; private set; }
+        internal int CanonicalAuthorizationCalls { get; private set; }
 
         internal int HasRefreshCredentialCalls { get; private set; }
 
@@ -943,18 +952,27 @@ public sealed class IdentitySessionAuthenticationUseCaseTests
             return ValueTask.FromResult(CurrentUser);
         }
 
-        public ValueTask<bool> IsSessionFamilyActiveAsync(
+        public ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
             EntityId userId,
             EntityId familyId,
             long tokenVersion,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            IsSessionFamilyActiveCalls++;
+            CanonicalAuthorizationCalls++;
             ActiveSessionUserId = userId;
             ActiveSessionFamilyId = familyId;
             ActiveSessionTokenVersion = tokenVersion;
-            return ValueTask.FromResult(SessionFamilyActive);
+            UserStatusSnapshot? result = SessionFamilyActive
+                ? new UserStatusSnapshot(
+                    userId,
+                    UserLifecycle.Active,
+                    (CurrentUser ?? AuthenticationUser)?.Role ?? SystemRole.User,
+                    tokenVersion,
+                    Version: 1,
+                    Now)
+                : null;
+            return ValueTask.FromResult(result);
         }
 
         public ValueTask<bool> HasRefreshCredentialAsync(

@@ -11,8 +11,9 @@
 3. `0003_runtime_permissions.sql`：收回 PUBLIC 权限、固定 SECURITY DEFINER 搜索路径，并向 API/Worker 授予最小运行时权限。
 4. `0004_identity_m1_e1.sql`：M1-E1 前向撤销 API 对 `user_roles` 的直接 UPDATE/DELETE，增加最小权限的原子 User/Role 更新函数，并持久化 email outbox 失败分类事实；不改写 0001–0003。
 5. `0005_identity_m1_e2.sql`：M1-E2 前向增加 login/setup TOTP challenge 快照、TOTP recovery-code 摘要、refresh family 活跃查找索引和最小 API 权限；不改写 0001–0004。
+6. `0006_identity_m1_e3.sql`：M1-E3 前向收窄 `poolai_api` 的 User UPDATE 列，禁止绕过原子 User 状态/角色入口，并把 Auditor 保留为独立审计 actor；不改写 0001–0005。
 
-只有 `PoolAI.Migrator` 可以执行 DDL。集群必须预先创建 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`；0003 只断言角色，不执行 `CREATE ROLE`。Migrator 必须是待转移函数/`public` schema 的 owner（或等效受控迁移角色），可 `SET ROLE poolai_runtime_owner`，并可授予 API/Worker 权限。PostgreSQL 的 owner 转移要求新 owner 对所在 schema 有 CREATE，故 0003 只在同一迁移事务内临时授予 runtime owner CREATE，全部函数转移后立即撤销；提交后的运行时角色均无 DDL。Migrator 取得 PostgreSQL advisory lock，在同一事务中完成以下步骤：读取 `poolai_schema_migrations`、校验已执行文件的 SHA-256、按 [`../release-manifest-v1.json`](../release-manifest-v1.json) 的顺序依次执行 0001/0002/0003/0004/0005、写入 `(version, name, checksum_sha256, applied_by)`，最后提交。Api 与 Worker 只以各自运行时角色读取 migration history：历史必须是清单的 checksum 完全一致前缀，当前最高版本必须落在清单声明的兼容窗口内；它们不取得锁、不执行 DDL，也不自动迁移。手工验收需使用 `psql --single-transaction`，不能逐语句提交。
+只有 `PoolAI.Migrator` 可以执行 DDL。集群必须预先创建 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`；0003 只断言角色，不执行 `CREATE ROLE`。Migrator 必须是待转移函数/`public` schema 的 owner（或等效受控迁移角色），可 `SET ROLE poolai_runtime_owner`，并可授予 API/Worker 权限。PostgreSQL 的 owner 转移要求新 owner 对所在 schema 有 CREATE，故 0003 只在同一迁移事务内临时授予 runtime owner CREATE，全部函数转移后立即撤销；提交后的运行时角色均无 DDL。Migrator 取得 PostgreSQL advisory lock，在同一事务中完成以下步骤：读取 `poolai_schema_migrations`、校验已执行文件的 SHA-256、按 [`../release-manifest-v1.json`](../release-manifest-v1.json) 的顺序依次执行 0001/0002/0003/0004/0005/0006、写入 `(version, name, checksum_sha256, applied_by)`，最后提交。Api 与 Worker 只以各自运行时角色读取 migration history：历史必须是清单的 checksum 完全一致前缀，当前最高版本必须落在清单声明的兼容窗口内；它们不取得锁、不执行 DDL，也不自动迁移。手工验收需使用 `psql --single-transaction`，不能逐语句提交。
 
 `roles` 由 0001 写入四个稳定系统角色：`admin`、`operator`、`auditor`、`user`。首个 Admin 只由 `PoolAI.Migrator bootstrap-admin` 一次性子命令创建：应用生成 UUIDv7、密码哈希和 security stamp，在一个事务中插入 User、唯一 UserRole、AuditLog 和 `user_created` Integration Event；`users` 已有任何行或已经存在 Admin 时命令必须失败且不写部分数据。数据库用 `UNIQUE(user_id)` 保证每个用户最多一个角色；服务在创建/启用用户前保证恰有一个角色。
 
@@ -217,11 +218,13 @@ Reservation 直接外键到历史 `channel_id`，而不是依赖当前 Group Sup
 
 0005 撤销 API 对 `one_time_tokens` 的表级 INSERT/UPDATE，重新授予 password-reset/TOTP 所需的显式列：insert 后 token identity/hash/到期时间/challenge 快照均不可改，只能更新 `used_at/revoked_at/revoke_reason/response_body_envelope`。0005 还撤销 0003 曾授予 API 的 `one_time_tokens/refresh_sessions` DELETE，防止物理删除 challenge、rotated refresh 或撤销事实；`totp_recovery_codes` 同样只有显式 SELECT/INSERT/UPDATE 列，不授予 DELETE。Worker/runtime owner 都不能读取 `one_time_tokens.secret_envelope/response_body_envelope` 或 `totp_recovery_codes.code_hash`；迁移本身以权限审计 fail closed。
 
+0006 撤销 0003 曾授予 `poolai_api` 的 `users` 表级 UPDATE，只重新授予 password/TOTP/security stamp、token version、登录失败计数、锁定与最后登录时间这些会话安全列。`status` 与 `display_name` 不再能被 API 数据库角色直接修改，必须经过 `poolai_identity_update_user`，从而保留 expected-version、最后一名 active Admin、角色锁序和单次 `token_version` 推进约束。创建 User 后的唯一角色 INSERT 仍需推进安全版本，因此固定搜索路径的 role trigger 改由具备窄列权限的 `poolai_runtime_owner NOLOGIN` 以 `SECURITY DEFINER` 执行，而 `poolai_api` 不重新获得 `version/updated_at` 直写权限。0006 同时把 `auditor` 加入 append-only `audit_logs.actor_type`，且要求其与其他用户 actor 一样携带 `actor_user_id`；Auditor 本人安全操作不得再折叠为 `user` actor。
+
 ## 11. 最低数据库验收
 
 发布前至少用真实 PostgreSQL 18 + Testcontainers 验证：
 
-1. 预置三个运行时角色后，空库按 0001/0002/0003/0004/0005 执行；验证缺角色、runtime owner 可登录、重复 migration 与 checksum 漂移都被拒绝。
+1. 预置三个运行时角色后，空库按 0001/0002/0003/0004/0005/0006 执行；验证缺角色、runtime owner 可登录、重复 migration 与 checksum 漂移都被拒绝。
 2. 100 个并发 reserve 对同一 Group 不超放；不同 Group 可并行。
 3. revoke 与 reserve 两种提交顺序都符合线性化规则，Redis 正缓存不能绕过。
 4. reserve/mark-dispatched/renew/settle/release/expire 的每条合法与非法状态转换；dispatch 后 release 必须拒绝；零字节或 capability 认可的 401/403/429 只能以 actual=0 + `confirmed_no_execution` settle，其他状态/非零 Token 必须被约束拒绝。

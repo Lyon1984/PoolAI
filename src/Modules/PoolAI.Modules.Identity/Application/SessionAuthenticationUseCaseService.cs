@@ -527,7 +527,7 @@ internal sealed class SessionAuthenticationUseCaseService :
             : Result.Success(user.ToCurrentUserView());
     }
 
-    public async ValueTask<bool> IsActiveAsync(
+    public async ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         Guid userId,
         Guid sessionFamilyId,
         long tokenVersion,
@@ -535,10 +535,10 @@ internal sealed class SessionAuthenticationUseCaseService :
     {
         if (userId == Guid.Empty || sessionFamilyId == Guid.Empty || tokenVersion <= 0)
         {
-            return false;
+            return null;
         }
 
-        return await _repository.IsSessionFamilyActiveAsync(
+        return await _repository.ReadCanonicalAuthorizationAsync(
             new EntityId(userId),
             new EntityId(sessionFamilyId),
             tokenVersion,
@@ -699,8 +699,10 @@ internal sealed class SessionAuthenticationUseCaseService :
     {
         SystemRole.Admin => AuditActorType.Admin,
         SystemRole.Operator => AuditActorType.Operator,
+        SystemRole.Auditor => AuditActorType.Auditor,
+        SystemRole.User => AuditActorType.User,
         null => AuditActorType.System,
-        _ => AuditActorType.User,
+        _ => throw new ArgumentOutOfRangeException(nameof(actor)),
     };
 
     private static CredentialHashCandidate[] ToCandidates(

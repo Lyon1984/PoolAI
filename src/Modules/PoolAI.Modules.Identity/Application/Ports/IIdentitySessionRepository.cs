@@ -167,7 +167,7 @@ internal interface IIdentitySessionRepository
         EntityId userId,
         CancellationToken cancellationToken);
 
-    ValueTask<bool> IsSessionFamilyActiveAsync(
+    ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         EntityId userId,
         EntityId familyId,
         long tokenVersion,

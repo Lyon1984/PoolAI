@@ -12,7 +12,7 @@ public sealed class MigrationCatalogTests
         MigrationCatalog catalog = await MigrationCatalog
             .LoadAsync(TestContext.Current.CancellationToken);
 
-        Assert.Equal([1L, 2L, 3L, 4L, 5L], catalog.Assets.Select(asset => asset.Version));
+        Assert.Equal([1L, 2L, 3L, 4L, 5L, 6L], catalog.Assets.Select(asset => asset.Version));
         foreach (MigrationAsset asset in catalog.Assets)
         {
             string path = Path.Combine(root, "docs", "database", asset.Name);

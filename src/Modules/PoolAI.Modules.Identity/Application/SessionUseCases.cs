@@ -1,3 +1,5 @@
+using PoolAI.Modules.Identity.Abstractions;
+
 #pragma warning disable MA0048 // The session use-case interfaces form one public API boundary.
 namespace PoolAI.Modules.Identity.Application;
 
@@ -66,7 +68,7 @@ public interface IDisableTotpUseCase
 
 public interface IAccessSessionValidator
 {
-    ValueTask<bool> IsActiveAsync(
+    ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         Guid userId,
         Guid sessionFamilyId,
         long tokenVersion,

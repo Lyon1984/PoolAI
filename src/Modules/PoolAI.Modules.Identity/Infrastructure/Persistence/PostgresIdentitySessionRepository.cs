@@ -40,11 +40,11 @@ internal sealed class PostgresIdentitySessionRepository : IIdentitySessionReposi
             userId,
             cancellationToken);
 
-    public async ValueTask<bool> IsSessionFamilyActiveAsync(
+    public async ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         EntityId userId,
         EntityId familyId,
         long tokenVersion,
-        CancellationToken cancellationToken) => await _reader.IsSessionFamilyActiveAsync(
+        CancellationToken cancellationToken) => await _reader.ReadCanonicalAuthorizationAsync(
             userId,
             familyId,
             tokenVersion,

@@ -8,6 +8,7 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## Later implementation risk
 
+- Before M1-E4, resolve the contract gap between the RBAC matrix granting User a read-only "available Subscription Template summary" and the absence of a corresponding UserJwt OpenAPI operation or field in `GroupPoolSummary`; either add a deliberate self-service read contract or explicitly remove that matrix capability before implementation.
 - OpenAPI freezes a minimum 24-hour idempotency retention window, but the Operations-owned maximum retention and cleanup policy for completed records that contain encrypted TOTP setup/recovery responses is not yet frozen. Define it before introducing cleanup or envelope-key retirement so secret replay remains available for the promised window without retaining replayable secret material indefinitely.
 - Before M4, [`NormalizedUpstreamResult`](../../src/Modules/PoolAI.Modules.Gateway.Abstractions/NormalizedUpstreamResult.cs) Token fields must move beyond `long` to the frozen lossless Token representation and enforce the OpenAI safe-integer output boundary; the current abstraction cannot represent abnormal 78-digit upstream evidence.
 

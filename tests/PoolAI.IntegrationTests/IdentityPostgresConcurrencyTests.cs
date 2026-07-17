@@ -243,7 +243,7 @@ public sealed class IdentityPostgresConcurrencyTests
             secondRotation).ConfigureAwait(false);
         Assert.Single(rotations, static value => value == RefreshRotationDisposition.Rotated);
         Assert.Single(rotations, static value => value == RefreshRotationDisposition.Reused);
-        Assert.False(await repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await repository.ReadCanonicalAuthorizationAsync(
             loginUserId,
             initialSessionId,
             loginTokenVersion,

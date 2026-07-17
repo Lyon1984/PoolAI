@@ -590,7 +590,7 @@ public sealed class IdentityPersonalSecurityUseCaseTests
             string normalizedEmail,
             CancellationToken cancellationToken) => throw Unexpected();
 
-        public ValueTask<bool> IsSessionFamilyActiveAsync(
+        public ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
             EntityId userId,
             EntityId familyId,
             long tokenVersion,

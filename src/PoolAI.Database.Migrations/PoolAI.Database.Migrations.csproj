@@ -10,5 +10,6 @@
     <EmbeddedResource Include="../../docs/database/0003_runtime_permissions.sql" Link="Migrations/0003_runtime_permissions.sql" />
     <EmbeddedResource Include="../../docs/database/0004_identity_m1_e1.sql" Link="Migrations/0004_identity_m1_e1.sql" />
     <EmbeddedResource Include="../../docs/database/0005_identity_m1_e2.sql" Link="Migrations/0005_identity_m1_e2.sql" />
+    <EmbeddedResource Include="../../docs/database/0006_identity_m1_e3.sql" Link="Migrations/0006_identity_m1_e3.sql" />
   </ItemGroup>
 </Project>

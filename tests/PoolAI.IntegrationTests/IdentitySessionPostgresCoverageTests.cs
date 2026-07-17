@@ -86,7 +86,7 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
             twoUnknown,
             "login",
             cancellationToken).ConfigureAwait(true));
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             EntityId.New(),
             EntityId.New(),
             tokenVersion: 1,
@@ -107,7 +107,123 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
                 ],
                 "login",
                 cancellationToken)
-            .AsTask()).ConfigureAwait(true);
+                .AsTask()).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task EveryRequestStrongReadsUserRoleStatusAndTokenVersion()
+    {
+        // Governing contract: DEC-031. Each authorization call executes the
+        // canonical PostgreSQL read again; an old positive result cannot survive
+        // a committed role or lifecycle mutation.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        SessionRuntime runtime = Runtime();
+        AuthenticationUserSnapshot user = await InsertUserAsync(
+            runtime.Repository,
+            OperatorRoleId,
+            cancellationToken: cancellationToken).ConfigureAwait(true);
+        SessionFixture session = await CreateSessionAsync(
+            runtime,
+            user,
+            Session(),
+            cancellationToken).ConfigureAwait(true);
+
+        UserStatusSnapshot initial = Assert.IsType<UserStatusSnapshot>(
+            await runtime.Repository.ReadCanonicalAuthorizationAsync(
+                user.Id,
+                session.Write.Id,
+                user.TokenVersion,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal(SystemRole.Operator, initial.Role);
+        Assert.Equal(UserLifecycle.Active, initial.Lifecycle);
+        Assert.True(initial.ObservedAt > DateTimeOffset.MinValue);
+
+        using (NpgsqlCommand changeRole = _fixture.AdministratorDataSource.CreateCommand("""
+            UPDATE public.user_roles
+            SET role_id = $2,
+                assigned_at = clock_timestamp()
+            WHERE user_id = $1;
+            """))
+        {
+            changeRole.Parameters.AddWithValue(user.Id.Value);
+            changeRole.Parameters.AddWithValue(AuditorRoleId);
+            Assert.Equal(
+                1,
+                await changeRole.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true));
+        }
+
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
+            user.Id,
+            session.Write.Id,
+            user.TokenVersion,
+            cancellationToken).ConfigureAwait(true));
+        AuthenticationUserSnapshot roleChanged = await RequireUserAsync(
+            runtime.Repository,
+            user.Id,
+            cancellationToken).ConfigureAwait(true);
+        UserStatusSnapshot canonicalRole = Assert.IsType<UserStatusSnapshot>(
+            await runtime.Repository.ReadCanonicalAuthorizationAsync(
+                user.Id,
+                session.Write.Id,
+                roleChanged.TokenVersion,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal(SystemRole.Auditor, canonicalRole.Role);
+        Assert.Equal(user.TokenVersion + 1, roleChanged.TokenVersion);
+
+        using (NpgsqlCommand disable = _fixture.AdministratorDataSource.CreateCommand("""
+            UPDATE public.users SET status = 'disabled' WHERE id = $1;
+            """))
+        {
+            disable.Parameters.AddWithValue(user.Id.Value);
+            Assert.Equal(
+                1,
+                await disable.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true));
+        }
+
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
+            user.Id,
+            session.Write.Id,
+            roleChanged.TokenVersion + 1,
+            cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task OnlyFourFrozenRolesExistAndDatabasePreventsMultipleRolesPerUser()
+    {
+        // Governing contract: DEC-006. The migration-owned role catalog and the
+        // one-role-per-user constraint are the persistence boundary for Policy.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using (NpgsqlCommand roles = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT code FROM public.roles ORDER BY code;
+            """))
+        using (NpgsqlDataReader reader = await roles.ExecuteReaderAsync(cancellationToken)
+                   .ConfigureAwait(true))
+        {
+            List<string> actual = [];
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(true))
+            {
+                actual.Add(reader.GetString(0));
+            }
+
+            Assert.Equal(["admin", "auditor", "operator", "user"], actual);
+        }
+
+        SessionRuntime runtime = Runtime();
+        AuthenticationUserSnapshot user = await InsertUserAsync(
+            runtime.Repository,
+            UserRoleId,
+            cancellationToken: cancellationToken).ConfigureAwait(true);
+        using NpgsqlCommand duplicate = _fixture.AdministratorDataSource.CreateCommand("""
+            INSERT INTO public.user_roles (user_id, role_id) VALUES ($1, $2);
+            """);
+        duplicate.Parameters.AddWithValue(user.Id.Value);
+        duplicate.Parameters.AddWithValue(OperatorRoleId);
+        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+            () => duplicate.ExecuteNonQueryAsync(cancellationToken)).ConfigureAwait(true);
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, exception.SqlState);
+        Assert.Equal("uq_user_roles_one_role_per_user", exception.ConstraintName);
     }
 
     [Fact]
@@ -445,7 +561,7 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
             Session(ipAddress: " ", userAgent: null),
             cancellationToken).ConfigureAwait(true);
         await ExpireRefreshAsync(expired.Write.Id, cancellationToken).ConfigureAwait(true);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             expiredUser.Id,
             expired.Write.Id,
             expiredUser.TokenVersion,
@@ -491,7 +607,7 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
             RefreshRotationDisposition.Invalid,
             (await RotateAsync(runtime, disabled.Candidates, cancellationToken)
                 .ConfigureAwait(true)).Disposition);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             disabledUser.Id,
             disabled.Write.Id,
             disabledUser.TokenVersion + 1,
@@ -520,7 +636,7 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
             replacement).ConfigureAwait(true);
         Assert.Equal(RefreshRotationDisposition.Rotated, rotated.Disposition);
         Assert.Equal(original.Write.Id, rotated.SessionFamilyId);
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             reusedUser.Id,
             original.Write.Id,
             reusedUser.TokenVersion,
@@ -532,7 +648,7 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
             cancellationToken).ConfigureAwait(true);
         Assert.Equal(RefreshRotationDisposition.Reused, reused.Disposition);
         Assert.Equal(original.Write.Id, reused.SessionFamilyId);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             reusedUser.Id,
             original.Write.Id,
             reusedUser.TokenVersion,

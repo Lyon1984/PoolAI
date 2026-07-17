@@ -19,6 +19,8 @@ namespace PoolAI.EndToEndTests;
 internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
 {
     internal const string OriginalPassword = "Original-Password-123!";
+    private static readonly Guid AdminRoleId = Guid.Parse(
+        "01900000-0000-7000-8000-000000000001");
     private static readonly Guid UserRoleId = Guid.Parse(
         "01900000-0000-7000-8000-000000000004");
     private PostgreSqlContainer? postgres;
@@ -37,9 +39,13 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
 
     internal Guid DisabledUserId { get; } = Guid.CreateVersion7();
 
+    internal Guid AdminUserId { get; } = Guid.CreateVersion7();
+
     internal string ActiveEmail { get; private set; } = string.Empty;
 
     internal string DisabledEmail { get; private set; } = string.Empty;
+
+    internal string AdminEmail { get; private set; } = string.Empty;
 
     internal string MissingEmail { get; private set; } = string.Empty;
 
@@ -167,6 +173,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
         string suffix = Guid.NewGuid().ToString("N")[..12];
         ActiveEmail = $"active-{suffix}@poolai.test";
         DisabledEmail = $"disabled-{suffix}@poolai.test";
+        AdminEmail = $"admin-{suffix}@poolai.test";
         MissingEmail = $"MISSING-{suffix}@POOLAI.TEST";
 
         string administratorPassword = SecretHex();
@@ -208,12 +215,21 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             ActiveEmail,
             "active",
             passwordHasher.Hash(OriginalPassword),
+            UserRoleId,
             cancellationToken).ConfigureAwait(false);
         await InsertUserAsync(
             DisabledUserId,
             DisabledEmail,
             "disabled",
             passwordHasher.Hash(OriginalPassword),
+            UserRoleId,
+            cancellationToken).ConfigureAwait(false);
+        await InsertUserAsync(
+            AdminUserId,
+            AdminEmail,
+            "active",
+            passwordHasher.Hash(OriginalPassword),
+            AdminRoleId,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -222,6 +238,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
         string email,
         string status,
         string passwordHash,
+        Guid roleId,
         CancellationToken cancellationToken)
     {
         using NpgsqlCommand user = AdministratorDataSource.CreateCommand("""
@@ -243,7 +260,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             VALUES ($1, $2, $1);
             """);
         role.Parameters.AddWithValue(userId);
-        role.Parameters.AddWithValue(UserRoleId);
+        role.Parameters.AddWithValue(roleId);
         Assert.Equal(1, await role.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
     }
 
