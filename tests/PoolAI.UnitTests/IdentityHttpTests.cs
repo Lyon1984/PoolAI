@@ -15,6 +15,35 @@ public sealed class IdentityHttpTests
         "019bd5e8-30e0-7d4c-a7f2-bb1db0634041");
     private static readonly Guid UserId = Guid.Parse(
         "019bd5e8-30e0-7d4c-a7f2-bb1db0634042");
+    private static readonly (string Code, int Status, long? RetryAfter)[] ErrorCases =
+    [
+        ("invalid_credentials", 401, null),
+        ("invalid_user_token", 401, null),
+        ("mfa_challenge_invalid", 401, null),
+        ("totp_code_invalid", 401, null),
+        ("refresh_token_invalid", 401, null),
+        ("refresh_token_reused", 401, null),
+        ("account_locked", 429, 11),
+        ("user_disabled", 403, null),
+        ("totp_already_enabled", 409, null),
+        ("totp_not_enabled", 409, null),
+        ("totp_setup_expired", 409, null),
+        ("role_required", 403, null),
+        ("forbidden", 403, null),
+        ("resource_not_found", 404, null),
+        ("idempotency_conflict", 409, null),
+        ("resource_conflict", 409, null),
+        ("version_conflict", 412, null),
+        ("password_reset_token_invalid", 401, null),
+        ("password_policy_failed", 422, null),
+        ("validation_failed", 422, null),
+        ("invalid_request", 400, null),
+        ("rate_limit_exceeded", 429, 9),
+        ("coordination_unavailable", 503, null),
+        ("dependency_unavailable", 503, null),
+        ("service_unavailable", 503, null),
+        ("unexpected_internal", 500, null),
+    ];
 
     [Theory]
     [InlineData("admin", SystemRole.Admin)]
@@ -74,6 +103,39 @@ public sealed class IdentityHttpTests
             Assert.False(IdentityHttp.TryGetActor(context, out IdentityActor? actor));
             Assert.Null(actor);
             Assert.Throws<InvalidOperationException>(() => IdentityHttp.RequireActor(context));
+        }
+    }
+
+    [Fact]
+    public void SessionActorRequiresNonemptySidAndPreservesIdentityClaims()
+    {
+        Guid familyId = Guid.Parse("019bd5e8-30e0-7d4c-a7f2-bb1db0634043");
+        DefaultHttpContext valid = Context();
+        valid.User = Principal(
+            new Claim("sub", UserId.ToString("D")),
+            new Claim("role", "user"),
+            new Claim("token_version", "7"),
+            new Claim("sid", familyId.ToString("D")));
+
+        Assert.True(IdentityHttp.TryGetSessionActor(valid, out SessionActor? actor));
+        Assert.Equal(new EntityId(UserId), actor!.UserId);
+        Assert.Equal(new EntityId(familyId), actor.SessionFamilyId);
+        Assert.Equal(actor, IdentityHttp.RequireSessionActor(valid));
+
+        foreach (string? sid in new[] { null, "not-a-uuid", Guid.Empty.ToString("D") })
+        {
+            DefaultHttpContext invalid = Context();
+            invalid.User = Principal(
+                new Claim("sub", UserId.ToString("D")),
+                new Claim("role", "user"),
+                new Claim("token_version", "7"));
+            if (sid is not null)
+            {
+                invalid.User.Identities.Single().AddClaim(new Claim("sid", sid));
+            }
+
+            Assert.False(IdentityHttp.TryGetSessionActor(invalid, out _));
+            Assert.Throws<InvalidOperationException>(() => IdentityHttp.RequireSessionActor(invalid));
         }
     }
 
@@ -207,6 +269,98 @@ public sealed class IdentityHttpTests
     }
 
     [Fact]
+    public void SessionRequestValidationCoversEveryCredentialShape()
+    {
+        Assert.Contains("/email", IdentityHttp.Validate(new LoginRequest
+        {
+            Email = "invalid",
+            Password = string.Empty,
+        }));
+        Assert.Contains("/password", IdentityHttp.Validate(new LoginRequest
+        {
+            Email = "person@example.test",
+            Password = string.Empty,
+        }));
+        Assert.Contains("/challenge_id", IdentityHttp.Validate(new TotpVerifyRequest
+        {
+            ChallengeId = Guid.Empty,
+            TotpCode = "12A456",
+        }));
+        Assert.Contains("/totp_code", IdentityHttp.Validate(new TotpVerifyRequest
+        {
+            ChallengeId = UserId,
+            TotpCode = "12A456",
+        }));
+        Assert.Contains("/refresh_token", IdentityHttp.Validate(new RefreshRequest
+        {
+            RefreshToken = "short",
+        }));
+        Assert.Contains("/", IdentityHttp.Validate(new LogoutRequest
+        {
+            AllSessions = true,
+            RefreshToken = new string('R', 43),
+        }));
+        Assert.Equal(3, IdentityHttp.Validate(new PasswordChangeRequest
+        {
+            CurrentPassword = string.Empty,
+            NewPassword = "short",
+            Reason = " ",
+        }).Count);
+        Assert.Contains("/current_password", IdentityHttp.Validate(new TotpSetupRequest
+        {
+            CurrentPassword = string.Empty,
+        }));
+        Assert.Contains("/totp_code", IdentityHttp.Validate(new TotpConfirmRequest
+        {
+            ChallengeId = UserId,
+            TotpCode = "12345",
+        }));
+        Assert.Equal(2, IdentityHttp.Validate(new TotpDisableRequest
+        {
+            CurrentPassword = string.Empty,
+            TotpCode = "abcdef",
+        }).Count);
+    }
+
+    [Fact]
+    public void SessionContractMappingsNeverExposeMoreThanFrozenViews()
+    {
+        DateTimeOffset timestamp = DateTimeOffset.Parse(
+            "2026-07-17T00:00:00Z",
+            System.Globalization.CultureInfo.InvariantCulture);
+        TokenPair token = IdentityHttp.ToContract(new TokenPairView("access", "refresh", 900, 2_592_000));
+        Assert.Equal("Bearer", token.TokenType);
+        Assert.Equal("access", token.AccessToken);
+        MfaChallenge mfa = IdentityHttp.ToContract(new LoginMfaResultView(new EntityId(UserId), 300));
+        Assert.Equal("mfa_required", mfa.Object);
+        CurrentUserProfile profile = IdentityHttp.ToContract(new CurrentUserView(
+            new EntityId(UserId),
+            "person@example.test",
+            "Person",
+            SystemRole.User,
+            UserLifecycle.Active,
+            TotpEnabled: true,
+            timestamp,
+            Version: 7,
+            timestamp,
+            timestamp));
+        Assert.True(profile.TotpEnabled);
+        Assert.True(profile.PasswordChangedAt.HasValue);
+        TotpSetupResult setup = IdentityHttp.ToContract(new TotpSetupView(
+            new EntityId(UserId),
+            "SECRET",
+            "otpauth://totp/PoolAI:person",
+            600));
+        Assert.Equal("SECRET", setup.Secret);
+        TotpConfirmResult confirm = IdentityHttp.ToContract(new TotpConfirmView(["one", "two"]));
+        Assert.Equal(2, confirm.RecoveryCodes.Count);
+
+        DefaultHttpContext noStore = Context();
+        IdentityHttp.NoStore(noStore);
+        Assert.Equal("no-store", noStore.Response.Headers.CacheControl);
+    }
+
+    [Fact]
     public void MailboxConversionAndContractMappingsCoverAllEnums()
     {
         Assert.False(IdentityHttp.TryNormalizeEmail(null, out _));
@@ -257,26 +411,7 @@ public sealed class IdentityHttpTests
     [Fact]
     public void ErrorMappingSetsFrozenHeadersAndSupportsEveryStableBranch()
     {
-        (string Code, int Status, long? RetryAfter)[] cases =
-        [
-            ("role_required", 403, null),
-            ("forbidden", 403, null),
-            ("resource_not_found", 404, null),
-            ("idempotency_conflict", 409, null),
-            ("resource_conflict", 409, null),
-            ("version_conflict", 412, null),
-            ("password_reset_token_invalid", 401, null),
-            ("password_policy_failed", 422, null),
-            ("validation_failed", 422, null),
-            ("invalid_request", 400, null),
-            ("rate_limit_exceeded", 429, 9),
-            ("coordination_unavailable", 503, null),
-            ("dependency_unavailable", 503, null),
-            ("service_unavailable", 503, null),
-            ("unexpected_internal", 500, null),
-        ];
-
-        foreach ((string code, int status, long? retryAfter) in cases)
+        foreach ((string code, int status, long? retryAfter) in ErrorCases)
         {
             DefaultHttpContext context = Context();
             context.Request.Path = string.Equals(
@@ -302,7 +437,11 @@ public sealed class IdentityHttpTests
             }
             if (status == 401)
             {
-                Assert.Equal("PasswordReset", context.Response.Headers.WWWAuthenticate);
+                Assert.Equal(
+                    string.Equals(code, "password_reset_token_invalid", StringComparison.Ordinal)
+                        ? "PasswordReset"
+                        : "Bearer",
+                    context.Response.Headers.WWWAuthenticate);
             }
         }
 
@@ -335,13 +474,31 @@ public sealed class IdentityHttpTests
     }
 
     [Fact]
+    public void PasswordChangePolicyFailurePointsToNewPassword()
+    {
+        DefaultHttpContext context = Context();
+        context.Request.Path = "/api/v1/me/password";
+        IValueHttpResult result = Assert.IsAssignableFrom<IValueHttpResult>(
+            IdentityHttp.FromError(
+                context,
+                new ResultError("password_policy_failed", "description")));
+        ControlPlaneProblem problem = Assert.IsType<ControlPlaneProblem>(result.Value);
+
+        Assert.True(problem.Errors.HasValue);
+        Assert.True(problem.Errors.Value!.ContainsKey("/new_password"));
+    }
+
+    [Fact]
     public void RequestMetadataAndInvalidTokenHeadersAreBounded()
     {
         DefaultHttpContext context = Context();
         context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.10");
         context.Request.Headers.UserAgent = new string('x', 600);
         Assert.Equal("192.0.2.10", IdentityHttp.RemoteIp(context));
-        Assert.Equal(512, IdentityHttp.UserAgent(context)!.Length);
+        string summary = Assert.IsType<string>(IdentityHttp.UserAgent(context));
+        Assert.StartsWith("sha256:", summary, StringComparison.Ordinal);
+        Assert.Equal(71, summary.Length);
+        Assert.DoesNotContain("xxx", summary, StringComparison.Ordinal);
 
         context.Request.Headers.UserAgent = " ";
         Assert.Null(IdentityHttp.UserAgent(context));

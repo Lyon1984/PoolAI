@@ -10,17 +10,61 @@ namespace PoolAI.Modules.Identity.Endpoints;
 
 public static class IdentityEndpointMappings
 {
+#pragma warning disable MA0051 // The endpoint Composition Root keeps the complete Identity route surface visible.
     public static IEndpointRouteBuilder MapIdentityEndpoints(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         RouteGroupBuilder api = endpoints.MapGroup("/api/v1");
 
+        api.MapPost("/auth/login", LoginAsync)
+            .AllowAnonymous()
+            .WithName("login");
+        api.MapPost("/auth/refresh", RefreshSessionAsync)
+            .AllowAnonymous()
+            .WithName("refreshSession");
+        api.MapPost("/auth/totp/verify", VerifyLoginTotpAsync)
+            .AllowAnonymous()
+            .WithName("verifyLoginTotp");
+        api.MapPost("/auth/logout", LogoutAsync)
+            .AddEndpointFilter(static async (invocation, next) =>
+            {
+                HttpContext context = invocation.HttpContext;
+                return IdentityHttp.TryGetSessionActor(context, out _)
+                    ? await next(invocation).ConfigureAwait(false)
+                    : IdentityHttp.InvalidUserToken(context);
+            })
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("logout");
         api.MapPost("/auth/forgot-password", RequestPasswordResetAsync)
             .AllowAnonymous()
             .WithName("requestPasswordReset");
         api.MapPost("/auth/reset-password", CompletePasswordResetAsync)
             .AllowAnonymous()
             .WithName("resetPassword");
+
+        RouteGroupBuilder me = api.MapGroup("/me");
+        me.AddEndpointFilter(static async (invocation, next) =>
+        {
+            HttpContext context = invocation.HttpContext;
+            return IdentityHttp.TryGetSessionActor(context, out _)
+                ? await next(invocation).ConfigureAwait(false)
+                : IdentityHttp.InvalidUserToken(context);
+        });
+        me.MapGet("/", GetCurrentUserAsync)
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("getMyProfile");
+        me.MapPost("/password", ChangePasswordAsync)
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("changeMyPassword");
+        me.MapPost("/totp/setup", SetupTotpAsync)
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("beginMyTotpSetup");
+        me.MapPost("/totp/confirm", ConfirmTotpAsync)
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("confirmMyTotpSetup");
+        me.MapPost("/totp/disable", DisableTotpAsync)
+            .RequireAuthorization(RequireAnyUserRole)
+            .WithName("disableMyTotp");
 
         RouteGroupBuilder users = api.MapGroup("/admin/users");
         users.AddEndpointFilter(static async (invocation, next) =>
@@ -47,12 +91,371 @@ public static class IdentityEndpointMappings
             .WithName("adminRequestUserPasswordReset");
         return endpoints;
     }
+#pragma warning restore MA0051
 
     private static void RequireAdmin(AuthorizationPolicyBuilder policy) =>
         policy.RequireRole("admin");
 
     private static void RequireAnyReadRole(AuthorizationPolicyBuilder policy) =>
         policy.RequireRole("admin", "operator", "auditor");
+
+    private static void RequireAnyUserRole(AuthorizationPolicyBuilder policy) =>
+        policy.RequireRole("admin", "operator", "auditor", "user");
+
+    private static async Task<IResult> LoginAsync(
+        HttpContext context,
+        ILoginUseCase useCase,
+        LoginRequest request)
+    {
+        IResult? contentTypeFailure = IdentityHttp.RequireContentType(context, "application/json");
+        if (contentTypeFailure is not null)
+        {
+            return contentTypeFailure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        if (!IdentityHttp.TryNormalizeEmail(request.Email, out string email))
+        {
+            throw new InvalidOperationException("The validated login email could not be normalized.");
+        }
+
+        Result<LoginResultView> result = await useCase.ExecuteAsync(
+            new LoginCommand(
+                IdentityHttp.RequestId(context),
+                email,
+                request.Password,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        IdentityHttp.NoStore(context);
+        return result.Value switch
+        {
+            LoginTokenResultView token => Results.Ok(IdentityHttp.ToContract(token.Tokens)),
+            LoginMfaResultView mfa => Results.Ok(IdentityHttp.ToContract(mfa)),
+            _ => throw new InvalidOperationException("Unknown login result."),
+        };
+    }
+
+    private static async Task<IResult> VerifyLoginTotpAsync(
+        HttpContext context,
+        IVerifyLoginTotpUseCase useCase,
+        TotpVerifyRequest request)
+    {
+        IResult? contentTypeFailure = IdentityHttp.RequireContentType(context, "application/json");
+        if (contentTypeFailure is not null)
+        {
+            return contentTypeFailure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        Result<TokenPairView> result = await useCase.ExecuteAsync(
+            new VerifyLoginTotpCommand(
+                IdentityHttp.RequestId(context),
+                new EntityId(request.ChallengeId),
+                request.TotpCode,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        IdentityHttp.NoStore(context);
+        return Results.Ok(IdentityHttp.ToContract(result.Value));
+    }
+
+    private static async Task<IResult> RefreshSessionAsync(
+        HttpContext context,
+        IRefreshSessionUseCase useCase,
+        RefreshRequest request)
+    {
+        IResult? contentTypeFailure = IdentityHttp.RequireContentType(context, "application/json");
+        if (contentTypeFailure is not null)
+        {
+            return contentTypeFailure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        Result<TokenPairView> result = await useCase.ExecuteAsync(
+            new RefreshSessionCommand(
+                IdentityHttp.RequestId(context),
+                request.RefreshToken,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        IdentityHttp.NoStore(context);
+        return Results.Ok(IdentityHttp.ToContract(result.Value));
+    }
+
+    private static async Task<IResult> LogoutAsync(
+        HttpContext context,
+        ILogoutUseCase useCase,
+        LogoutRequest? request)
+    {
+        if (request is not null)
+        {
+            IResult? contentTypeFailure = IdentityHttp.RequireContentType(context, "application/json");
+            if (contentTypeFailure is not null)
+            {
+                return contentTypeFailure;
+            }
+
+            IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+            if (errors.Count != 0)
+            {
+                return IdentityHttp.ValidationProblem(context, errors);
+            }
+        }
+
+        string? refreshToken = request?.RefreshToken.HasValue is true
+            ? request.RefreshToken.Value
+            : null;
+        bool allSessions = request?.AllSessions.HasValue is true
+            && request.AllSessions.Value;
+        Result<IdentityCommandOutcome> result = await useCase.ExecuteAsync(
+            new LogoutCommand(
+                IdentityHttp.RequestId(context),
+                IdentityHttp.RequireSessionActor(context),
+                refreshToken,
+                allSessions,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        return result.IsFailure
+            ? IdentityHttp.FromError(context, result.Error)
+            : Results.NoContent();
+    }
+
+    private static async Task<IResult> GetCurrentUserAsync(
+        HttpContext context,
+        IGetCurrentUserUseCase useCase)
+    {
+        Result<CurrentUserView> result = await useCase.ExecuteAsync(
+            new GetCurrentUserQuery(IdentityHttp.RequireSessionActor(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        context.Response.Headers.ETag = IdentityHttp.ETag(result.Value.Version);
+        IdentityHttp.NoStore(context);
+        return Results.Ok(IdentityHttp.ToContract(result.Value));
+    }
+
+    private static async Task<IResult> ChangePasswordAsync(
+        HttpContext context,
+        IChangePasswordUseCase useCase,
+        PasswordChangeRequest request)
+    {
+        IResult? contentTypeFailure = IdentityHttp.RequireContentType(context, "application/json");
+        if (contentTypeFailure is not null)
+        {
+            return contentTypeFailure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        if (!IdentityHttp.TryGetIdempotencyKey(context, out string? idempotencyKey, out IResult? failure)
+            || !IdentityHttp.TryGetExpectedVersion(context, out long expectedVersion, out failure))
+        {
+            return failure!;
+        }
+
+        Result<IdentityCommandOutcome> result = await useCase.ExecuteAsync(
+            new ChangePasswordCommand(
+                IdentityHttp.RequestId(context),
+                IdentityHttp.RequireSessionActor(context),
+                idempotencyKey!,
+                expectedVersion,
+                request.CurrentPassword,
+                request.NewPassword,
+                request.Reason,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        if (result.Value.ETag is not null)
+        {
+            context.Response.Headers.ETag = result.Value.ETag;
+        }
+
+        IdentityHttp.NoStore(context);
+        return Results.StatusCode(result.Value.StatusCode);
+    }
+
+    private static async Task<IResult> SetupTotpAsync(
+        HttpContext context,
+        ISetupTotpUseCase useCase,
+        TotpSetupRequest request)
+    {
+        IResult? failure = IdentityHttp.RequireContentType(context, "application/json");
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        if (!IdentityHttp.TryGetIdempotencyKey(context, out string? idempotencyKey, out failure))
+        {
+            return failure!;
+        }
+
+        Result<IdentityCommandOutcome<TotpSetupView>> result = await useCase.ExecuteAsync(
+            new SetupTotpCommand(
+                IdentityHttp.RequestId(context),
+                IdentityHttp.RequireSessionActor(context),
+                idempotencyKey!,
+                request.CurrentPassword,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        IdentityHttp.NoStore(context);
+        return Results.Json(
+            IdentityHttp.ToContract(result.Value.Value),
+            statusCode: result.Value.StatusCode);
+    }
+
+    private static async Task<IResult> ConfirmTotpAsync(
+        HttpContext context,
+        IConfirmTotpUseCase useCase,
+        TotpConfirmRequest request)
+    {
+        IResult? failure = IdentityHttp.RequireContentType(context, "application/json");
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        if (!IdentityHttp.TryGetIdempotencyKey(context, out string? idempotencyKey, out failure)
+            || !IdentityHttp.TryGetExpectedVersion(context, out long expectedVersion, out failure))
+        {
+            return failure!;
+        }
+
+        Result<IdentityCommandOutcome<TotpConfirmView>> result = await useCase.ExecuteAsync(
+            new ConfirmTotpCommand(
+                IdentityHttp.RequestId(context),
+                IdentityHttp.RequireSessionActor(context),
+                idempotencyKey!,
+                expectedVersion,
+                new EntityId(request.ChallengeId),
+                request.TotpCode,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        if (result.Value.ETag is not null)
+        {
+            context.Response.Headers.ETag = result.Value.ETag;
+        }
+
+        IdentityHttp.NoStore(context);
+        return Results.Json(
+            IdentityHttp.ToContract(result.Value.Value),
+            statusCode: result.Value.StatusCode);
+    }
+
+    private static async Task<IResult> DisableTotpAsync(
+        HttpContext context,
+        IDisableTotpUseCase useCase,
+        TotpDisableRequest request)
+    {
+        IResult? failure = IdentityHttp.RequireContentType(context, "application/json");
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> errors = IdentityHttp.Validate(request);
+        if (errors.Count != 0)
+        {
+            return IdentityHttp.ValidationProblem(context, errors);
+        }
+
+        if (!IdentityHttp.TryGetIdempotencyKey(context, out string? idempotencyKey, out failure)
+            || !IdentityHttp.TryGetExpectedVersion(context, out long expectedVersion, out failure))
+        {
+            return failure!;
+        }
+
+        Result<IdentityCommandOutcome> result = await useCase.ExecuteAsync(
+            new DisableTotpCommand(
+                IdentityHttp.RequestId(context),
+                IdentityHttp.RequireSessionActor(context),
+                idempotencyKey!,
+                expectedVersion,
+                request.CurrentPassword,
+                request.TotpCode,
+                IdentityHttp.RemoteIp(context),
+                IdentityHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return IdentityHttp.FromError(context, result.Error);
+        }
+
+        if (result.Value.ETag is not null)
+        {
+            context.Response.Headers.ETag = result.Value.ETag;
+        }
+
+        return Results.StatusCode(result.Value.StatusCode);
+    }
 
     private static async Task<IResult> ListUsersAsync(
         HttpContext context,

@@ -309,6 +309,48 @@ if (existsSync(secretDirectory)) {
     );
   }
 
+  const purposeSecretNames = [
+    "jwt-signing-key",
+    "auth-refresh-token-current-pepper",
+    "auth-password-reset-rate-scope-pepper",
+    "auth-token-hash-current-pepper",
+    "auth-totp-recovery-code-pepper",
+    "auth-login-rate-scope-pepper",
+    "api-key-current-pepper",
+    "idempotency-request-hash-pepper",
+    "envelope-current-key",
+  ];
+  const purposeSecretValues = new Map();
+  for (const secretName of purposeSecretNames) {
+    const configuredSecret = configuration.secrets?.[secretName];
+    check(configuredSecret !== undefined, `${secretName} Compose secret must be declared.`);
+    if (configuredSecret === undefined) {
+      continue;
+    }
+
+    const secretPath = path.resolve(configuredSecret.file ?? "");
+    if (!existsSync(secretPath)) {
+      continue;
+    }
+
+    const encoded = readFileSync(secretPath, "utf8").trim();
+    const decoded = Buffer.from(encoded, "base64");
+    check(
+      decoded.length === 32 && decoded.toString("base64") === encoded,
+      `${secretName} must contain one canonical Base64-encoded 256-bit secret.`,
+    );
+    const existingName = purposeSecretValues.get(encoded);
+    check(
+      existingName === undefined,
+      existingName === undefined
+        ? ""
+        : `${secretName} must not reuse purpose-specific key material from ${existingName}.`,
+    );
+    if (existingName === undefined) {
+      purposeSecretValues.set(encoded, secretName);
+    }
+  }
+
   for (const privateFileName of ["mock-smtp-ca-key.pem", "mock-smtp-ca.pem"]) {
     const privatePath = path.join(secretDirectory, privateFileName);
     check(
@@ -330,8 +372,11 @@ const forbiddenEnvironmentKeys = [
   "Data__Postgres__ConnectionString",
   "Data__Redis__ConnectionString",
   "Auth__Jwt__SigningKey",
+  "Auth__RefreshToken__CurrentPepper",
   "Auth__PasswordReset__RateLimitScopePepper",
   "Auth__TokenHash__CurrentPepper",
+  "Auth__TOTP__RecoveryCodePepper",
+  "Auth__Login__RateLimitScopePepper",
   "ApiKeys__CurrentPepper",
   "Idempotency__RequestHashPepper",
   "Secrets__Envelope__CurrentKey",
@@ -355,8 +400,11 @@ function secretTargets(serviceName) {
 
 const apiOnlySecretTargets = [
   "Auth__Jwt__SigningKey",
+  "Auth__RefreshToken__CurrentPepper",
   "Auth__PasswordReset__RateLimitScopePepper",
   "Auth__TokenHash__CurrentPepper",
+  "Auth__TOTP__RecoveryCodePepper",
+  "Auth__Login__RateLimitScopePepper",
   "ApiKeys__CurrentPepper",
   "Idempotency__RequestHashPepper",
 ];
@@ -376,6 +424,19 @@ for (const [host, expectedTargets] of [
   for (const expectedTarget of expectedTargets) {
     check(targets.has(expectedTarget), `${host} is missing secret target ${expectedTarget}.`);
   }
+}
+
+for (const [key, expectedValue] of Object.entries({
+  Auth__RefreshToken__CurrentPepperVersion: "1",
+  Auth__TOTP__RecoveryCodePepperVersion: "1",
+  Auth__Login__IpFailuresPerMinute: "20",
+  Auth__Login__MaxFailures: "5",
+  Auth__Login__LockoutMinutes: "15",
+})) {
+  check(
+    services.api?.environment?.[key] === expectedValue,
+    `api must set the frozen M1-E2 value ${key}=${expectedValue}.`,
+  );
 }
 
 const workerSecretTargets = secretTargets("worker");

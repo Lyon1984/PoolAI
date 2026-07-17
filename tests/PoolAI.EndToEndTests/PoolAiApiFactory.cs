@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using PoolAI.Modules.Identity.Application;
 using PoolAI.Modules.Operations.Abstractions;
 
 namespace PoolAI.EndToEndTests;
@@ -17,6 +18,8 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
     internal MutableNtpOffsetProbe NtpOffsetProbe { get; } = new();
 
     internal ReadyRuntimeDependencyReadiness DependencyReadiness { get; } = new();
+
+    internal TimeProvider AuthorizationTimeProvider { get; set; } = TimeProvider.System;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -37,14 +40,21 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
             services.AddSingleton<IRuntimeDependencyReadiness>(DependencyReadiness);
             services.RemoveAll<INtpOffsetProbe>();
             services.AddSingleton<INtpOffsetProbe>(NtpOffsetProbe);
+            services.RemoveAll<IAccessSessionValidator>();
+            services.AddSingleton<IAccessSessionValidator, AlwaysActiveAccessSessionValidator>();
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton(AuthorizationTimeProvider);
         });
     }
 
     private Dictionary<string, string?> ValidConfiguration()
     {
         string jwtSecret = Convert.ToBase64String(JwtSigningKey);
+        string refreshPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string rateLimitPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string tokenPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string recoveryCodePepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string loginRateLimitPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string apiKeyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string idempotencyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string envelopeKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -56,9 +66,15 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
             ["App:AllowedHosts:0"] = "localhost",
             ["Cors:AllowedOrigins:0"] = "http://localhost",
             ["Auth:Jwt:SigningKey"] = jwtSecret,
+            ["Auth:RefreshToken:CurrentPepperVersion"] = "1",
+            ["Auth:RefreshToken:CurrentPepper"] = refreshPepper,
             ["Auth:PasswordReset:RateLimitScopePepper"] = rateLimitPepper,
             ["Auth:TokenHash:CurrentPepperVersion"] = "1",
             ["Auth:TokenHash:CurrentPepper"] = tokenPepper,
+            ["Auth:TOTP:RecoveryCodePepperVersion"] = "1",
+            ["Auth:TOTP:RecoveryCodePepper"] = recoveryCodePepper,
+            ["Auth:Login:IpFailuresPerMinute"] = "20",
+            ["Auth:Login:RateLimitScopePepper"] = loginRateLimitPepper,
             ["ApiKeys:CurrentPepper"] = apiKeyPepper,
             ["Idempotency:RequestHashPepper"] = idempotencyPepper,
             ["Data:Postgres:ConnectionString"] =
@@ -74,5 +90,17 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
             ["Secrets:Envelope:DecryptKeyRing:test-kek-v1"] = envelopeKey,
             ["Health:Ntp:Server"] = "127.0.0.1",
         };
+    }
+
+    private sealed class AlwaysActiveAccessSessionValidator : IAccessSessionValidator
+    {
+        public ValueTask<bool> IsActiveAsync(
+            Guid userId,
+            Guid sessionFamilyId,
+            long tokenVersion,
+            CancellationToken cancellationToken) => ValueTask.FromResult(
+                userId != Guid.Empty
+                && sessionFamilyId != Guid.Empty
+                && tokenVersion > 0);
     }
 }

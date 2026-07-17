@@ -19,12 +19,12 @@
         "PoolAI.Modules.Identity"
       ],
       "pathEndsWith": [],
-      "linesCovered": 4382,
-      "linesValid": 4722,
-      "lineRate": 92.7996611605252,
-      "branchesCovered": 1349,
-      "branchesValid": 1710,
-      "branchRate": 78.88888888888889
+      "linesCovered": 8544,
+      "linesValid": 9019,
+      "lineRate": 94.73334072513583,
+      "branchesCovered": 2396,
+      "branchesValid": 2875,
+      "branchRate": 83.3391304347826
     },
     "secret": {
       "pathIncludes": [],
@@ -32,12 +32,12 @@
         "/PoolAiRuntimeConfigurationValidator.cs",
         "/PostgresEmailOutboxDeliveryStore.cs"
       ],
-      "linesCovered": 722,
-      "linesValid": 831,
-      "lineRate": 86.8832731648616,
-      "branchesCovered": 302,
-      "branchesValid": 401,
-      "branchRate": 75.31172069825436
+      "linesCovered": 808,
+      "linesValid": 917,
+      "lineRate": 88.113413304253,
+      "branchesCovered": 316,
+      "branchesValid": 419,
+      "branchRate": 75.41766109785203
     }
   }
 }

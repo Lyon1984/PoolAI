@@ -66,9 +66,13 @@ public static class PoolAiRuntimeConfigurationValidator
             validation.RequireDistinctBase64Secrets(
             [
                 "Auth:Jwt:SigningKey",
+                "Auth:RefreshToken:CurrentPepper",
+                "Auth:RefreshToken:PreviousPepper",
                 "Auth:PasswordReset:RateLimitScopePepper",
                 "Auth:TokenHash:CurrentPepper",
                 "Auth:TokenHash:PreviousPepper",
+                "Auth:TOTP:RecoveryCodePepper",
+                "Auth:Login:RateLimitScopePepper",
                 "Idempotency:RequestHashPepper",
                 "ApiKeys:CurrentPepper",
                 "ApiKeys:PreviousPepper",
@@ -141,11 +145,42 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Fixed("Auth:Jwt:RefreshTokenDays", 30);
         validation.Fixed("Auth:Jwt:ClockSkewSeconds", 30);
         validation.Base64Secret("Auth:Jwt:SigningKey", 32);
+        ValidateRefreshTokenHash(validation);
         validation.Range("Auth:Password:MinLength", 12, 12, 128);
         validation.Range("Auth:PasswordReset:TokenMinutes", 30, 5, 60);
         validation.Range("Auth:PasswordReset:IpRequestsPerMinute", 5, 1, 60);
         validation.Range("Auth:PasswordReset:AccountRequestsPerMinute", 3, 1, 20);
         validation.Base64Secret("Auth:PasswordReset:RateLimitScopePepper", 32);
+        ValidateOneTimeTokenHash(validation);
+        ValidateTotpAndLogin(validation);
+
+        string prefix = validation.String("ApiKeys:Prefix", "sk-pool-");
+        if (prefix.Length is < 5 or > 16 || prefix.Any(static character => character > 0x7f))
+        {
+            validation.Invalid("ApiKeys:Prefix");
+        }
+
+        validation.Base64Secret("ApiKeys:CurrentPepper", 32);
+        validation.OptionalBase64Secret("ApiKeys:PreviousPepper", 32);
+        validation.Base64Secret("Idempotency:RequestHashPepper", 32);
+    }
+
+    private static void ValidateRefreshTokenHash(Validation validation)
+    {
+        int currentRefreshPepperVersion = validation.Range(
+            "Auth:RefreshToken:CurrentPepperVersion",
+            1,
+            1,
+            short.MaxValue);
+        validation.Base64Secret("Auth:RefreshToken:CurrentPepper", 32);
+        ValidateOptionalPepperPair(
+            validation,
+            "Auth:RefreshToken",
+            currentRefreshPepperVersion);
+    }
+
+    private static void ValidateOneTimeTokenHash(Validation validation)
+    {
         int currentTokenPepperVersion = validation.Range(
             "Auth:TokenHash:CurrentPepperVersion",
             1,
@@ -176,21 +211,58 @@ public static class PoolAiRuntimeConfigurationValidator
 
             validation.OptionalBase64Secret("Auth:TokenHash:PreviousPepper", 32);
         }
+    }
+
+    private static void ValidateTotpAndLogin(Validation validation)
+    {
         validation.Length("Auth:TOTP:Issuer", "PoolAI", 1, 64);
         validation.Fixed("Auth:TOTP:StepSeconds", 30);
         validation.Fixed("Auth:TOTP:AllowedAdjacentSteps", 1);
+        validation.Range(
+            "Auth:TOTP:RecoveryCodePepperVersion",
+            1,
+            1,
+            short.MaxValue);
+        validation.Base64Secret("Auth:TOTP:RecoveryCodePepper", 32);
+        validation.Range("Auth:Login:IpFailuresPerMinute", 20, 1, 100);
+        validation.Base64Secret("Auth:Login:RateLimitScopePepper", 32);
         validation.Range("Auth:Login:MaxFailures", 5, 3, 20);
         validation.Range("Auth:Login:LockoutMinutes", 15, 1, 1_440);
+    }
 
-        string prefix = validation.String("ApiKeys:Prefix", "sk-pool-");
-        if (prefix.Length is < 5 or > 16 || prefix.Any(static character => character > 0x7f))
+    private static void ValidateOptionalPepperPair(
+        Validation validation,
+        string section,
+        int currentVersion)
+    {
+        string versionKey = $"{section}:PreviousPepperVersion";
+        string pepperKey = $"{section}:PreviousPepper";
+        string? version = validation.Optional(versionKey);
+        string? pepper = validation.Optional(pepperKey);
+        if (string.IsNullOrWhiteSpace(version) != string.IsNullOrWhiteSpace(pepper))
         {
-            validation.Invalid("ApiKeys:Prefix");
+            validation.Invalid(versionKey);
+            validation.Invalid(pepperKey);
+            return;
         }
 
-        validation.Base64Secret("ApiKeys:CurrentPepper", 32);
-        validation.OptionalBase64Secret("ApiKeys:PreviousPepper", 32);
-        validation.Base64Secret("Idempotency:RequestHashPepper", 32);
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return;
+        }
+
+        if (!int.TryParse(
+                version,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedVersion)
+            || parsedVersion is < 1 or > short.MaxValue
+            || parsedVersion == currentVersion)
+        {
+            validation.Invalid(versionKey);
+        }
+
+        validation.OptionalBase64Secret(pepperKey, 32);
     }
 
     private static void ValidateDataStores(
@@ -768,10 +840,12 @@ public static class PoolAiRuntimeConfigurationValidator
                 return;
             }
 
+            byte[]? left = null;
+            byte[]? right = null;
             try
             {
-                byte[] left = Convert.FromBase64String(leftEncoded);
-                byte[] right = Convert.FromBase64String(rightEncoded);
+                left = Convert.FromBase64String(leftEncoded);
+                right = Convert.FromBase64String(rightEncoded);
                 if (!CryptographicOperations.FixedTimeEquals(left, right))
                 {
                     Invalid(leftKey);
@@ -782,6 +856,11 @@ public static class PoolAiRuntimeConfigurationValidator
             {
                 // Base64 shape is reported by Base64Secret; avoid duplicating
                 // parsing errors here while still aggregating all invalid keys.
+            }
+            finally
+            {
+                Clear(left);
+                Clear(right);
             }
         }
 
@@ -806,17 +885,27 @@ public static class PoolAiRuntimeConfigurationValidator
                 }
             }
 
-            for (int left = 0; left < values.Count; left++)
+            try
             {
-                for (int right = left + 1; right < values.Count; right++)
+                for (int left = 0; left < values.Count; left++)
                 {
-                    if (CryptographicOperations.FixedTimeEquals(
-                            values[left].Value,
-                            values[right].Value))
+                    for (int right = left + 1; right < values.Count; right++)
                     {
-                        Invalid(values[left].Key);
-                        Invalid(values[right].Key);
+                        if (CryptographicOperations.FixedTimeEquals(
+                                values[left].Value,
+                                values[right].Value))
+                        {
+                            Invalid(values[left].Key);
+                            Invalid(values[right].Key);
+                        }
                     }
+                }
+            }
+            finally
+            {
+                foreach ((_, byte[] value) in values)
+                {
+                    CryptographicOperations.ZeroMemory(value);
                 }
             }
         }
@@ -865,25 +954,45 @@ public static class PoolAiRuntimeConfigurationValidator
 
         private static bool IsBase64AtLeast(string value, int minimumBytes)
         {
+            byte[]? decoded = null;
             try
             {
-                return Convert.FromBase64String(value).Length >= minimumBytes;
+                decoded = Convert.FromBase64String(value);
+                return decoded.Length >= minimumBytes;
             }
             catch (FormatException)
             {
                 return false;
+            }
+            finally
+            {
+                Clear(decoded);
             }
         }
 
         private static bool IsBase64Exact(string value, int exactBytes)
         {
+            byte[]? decoded = null;
             try
             {
-                return Convert.FromBase64String(value).Length == exactBytes;
+                decoded = Convert.FromBase64String(value);
+                return decoded.Length == exactBytes;
             }
             catch (FormatException)
             {
                 return false;
+            }
+            finally
+            {
+                Clear(decoded);
+            }
+        }
+
+        private static void Clear(byte[]? value)
+        {
+            if (value is not null)
+            {
+                CryptographicOperations.ZeroMemory(value);
             }
         }
     }

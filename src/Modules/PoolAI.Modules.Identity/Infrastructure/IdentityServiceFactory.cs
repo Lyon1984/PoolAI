@@ -13,4 +13,12 @@ internal static class IdentityServiceFactory
         return new PostgresIdentityRepository(
             serviceProvider.GetRequiredService<NpgsqlDataSource>());
     }
+
+    internal static IIdentitySessionRepository CreateSessionRepository(
+        IServiceProvider serviceProvider)
+    {
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        return new PostgresIdentitySessionRepository(
+            serviceProvider.GetRequiredService<NpgsqlDataSource>());
+    }
 }

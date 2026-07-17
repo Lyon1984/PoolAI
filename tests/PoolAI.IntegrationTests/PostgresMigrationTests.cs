@@ -7,7 +7,7 @@ using Testcontainers.PostgreSql;
 
 namespace PoolAI.IntegrationTests;
 
-public sealed class PostgresMigrationTests
+public sealed partial class PostgresMigrationTests
 {
     [Fact]
     [Trait("Category", "PostgreSQL")]
@@ -36,7 +36,11 @@ public sealed class PostgresMigrationTests
         await AssertNumeric78BoundaryAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertRefreshSessionForeignKeysAreIndexedAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await AssertIdentityM1E2SchemaAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertRuntimeRolePermissionsAsync(connectionString, cancellationToken).ConfigureAwait(true);
+        await AssertIdentityM1E2RuntimePermissionsAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertIdentityEntryPointSecurityAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
@@ -129,7 +133,7 @@ public sealed class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(4L, Assert.IsType<long>(scalar));
+        Assert.Equal(5L, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(
@@ -413,7 +417,7 @@ public sealed class PostgresMigrationTests
         using NpgsqlCommand future = dataSource.CreateCommand("""
             INSERT INTO public.poolai_schema_migrations (
                 version, name, checksum_sha256, applied_by
-            ) VALUES (5, '0005_future.sql', repeat('a', 64), 'future-release');
+            ) VALUES (6, '0006_future.sql', repeat('a', 64), 'future-release');
             """);
         await future.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

@@ -205,6 +205,91 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task JwtLifetimeUsesInjectedTimeProviderAndThirtySecondSkew()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2030-01-02T03:04:05Z",
+            CultureInfo.InvariantCulture);
+        await using SuccessfulIdentityApiFactory factory = new()
+        {
+            AuthorizationTimeProvider = new FixedTimeProvider(now),
+        };
+
+        using HttpClient withinSkew = factory.CreateClient();
+        withinSkew.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateJwt(
+                factory.JwtSigningKey,
+                "PoolAI",
+                "PoolAI.Web",
+                "admin",
+                tokenVersion: 1,
+                now.AddSeconds(-30)));
+        using HttpResponseMessage accepted = await withinSkew.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        using HttpClient beyondSkew = factory.CreateClient();
+        beyondSkew.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateJwt(
+                factory.JwtSigningKey,
+                "PoolAI",
+                "PoolAI.Web",
+                "admin",
+                tokenVersion: 1,
+                now.AddSeconds(-31)));
+        using HttpResponseMessage rejected = await beyondSkew.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        using HttpClient invertedLifetime = factory.CreateClient();
+        invertedLifetime.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateJwt(
+                factory.JwtSigningKey,
+                "PoolAI",
+                "PoolAI.Web",
+                "admin",
+                tokenVersion: 1,
+                now.AddSeconds(-20),
+                notBefore: now.AddSeconds(20)));
+        using HttpResponseMessage inverted = await invertedLifetime.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, inverted.StatusCode);
+        await AssertProblemAsync(rejected, "invalid_user_token");
+        await AssertProblemAsync(inverted, "invalid_user_token");
+    }
+
+    [Fact]
+    public async Task JwtRejectsAValidSignatureUsingAnUnapprovedAlgorithm()
+    {
+        await using SuccessfulIdentityApiFactory factory = new();
+        using HttpClient client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateJwt(
+                factory.JwtSigningKey,
+                "PoolAI",
+                "PoolAI.Web",
+                "admin",
+                tokenVersion: 1,
+                TimeProvider.System.GetUtcNow().AddMinutes(5),
+                algorithm: "HS384"));
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        await AssertProblemAsync(response, "invalid_user_token");
+    }
+
+    [Fact]
     public async Task PasswordResetTokenFailureReturnsExplicitChallenge()
     {
         await using IdentityFailureApiFactory factory = new();
@@ -686,18 +771,20 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         return client;
     }
 
-    private static string CreateJwt(
+    internal static string CreateJwt(
         byte[] signingKey,
         string issuer,
         string audience,
         string? role,
         long? tokenVersion,
         DateTimeOffset expiresAt,
-        Guid? subjectId = null)
+        Guid? subjectId = null,
+        DateTimeOffset? notBefore = null,
+        string algorithm = "HS256")
     {
         string header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new
         {
-            alg = "HS256",
+            alg = algorithm,
             typ = "JWT",
         }));
         Dictionary<string, object> claims = new(StringComparer.Ordinal)
@@ -708,6 +795,7 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
             ["sub"] = (subjectId ?? Guid.CreateVersion7()).ToString(
                 "D",
                 CultureInfo.InvariantCulture),
+            ["sid"] = Guid.CreateVersion7().ToString("D", CultureInfo.InvariantCulture),
         };
         if (role is not null)
         {
@@ -717,12 +805,20 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         {
             claims["token_version"] = tokenVersion.Value;
         }
+        if (notBefore is not null)
+        {
+            claims["nbf"] = notBefore.Value.ToUnixTimeSeconds();
+        }
 
         string payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(claims));
         string signingInput = string.Concat(header, ".", payload);
-        byte[] signature = HMACSHA256.HashData(
-            signingKey,
-            Encoding.ASCII.GetBytes(signingInput));
+        byte[] signingInputBytes = Encoding.ASCII.GetBytes(signingInput);
+        byte[] signature = algorithm switch
+        {
+            "HS256" => HMACSHA256.HashData(signingKey, signingInputBytes),
+            "HS384" => HMACSHA384.HashData(signingKey, signingInputBytes),
+            _ => throw new ArgumentOutOfRangeException(nameof(algorithm)),
+        };
         return string.Concat(signingInput, ".", Base64Url(signature));
     }
 
@@ -793,6 +889,11 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         .TrimEnd('=')
         .Replace('+', '-')
         .Replace('/', '_');
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     public ValueTask DisposeAsync() => _factory.DisposeAsync();
 

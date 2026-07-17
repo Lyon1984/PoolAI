@@ -8,6 +8,7 @@ const SQL_FILES = [
   '0002_quota_functions.sql',
   '0003_runtime_permissions.sql',
   '0004_identity_m1_e1.sql',
+  '0005_identity_m1_e2.sql',
 ]
 
 function exposeDollarQuotedBodies(source) {

@@ -87,20 +87,32 @@ public sealed record IdentityCommandOutcome<T>(
 
 public sealed record IdentityCommandOutcome(
     int StatusCode,
-    bool IsReplay);
+    bool IsReplay,
+    string? ETag = null);
 
 public static class IdentityErrorCodes
 {
+    public const string AccountLocked = "account_locked";
     public const string CoordinationUnavailable = "coordination_unavailable";
     public const string DependencyUnavailable = "dependency_unavailable";
     public const string IdempotencyConflict = "idempotency_conflict";
     public const string InvalidRequest = "invalid_request";
+    public const string InvalidCredentials = "invalid_credentials";
+    public const string InvalidUserToken = "invalid_user_token";
+    public const string MfaChallengeInvalid = "mfa_challenge_invalid";
     public const string PasswordPolicyFailed = "password_policy_failed";
     public const string PasswordResetTokenInvalid = "password_reset_token_invalid";
     public const string RateLimitExceeded = "rate_limit_exceeded";
+    public const string RefreshTokenInvalid = "refresh_token_invalid";
+    public const string RefreshTokenReused = "refresh_token_reused";
     public const string ResourceConflict = "resource_conflict";
     public const string ResourceNotFound = "resource_not_found";
     public const string RoleRequired = "role_required";
+    public const string TotpAlreadyEnabled = "totp_already_enabled";
+    public const string TotpCodeInvalid = "totp_code_invalid";
+    public const string TotpNotEnabled = "totp_not_enabled";
+    public const string TotpSetupExpired = "totp_setup_expired";
+    public const string UserDisabled = "user_disabled";
     public const string ValidationFailed = "validation_failed";
     public const string VersionConflict = "version_conflict";
 }

@@ -10,8 +10,11 @@ public sealed class ConfigurationValidationTests
 {
     [Theory]
     [InlineData("Auth:Jwt:SigningKey")]
+    [InlineData("Auth:RefreshToken:CurrentPepper")]
     [InlineData("Auth:PasswordReset:RateLimitScopePepper")]
     [InlineData("Auth:TokenHash:CurrentPepper")]
+    [InlineData("Auth:TOTP:RecoveryCodePepper")]
+    [InlineData("Auth:Login:RateLimitScopePepper")]
     [InlineData("Idempotency:RequestHashPepper")]
     [InlineData("ApiKeys:CurrentPepper")]
     [InlineData("Secrets:Envelope:CurrentKey")]
@@ -330,6 +333,57 @@ public sealed class ConfigurationValidationTests
         Assert.Contains("Auth:TokenHash:PreviousPepperVersion", exception.InvalidKeys);
     }
 
+    [Fact]
+    public void PreviousRefreshPepperRequiresADistinctVersionAndCompletePair()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Auth:RefreshToken:PreviousPepperVersion"] = "1";
+        values["Auth:RefreshToken:PreviousPepper"] =
+            values["Auth:RefreshToken:CurrentPepper"];
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Auth:RefreshToken:PreviousPepperVersion", exception.InvalidKeys);
+        Assert.Contains("Auth:RefreshToken:CurrentPepper", exception.InvalidKeys);
+        Assert.Contains("Auth:RefreshToken:PreviousPepper", exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("Auth:RefreshToken:PreviousPepperVersion", "2")]
+    [InlineData("Auth:RefreshToken:PreviousPepper", "not-even-base64")]
+    public void PreviousRefreshPepperRejectsAnIncompletePair(string key, string value)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values[key] = value;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("Auth:RefreshToken:PreviousPepperVersion", exception.InvalidKeys);
+        Assert.Contains("Auth:RefreshToken:PreviousPepper", exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void PreviousRefreshPepperAcceptsACompleteDistinctPair()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Auth:RefreshToken:PreviousPepperVersion"] = "2";
+        values["Auth:RefreshToken:PreviousPepper"] =
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production");
+    }
+
     [Theory]
     [InlineData("Auth:PasswordReset:IpRequestsPerMinute", "0")]
     [InlineData("Auth:PasswordReset:AccountRequestsPerMinute", "21")]
@@ -347,11 +401,39 @@ public sealed class ConfigurationValidationTests
         Assert.Contains(key, exception.InvalidKeys);
     }
 
-    [Fact]
-    public void SecurityPurposesCannotReuseTheSameKeyMaterial()
+    [Theory]
+    [InlineData("Auth:Login:IpFailuresPerMinute", "0")]
+    [InlineData("Auth:Login:IpFailuresPerMinute", "101")]
+    [InlineData("Auth:Login:MaxFailures", "2")]
+    [InlineData("Auth:Login:MaxFailures", "21")]
+    [InlineData("Auth:Login:LockoutMinutes", "0")]
+    [InlineData("Auth:Login:LockoutMinutes", "1441")]
+    public void LoginSecurityLimitsAreBounded(string key, string value)
     {
         Dictionary<string, string?> values = ValidConfiguration();
-        values["Auth:TokenHash:CurrentPepper"] = values["Auth:Jwt:SigningKey"];
+        values[key] = value;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains(key, exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("Auth:RefreshToken:CurrentPepper")]
+    [InlineData("Auth:PasswordReset:RateLimitScopePepper")]
+    [InlineData("Auth:TokenHash:CurrentPepper")]
+    [InlineData("Auth:TOTP:RecoveryCodePepper")]
+    [InlineData("Auth:Login:RateLimitScopePepper")]
+    [InlineData("ApiKeys:CurrentPepper")]
+    [InlineData("Idempotency:RequestHashPepper")]
+    public void SecurityPurposesCannotReuseTheSameKeyMaterial(string key)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values[key] = values["Auth:Jwt:SigningKey"];
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(values)
             .Build();
@@ -360,7 +442,7 @@ public sealed class ConfigurationValidationTests
             PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
 
         Assert.Contains("Auth:Jwt:SigningKey", exception.InvalidKeys);
-        Assert.Contains("Auth:TokenHash:CurrentPepper", exception.InvalidKeys);
+        Assert.Contains(key, exception.InvalidKeys);
     }
 
     [Fact]
@@ -494,8 +576,11 @@ public sealed class ConfigurationValidationTests
     internal static Dictionary<string, string?> ValidConfiguration()
     {
         string jwtSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string refreshPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string rateLimitPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string tokenPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string recoveryCodePepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        string loginRateLimitPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string apiKeyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string idempotencyPepper = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         string envelopeKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -507,9 +592,15 @@ public sealed class ConfigurationValidationTests
             ["App:AllowedHosts:0"] = "poolai.example.test",
             ["Cors:AllowedOrigins:0"] = "https://poolai.example.test",
             ["Auth:Jwt:SigningKey"] = jwtSecret,
+            ["Auth:RefreshToken:CurrentPepperVersion"] = "1",
+            ["Auth:RefreshToken:CurrentPepper"] = refreshPepper,
             ["Auth:PasswordReset:RateLimitScopePepper"] = rateLimitPepper,
             ["Auth:TokenHash:CurrentPepperVersion"] = "1",
             ["Auth:TokenHash:CurrentPepper"] = tokenPepper,
+            ["Auth:TOTP:RecoveryCodePepperVersion"] = "1",
+            ["Auth:TOTP:RecoveryCodePepper"] = recoveryCodePepper,
+            ["Auth:Login:IpFailuresPerMinute"] = "20",
+            ["Auth:Login:RateLimitScopePepper"] = loginRateLimitPepper,
             ["ApiKeys:CurrentPepper"] = apiKeyPepper,
             ["Idempotency:RequestHashPepper"] = idempotencyPepper,
             ["Data:Postgres:ConnectionString"] =
