@@ -685,6 +685,11 @@ public static class SubscriptionEndpointMappings
             errors["/reason"] = ["A non-blank reason of at most 500 characters is required."];
         }
 
+        if (request.Status.HasValue && !Enum.IsDefined(request.Status.Value))
+        {
+            errors["/status"] = ["status must be active, suspended, or revoked."];
+        }
+
         if (request.StartsAt.HasValue
             && request.ExpiresAt.HasValue
             && request.ExpiresAt.Value <= request.StartsAt.Value)

@@ -91,6 +91,10 @@ public sealed class GroupControlPlaneServiceTests
                      (null, 101),
                      ("invalid", 50),
                      (new string('A', 34), 50),
+                     (new string('a', 34), 50),
+                     (new string('0', 34), 50),
+                     (new string('A', 33) + "-", 50),
+                     (new string('A', 33) + "_", 50),
                  })
         {
             Result<GroupPage> invalid = await environment.Service.ExecuteAsync(

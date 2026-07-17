@@ -140,6 +140,7 @@ internal static class SubscriptionHttp
         bool valid = value.Length >= 4
             && value.StartsWith("\"v", StringComparison.Ordinal)
             && value.EndsWith('"')
+            && value[2] is >= '1' and <= '9'
             && long.TryParse(
                 value.AsSpan(2, value.Length - 3),
                 NumberStyles.None,
@@ -207,14 +208,25 @@ internal static class SubscriptionHttp
             context.Response.Headers.ETag = error.ETag;
         }
 
+        ResultErrorPresentation? presentation = error.Presentation;
         (int status, string title, string detail, bool retryable, long? retryAfter) =
-            error.Presentation is { } presentation
+            presentation is not null
                 ? (presentation.Status,
                     presentation.Title,
                     presentation.Detail,
                     presentation.Retryable,
                     presentation.RetryAfterSeconds)
                 : MapError(error);
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? errors = presentation?.Errors;
+        if (presentation is null
+            && string.Equals(
+                error.Code,
+                SubscriptionErrorCodes.ValidationFailed,
+                StringComparison.Ordinal))
+        {
+            errors = FieldError("/", "The request failed application validation.");
+        }
+
         return Problem(
             context,
             status,
@@ -223,9 +235,7 @@ internal static class SubscriptionHttp
             detail,
             retryable,
             retryAfter,
-            string.Equals(error.Code, SubscriptionErrorCodes.ValidationFailed, StringComparison.Ordinal)
-                ? FieldError("/", "The request failed application validation.")
-                : null);
+            errors);
     }
 
     internal static string? RemoteIp(HttpContext context) =>
