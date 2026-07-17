@@ -683,14 +683,14 @@ public sealed class IdentityPersonalSecurityFailureTests
     }
 
     [Theory]
-    [InlineData(0, 1)]
-    [InlineData(1, 2)]
-    [InlineData(2, 0)]
+    [InlineData(SystemRole.Admin, AuditActorType.Admin)]
+    [InlineData(SystemRole.Operator, AuditActorType.Operator)]
+    [InlineData(SystemRole.Auditor, AuditActorType.Auditor)]
+    [InlineData(SystemRole.User, AuditActorType.User)]
     public async Task SuccessfulPasswordChangeMapsActorAndCommitsExactlyOneUnitOfWork(
-        int roleValue,
-        int expectedActorTypeValue)
+        SystemRole role,
+        AuditActorType expectedActorType)
     {
-        SystemRole role = (SystemRole)roleValue;
         AuthenticationUserSnapshot user = User(role: role);
         AuthenticationUserSnapshot updated = User(
             user.Id,
@@ -708,7 +708,7 @@ public sealed class IdentityPersonalSecurityFailureTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal("\"v2\"", result.Value.ETag);
-        Assert.Equal((AuditActorType)expectedActorTypeValue, fixture.Audit.Entries.Single().ActorType);
+        Assert.Equal(expectedActorType, fixture.Audit.Entries.Single().ActorType);
         Assert.Equal(1, fixture.Repository.ChangePasswordCalls);
         Assert.Equal(1, fixture.UnitOfWork.BeginCalls);
         Assert.Equal(1, fixture.UnitOfWork.CommitCalls);
@@ -1150,7 +1150,7 @@ public sealed class IdentityPersonalSecurityFailureTests
             string normalizedEmail,
             CancellationToken cancellationToken) => throw Unexpected();
 
-        public ValueTask<bool> IsSessionFamilyActiveAsync(
+        public ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
             EntityId userId,
             EntityId familyId,
             long tokenVersion,

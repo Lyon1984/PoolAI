@@ -3,6 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using PoolAI.Modules.Identity.Abstractions;
 using PoolAI.Modules.Identity.Application;
 
 namespace PoolAI.Api;
@@ -81,24 +82,28 @@ internal static class ControlPlaneAuthentication
 }
 
 #pragma warning disable MA0048 // Authentication configuration and its scheme events form one cohesive surface.
-internal sealed class ControlPlaneJwtEvents : JwtBearerEvents
+internal sealed partial class ControlPlaneJwtEvents : JwtBearerEvents
 {
     private const string DependencyUnavailableItem = "poolai.auth.session-dependency-unavailable";
     private readonly IAccessSessionValidator _sessionValidator;
+    private readonly ILogger<ControlPlaneJwtEvents> _logger;
 
-    public ControlPlaneJwtEvents(IAccessSessionValidator sessionValidator)
+    public ControlPlaneJwtEvents(
+        IAccessSessionValidator sessionValidator,
+        ILogger<ControlPlaneJwtEvents> logger)
     {
         _sessionValidator = sessionValidator
             ?? throw new ArgumentNullException(nameof(sessionValidator));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public override async Task TokenValidated(TokenValidatedContext context)
     {
         ClaimsPrincipal principal = context.Principal!;
-        string? subject = principal.FindFirstValue(JwtRegisteredClaimNames.Sub);
-        string? role = principal.FindFirstValue("role");
-        string? tokenVersion = principal.FindFirstValue("token_version");
-        string? sessionFamily = principal.FindFirstValue("sid");
+        string? subject = SingleClaimValue(principal, JwtRegisteredClaimNames.Sub);
+        string? role = SingleClaimValue(principal, "role");
+        string? tokenVersion = SingleClaimValue(principal, "token_version");
+        string? sessionFamily = SingleClaimValue(principal, "sid");
         if (!Guid.TryParse(subject, out Guid subjectId)
             || subjectId == Guid.Empty
             || !Guid.TryParse(sessionFamily, out Guid familyId)
@@ -117,23 +122,38 @@ internal sealed class ControlPlaneJwtEvents : JwtBearerEvents
 
         try
         {
-            if (!await _sessionValidator.IsActiveAsync(
+            UserStatusSnapshot? authorization = await _sessionValidator
+                .ReadCanonicalAuthorizationAsync(
                     subjectId,
                     familyId,
                     parsedTokenVersion,
                     context.HttpContext.RequestAborted)
-                .ConfigureAwait(false))
+                .ConfigureAwait(false);
+            if (authorization is null
+                || authorization.UserId.Value != subjectId
+                || authorization.Lifecycle != UserLifecycle.Active
+                || authorization.TokenVersion != parsedTokenVersion
+                || authorization.Version <= 0)
             {
                 context.Fail("The access-token session family is no longer active.");
+                return;
             }
+
+            ReplaceCanonicalClaims(
+                principal,
+                authorization.Role,
+                authorization.TokenVersion);
         }
         catch (OperationCanceledException)
             when (context.HttpContext.RequestAborted.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogCanonicalAuthorizationFailure(
+                _logger,
+                exception.GetType().FullName ?? exception.GetType().Name);
             context.HttpContext.Items[DependencyUnavailableItem] = true;
             context.Fail("The access-token session authority is unavailable.");
         }
@@ -178,5 +198,57 @@ internal sealed class ControlPlaneJwtEvents : JwtBearerEvents
             "Required role missing",
             "The authenticated user does not have the required role.",
             retryable: false);
+
+    private static string? SingleClaimValue(ClaimsPrincipal principal, string claimType)
+    {
+        Claim[] claims = principal.FindAll(claimType).Take(2).ToArray();
+        return claims.Length == 1 ? claims[0].Value : null;
+    }
+
+    private static void ReplaceCanonicalClaims(
+        ClaimsPrincipal principal,
+        SystemRole role,
+        long tokenVersion)
+    {
+        ClaimsIdentity identity = principal.Identity as ClaimsIdentity
+            ?? throw new InvalidOperationException(
+                "The validated access token has no mutable claims identity.");
+        foreach (ClaimsIdentity candidate in principal.Identities)
+        {
+            foreach (Claim claim in candidate.Claims
+                         .Where(static claim => claim.Type is "role" or "token_version"
+                             || string.Equals(
+                                 claim.Type,
+                                 ClaimTypes.Role,
+                                 StringComparison.Ordinal))
+                         .ToArray())
+            {
+                candidate.RemoveClaim(claim);
+            }
+        }
+
+        identity.AddClaim(new Claim("role", RoleCode(role)));
+        identity.AddClaim(new Claim(
+            "token_version",
+            tokenVersion.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    private static string RoleCode(SystemRole role) => role switch
+    {
+        SystemRole.Admin => "admin",
+        SystemRole.Operator => "operator",
+        SystemRole.Auditor => "auditor",
+        SystemRole.User => "user",
+        _ => throw new InvalidOperationException(
+            "The canonical access authorization has an unknown role."),
+    };
+
+    [LoggerMessage(
+        EventId = 1101,
+        Level = LogLevel.Error,
+        Message = "Canonical control-plane authorization read failed with {ExceptionType}.")]
+    private static partial void LogCanonicalAuthorizationFailure(
+        ILogger logger,
+        string exceptionType);
 }
 #pragma warning restore MA0048

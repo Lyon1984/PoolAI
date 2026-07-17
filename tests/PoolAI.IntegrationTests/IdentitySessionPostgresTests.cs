@@ -66,7 +66,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
 
         Assert.Equal(MfaLoginDisposition.SessionCreated, verified.Disposition);
         Assert.Equal(firstSession.Write.Id, verified.SessionFamilyId);
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             firstSession.Write.Id,
             verified.User!.TokenVersion,
@@ -141,7 +141,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
         Assert.False(await runtime.Repository.HasRefreshCredentialAsync(
             [new CredentialHashCandidate(RandomNumberGenerator.GetBytes(32), 1)],
             cancellationToken).ConfigureAwait(true));
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             initial.Write.Id,
             user.TokenVersion,
@@ -174,7 +174,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
         Assert.True(await runtime.Repository.HasRefreshCredentialAsync(
             initial.Candidates,
             cancellationToken).ConfigureAwait(true));
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             initial.Write.Id,
             user.TokenVersion,
@@ -221,12 +221,12 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             user.TokenVersion,
             current.Write.Id);
 
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             current.Write.Id,
             user.TokenVersion,
             cancellationToken).ConfigureAwait(true));
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             current.Write.Id,
             user.TokenVersion + 1,
@@ -239,12 +239,12 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             allSessions: false,
             cancellationToken).ConfigureAwait(true);
         Assert.False(mismatched.Changed);
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             current.Write.Id,
             user.TokenVersion,
             cancellationToken).ConfigureAwait(true));
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             other.Write.Id,
             user.TokenVersion,
@@ -257,12 +257,12 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             allSessions: false,
             cancellationToken).ConfigureAwait(true);
         Assert.True(currentLogout.Changed);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             current.Write.Id,
             user.TokenVersion,
             cancellationToken).ConfigureAwait(true));
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             other.Write.Id,
             user.TokenVersion,
@@ -284,7 +284,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             cancellationToken).ConfigureAwait(true);
         Assert.True(allLogout.Changed);
         Assert.Equal(user.TokenVersion + 1, allLogout.User!.TokenVersion);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             other.Write.Id,
             user.TokenVersion + 1,
@@ -341,7 +341,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             cancellationToken).ConfigureAwait(true);
 
         Assert.False(oldGeneration.Changed);
-        Assert.True(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.NotNull(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             initial.Write.Id,
             user.TokenVersion,
@@ -355,7 +355,7 @@ public sealed class IdentitySessionPostgresTests(PostgresRuntimeFixture fixture)
             cancellationToken).ConfigureAwait(true);
 
         Assert.True(activeGeneration.Changed);
-        Assert.False(await runtime.Repository.IsSessionFamilyActiveAsync(
+        Assert.Null(await runtime.Repository.ReadCanonicalAuthorizationAsync(
             user.Id,
             initial.Write.Id,
             user.TokenVersion,

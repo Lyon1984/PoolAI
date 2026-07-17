@@ -117,6 +117,72 @@ public sealed class IdentitySessionHttpEndToEndTests
             cancellationToken).ConfigureAwait(true);
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    [Trait("Category", "Redis")]
+    public async Task ControlPlaneRejectsStaleJwtAfterRoleOrStatusChange()
+    {
+        // AC-033: every later admission re-reads PostgreSQL after the Admin commit.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await using PasswordResetHttpEndToEndEnvironment environment =
+            await PasswordResetHttpEndToEndEnvironment.CreateAsync(cancellationToken).ConfigureAwait(true);
+        TokenResponse userTokens = await LoginForTokensAsync(
+            environment,
+            environment.ActiveEmail,
+            cancellationToken).ConfigureAwait(true);
+        TokenResponse adminTokens = await LoginForTokensAsync(
+            environment,
+            environment.AdminEmail,
+            cancellationToken).ConfigureAwait(true);
+        AuthorizationFacts initial = await ReadAuthorizationFactsAsync(
+            environment,
+            environment.ActiveUserId,
+            cancellationToken).ConfigureAwait(true);
+
+        await UpdateUserAuthorizationAsync(
+            environment,
+            adminTokens.AccessToken,
+            initial.Version,
+            new { role = "auditor", reason = "least privilege review" },
+            "m1-e3-role-change",
+            cancellationToken).ConfigureAwait(true);
+        AuthorizationFacts roleChanged = await ReadAuthorizationFactsAsync(
+            environment,
+            environment.ActiveUserId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal("auditor", roleChanged.Role);
+        Assert.Equal(initial.TokenVersion + 1, roleChanged.TokenVersion);
+        Assert.Equal(initial.Version + 1, roleChanged.Version);
+        await AssertStaleControlPlaneWriteRejectedAsync(
+            environment,
+            userTokens.AccessToken,
+            cancellationToken).ConfigureAwait(true);
+
+        TokenResponse auditorTokens = await LoginForTokensAsync(
+            environment,
+            environment.ActiveEmail,
+            cancellationToken).ConfigureAwait(true);
+        await UpdateUserAuthorizationAsync(
+            environment,
+            adminTokens.AccessToken,
+            roleChanged.Version,
+            new { status = "disabled", reason = "security suspension" },
+            "m1-e3-status-change",
+            cancellationToken).ConfigureAwait(true);
+        AuthorizationFacts disabled = await ReadAuthorizationFactsAsync(
+            environment,
+            environment.ActiveUserId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal("disabled", disabled.Status);
+        Assert.Equal(roleChanged.TokenVersion + 1, disabled.TokenVersion);
+        Assert.Equal(roleChanged.Version + 1, disabled.Version);
+        await AssertStaleControlPlaneWriteRejectedAsync(
+            environment,
+            auditorTokens.AccessToken,
+            cancellationToken).ConfigureAwait(true);
+        await AssertAuthorizationAuditAsync(environment, cancellationToken).ConfigureAwait(true);
+    }
+
     private static async ValueTask<PasswordResetHttpEndToEndEnvironment>
         CreateTotpEnabledEnvironmentAsync(CancellationToken cancellationToken)
     {
@@ -183,6 +249,126 @@ public sealed class IdentitySessionHttpEndToEndTests
         Assert.False(root.TryGetProperty("access_token", out _));
         Assert.False(root.TryGetProperty("refresh_token", out _));
         return new MfaResponse(challengeId);
+    }
+
+    private static async ValueTask<TokenResponse> LoginForTokensAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string email,
+        CancellationToken cancellationToken)
+    {
+        using HttpResponseMessage response = await environment.Client.PostAsJsonAsync(
+            "/api/v1/auth/login",
+            new
+            {
+                email,
+                password = PasswordResetHttpEndToEndEnvironment.OriginalPassword,
+            },
+            cancellationToken).ConfigureAwait(false);
+        using JsonDocument json = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return new TokenResponse(
+            Assert.IsType<string>(json.RootElement.GetProperty("access_token").GetString()),
+            Assert.IsType<string>(json.RootElement.GetProperty("refresh_token").GetString()));
+    }
+
+    private static async ValueTask AssertAuthorizationAuditAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand audit = environment.AdministratorDataSource.CreateCommand("""
+            SELECT count(*),
+                   bool_and(actor_type = 'admin'),
+                   bool_and(before_state IS NOT NULL AND after_state IS NOT NULL)
+            FROM public.audit_logs
+            WHERE action = 'identity.user.updated'
+              AND target_id = $1;
+            """);
+        audit.Parameters.AddWithValue(environment.ActiveUserId);
+        using NpgsqlDataReader reader = await audit.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal(2L, reader.GetInt64(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
+    }
+
+    private static async ValueTask UpdateUserAuthorizationAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminAccessToken,
+        long expectedVersion,
+        object body,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Patch,
+            $"/api/v1/admin/users/{environment.ActiveUserId:D}")
+        {
+            Content = JsonContent.Create(body),
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(
+            "application/merge-patch+json");
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            adminAccessToken);
+        request.Headers.TryAddWithoutValidation("If-Match", $"\"v{expectedVersion}\"");
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+
+        using HttpResponseMessage response = await environment.Client.SendAsync(
+            request,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    private static async ValueTask AssertStaleControlPlaneWriteRejectedAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/me/password")
+        {
+            Content = JsonContent.Create(new
+            {
+                current_password = PasswordResetHttpEndToEndEnvironment.OriginalPassword,
+                new_password = "Replacement-Password-123!",
+                reason = "stale token probe",
+            }),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.TryAddWithoutValidation("If-Match", "\"v1\"");
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", "stale-token-probe");
+
+        using HttpResponseMessage response = await environment.Client.SendAsync(
+            request,
+            cancellationToken).ConfigureAwait(false);
+        using JsonDocument problem = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("invalid_user_token", problem.RootElement.GetProperty("code").GetString());
+    }
+
+    private static async ValueTask<AuthorizationFacts> ReadAuthorizationFactsAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = environment.AdministratorDataSource.CreateCommand("""
+            SELECT users.status, roles.code, users.token_version, users.version
+            FROM public.users AS users
+            JOIN public.user_roles AS user_roles ON user_roles.user_id = users.id
+            JOIN public.roles AS roles ON roles.id = user_roles.role_id
+            WHERE users.id = $1;
+            """);
+        command.Parameters.AddWithValue(userId);
+        using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return new AuthorizationFacts(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt64(2),
+            reader.GetInt64(3));
     }
 
     private static async ValueTask<TokenResponse> VerifyAsync(
@@ -413,6 +599,12 @@ public sealed class IdentitySessionHttpEndToEndTests
     private sealed record MfaResponse(Guid ChallengeId);
 
     private sealed record TokenResponse(string AccessToken, string RefreshToken);
+
+    private sealed record AuthorizationFacts(
+        string Status,
+        string Role,
+        long TokenVersion,
+        long Version);
 
     private sealed record SessionFacts(
         long RefreshSessions,

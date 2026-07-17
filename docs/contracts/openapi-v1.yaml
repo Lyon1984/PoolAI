@@ -3192,12 +3192,12 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        控制面短期 Access JWT，放在 `Authorization: Bearer <jwt>`，必须包含
-        `sid=<refresh family_id>`。所有 M1-E2 `UserJwt` 请求必须强读 PostgreSQL，
-        确认该 User 的该 family 仍有 active、未过期 refresh generation；否则返回
-        `invalid_user_token`，使 current-family logout 立即使该 family 的 Access JWT 失效。
-        M1-E3 仍负责完整 canonical User status/role/token_version 强读、四角色 Policy 和
-        资源级检查；M1-E2 family 检查不代替该验收。不能用 `sk-` Key 替代。
+        控制面短期 Access JWT，放在 `Authorization: Bearer <jwt>`，必须各包含唯一一个
+        `sub`、`role`、`token_version` 和 `sid=<refresh family_id>`。每个 `UserJwt` 请求都必须在 Policy 前以同一 PostgreSQL
+        强读确认该 User active、未删除、`token_version` 匹配、唯一 canonical role，以及
+        该 family 仍有 active、未过期 refresh generation；JWT 中的 role 与 token_version
+        只作为格式和并发版本候选，不能直接授权。任一条件不匹配统一返回 `invalid_user_token`；强读失败
+        返回 `dependency_unavailable`，不能回退到 Redis 或 JWT。不能用 `sk-` Key 替代。
 
   parameters:
     Cursor:

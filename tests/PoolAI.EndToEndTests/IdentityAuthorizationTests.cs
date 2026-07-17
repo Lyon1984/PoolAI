@@ -5,7 +5,10 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using PoolAI.BuildingBlocks;
@@ -64,6 +67,154 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         await AssertProblemAsync(response, "role_required");
     }
+
+    [Fact]
+    public async Task CanonicalRoleOverridesJwtCandidateBeforePolicy()
+    {
+        await using SuccessfulIdentityApiFactory factory = new();
+
+        using HttpClient elevatedCandidate = AuthenticatedClient(
+            factory,
+            role: "admin",
+            tokenVersion: 1);
+        factory.AccessSessionValidator.CanonicalRole = SystemRole.User;
+        using HttpResponseMessage forbidden = await elevatedCandidate.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        using HttpClient staleLowCandidate = AuthenticatedClient(
+            factory,
+            role: "user",
+            tokenVersion: 1);
+        factory.AccessSessionValidator.CanonicalRole = SystemRole.Admin;
+        using HttpResponseMessage allowed = await staleLowCandidate.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        await AssertProblemAsync(forbidden, "role_required");
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        Assert.Equal(2, factory.AccessSessionValidator.Calls);
+    }
+
+    [Fact]
+    public async Task CanonicalAuthorizationDependencyFailurePrecedesRolePolicy()
+    {
+        await using PoolAiApiFactory factory = new();
+        factory.AccessSessionValidator.Failure = new InvalidOperationException(
+            "synthetic canonical read failure");
+        using HttpClient client = AuthenticatedClient(factory, "user", tokenVersion: 1);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(1), response.Headers.RetryAfter?.Delta);
+        await AssertProblemAsync(
+            response,
+            "dependency_unavailable",
+            expectedRetryable: true);
+        Assert.Equal(1, factory.AccessSessionValidator.Calls);
+    }
+
+    [Fact]
+    public async Task DuplicateJwtRoleClaimsAreRejectedBeforeCanonicalRead()
+    {
+        using HttpClient client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateJwt(
+                _factory.JwtSigningKey,
+                "PoolAI",
+                "PoolAI.Web",
+                role: "admin",
+                tokenVersion: 1,
+                TimeProvider.System.GetUtcNow().AddMinutes(5),
+                roleClaims: ["admin", "user"]));
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/admin/users",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        await AssertProblemAsync(response, "invalid_user_token");
+        Assert.Equal(0, _factory.AccessSessionValidator.Calls);
+    }
+
+    [Fact]
+    public void AllFrozenRolesEnforceEveryImplementedControlPlaneOperation()
+    {
+        using HttpClient _ = _factory.CreateClient();
+        Dictionary<string, string[]> expected = ImplementedControlPlaneRoles();
+        string[] anonymous = AnonymousIdentityOperations();
+        EndpointDataSource dataSource = _factory.Services
+            .GetRequiredService<EndpointDataSource>();
+        RouteEndpoint[] endpoints = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(static endpoint => endpoint.RoutePattern.RawText?
+                .StartsWith("/api/v1/", StringComparison.Ordinal) is true)
+            .Where(static endpoint => endpoint.Metadata
+                .GetMetadata<IEndpointNameMetadata>()?.EndpointName is not null)
+            .ToArray();
+
+        Assert.Equal(
+            expected.Keys.Concat(anonymous).Order(StringComparer.Ordinal),
+            endpoints
+                .Select(static endpoint => endpoint.Metadata
+                    .GetMetadata<IEndpointNameMetadata>()?.EndpointName
+                    ?? throw new InvalidOperationException("Endpoint name missing."))
+                .Order(StringComparer.Ordinal));
+        foreach (RouteEndpoint endpoint in endpoints.Where(endpoint => expected.ContainsKey(
+                     endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName!)))
+        {
+            string name = endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName!;
+            AuthorizationPolicy policy = Assert.Single(
+                endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+            RolesAuthorizationRequirement roles = Assert.Single(
+                policy.Requirements.OfType<RolesAuthorizationRequirement>());
+            Assert.Equal(
+                expected[name],
+                roles.AllowedRoles.Order(StringComparer.Ordinal));
+            Assert.Contains(
+                policy.Requirements,
+                static requirement => requirement is DenyAnonymousAuthorizationRequirement);
+            Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());
+        }
+
+        foreach (RouteEndpoint endpoint in endpoints.Where(endpoint => anonymous.Contains(
+                     endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName!,
+                     StringComparer.Ordinal)))
+        {
+            Assert.NotNull(endpoint.Metadata.GetMetadata<IAllowAnonymous>());
+            Assert.Empty(endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+        }
+    }
+
+    private static Dictionary<string, string[]> ImplementedControlPlaneRoles() =>
+        new(StringComparer.Ordinal)
+        {
+            ["logout"] = ["admin", "auditor", "operator", "user"],
+            ["getMyProfile"] = ["admin", "auditor", "operator", "user"],
+            ["changeMyPassword"] = ["admin", "auditor", "operator", "user"],
+            ["beginMyTotpSetup"] = ["admin", "auditor", "operator", "user"],
+            ["confirmMyTotpSetup"] = ["admin", "auditor", "operator", "user"],
+            ["disableMyTotp"] = ["admin", "auditor", "operator", "user"],
+            ["adminListUsers"] = ["admin", "auditor", "operator"],
+            ["adminGetUser"] = ["admin", "auditor", "operator"],
+            ["adminCreateUser"] = ["admin"],
+            ["adminUpdateUser"] = ["admin"],
+            ["adminRequestUserPasswordReset"] = ["admin"],
+        };
+
+    private static string[] AnonymousIdentityOperations() =>
+    [
+        "login",
+        "refreshSession",
+        "verifyLoginTotp",
+        "requestPasswordReset",
+        "resetPassword",
+    ];
 
     [Fact]
     public async Task AdminUsersRejectsJwtWithoutRequiredIdentityClaims()
@@ -758,6 +909,14 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         string? role,
         long? tokenVersion)
     {
+        factory.AccessSessionValidator.CanonicalRole = role switch
+        {
+            "admin" => SystemRole.Admin,
+            "operator" => SystemRole.Operator,
+            "auditor" => SystemRole.Auditor,
+            "user" => SystemRole.User,
+            _ => factory.AccessSessionValidator.CanonicalRole,
+        };
         HttpClient client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",
@@ -780,7 +939,8 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         DateTimeOffset expiresAt,
         Guid? subjectId = null,
         DateTimeOffset? notBefore = null,
-        string algorithm = "HS256")
+        string algorithm = "HS256",
+        IReadOnlyList<string>? roleClaims = null)
     {
         string header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -797,7 +957,11 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
                 CultureInfo.InvariantCulture),
             ["sid"] = Guid.CreateVersion7().ToString("D", CultureInfo.InvariantCulture),
         };
-        if (role is not null)
+        if (roleClaims is not null)
+        {
+            claims["role"] = roleClaims;
+        }
+        else if (role is not null)
         {
             claims["role"] = role;
         }

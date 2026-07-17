@@ -1035,7 +1035,8 @@ internal sealed class PersonalSecurityUseCaseService :
     {
         SystemRole.Admin => AuditActorType.Admin,
         SystemRole.Operator => AuditActorType.Operator,
-        SystemRole.Auditor or SystemRole.User => AuditActorType.User,
+        SystemRole.Auditor => AuditActorType.Auditor,
+        SystemRole.User => AuditActorType.User,
         _ => throw new ArgumentOutOfRangeException(nameof(role)),
     };
 

@@ -28,7 +28,7 @@ internal sealed class PostgresIdentitySessionReader
             userId.Value,
             cancellationToken);
 
-    internal async ValueTask<bool> IsSessionFamilyActiveAsync(
+    internal async ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         EntityId userId,
         EntityId familyId,
         long tokenVersion,
@@ -40,27 +40,54 @@ internal sealed class PostgresIdentitySessionReader
         await using ConfiguredAsyncDisposable connectionLease = connection.ConfigureAwait(false);
         using NpgsqlCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT EXISTS (
-                SELECT 1
-                FROM public.refresh_sessions AS session
-                JOIN public.users AS user_account
-                  ON user_account.id = session.user_id
-                WHERE session.user_id = $1
-                  AND session.family_id = $2
-                  AND session.status = 'active'
-                  AND session.expires_at > clock_timestamp()
-                  AND user_account.status = 'active'
-                  AND user_account.deleted_at IS NULL
-                  AND user_account.token_version = $3
-            );
+            SELECT user_account.id,
+                   role.code,
+                   user_account.token_version,
+                   user_account.version,
+                   clock_timestamp()
+            FROM public.users AS user_account
+            JOIN public.user_roles AS user_role
+              ON user_role.user_id = user_account.id
+            JOIN public.roles AS role
+              ON role.id = user_role.role_id
+            WHERE user_account.id = $1
+              AND user_account.status = 'active'
+              AND user_account.deleted_at IS NULL
+              AND user_account.token_version = $3
+              AND EXISTS (
+                  SELECT 1
+                  FROM public.refresh_sessions AS session
+                  WHERE session.user_id = user_account.id
+                    AND session.family_id = $2
+                    AND session.status = 'active'
+                    AND session.expires_at > clock_timestamp()
+              );
             """;
         command.Parameters.AddWithValue(userId.Value);
         command.Parameters.AddWithValue(familyId.Value);
         command.Parameters.AddWithValue(tokenVersion);
-        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return value is bool active
-            ? active
-            : throw new InvalidOperationException("Session-family validation returned no Boolean value.");
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        UserStatusSnapshot authorization = new(
+            new EntityId(reader.GetGuid(0)),
+            UserLifecycle.Active,
+            ParseRole(reader.GetString(1)),
+            reader.GetInt64(2),
+            reader.GetInt64(3),
+            reader.GetFieldValue<DateTimeOffset>(4));
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "Canonical access authorization returned multiple role assignments.");
+        }
+
+        return authorization;
     }
 
     internal async ValueTask<bool> HasRefreshCredentialAsync(
@@ -132,4 +159,13 @@ internal sealed class PostgresIdentitySessionReader
             ? PostgresIdentitySessionRepository.ReadUser(reader, 0)
             : null;
     }
+
+    private static SystemRole ParseRole(string value) => value switch
+    {
+        "admin" => SystemRole.Admin,
+        "operator" => SystemRole.Operator,
+        "auditor" => SystemRole.Auditor,
+        "user" => SystemRole.User,
+        _ => throw new InvalidOperationException("Identity user has an unknown role."),
+    };
 }

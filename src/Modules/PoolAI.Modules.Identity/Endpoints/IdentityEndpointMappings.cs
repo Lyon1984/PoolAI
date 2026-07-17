@@ -94,13 +94,13 @@ public static class IdentityEndpointMappings
 #pragma warning restore MA0051
 
     private static void RequireAdmin(AuthorizationPolicyBuilder policy) =>
-        policy.RequireRole("admin");
+        policy.RequireAuthenticatedUser().RequireRole("admin");
 
     private static void RequireAnyReadRole(AuthorizationPolicyBuilder policy) =>
-        policy.RequireRole("admin", "operator", "auditor");
+        policy.RequireAuthenticatedUser().RequireRole("admin", "operator", "auditor");
 
     private static void RequireAnyUserRole(AuthorizationPolicyBuilder policy) =>
-        policy.RequireRole("admin", "operator", "auditor", "user");
+        policy.RequireAuthenticatedUser().RequireRole("admin", "operator", "auditor", "user");
 
     private static async Task<IResult> LoginAsync(
         HttpContext context,

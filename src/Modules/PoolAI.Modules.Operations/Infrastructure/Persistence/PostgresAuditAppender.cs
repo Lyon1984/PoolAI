@@ -75,6 +75,7 @@ internal sealed class PostgresAuditAppender : IAuditAppender
         AuditActorType.User => "user",
         AuditActorType.Admin => "admin",
         AuditActorType.Operator => "operator",
+        AuditActorType.Auditor => "auditor",
         AuditActorType.System => "system",
         AuditActorType.Service => "service",
         _ => throw new ArgumentOutOfRangeException(nameof(actorType)),

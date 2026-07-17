@@ -19,12 +19,12 @@
         "PoolAI.Modules.Identity"
       ],
       "pathEndsWith": [],
-      "linesCovered": 8544,
-      "linesValid": 9019,
-      "lineRate": 94.73334072513583,
-      "branchesCovered": 2396,
-      "branchesValid": 2875,
-      "branchRate": 83.3391304347826
+      "linesCovered": 8577,
+      "linesValid": 9053,
+      "lineRate": 94.74207445045842,
+      "branchesCovered": 2415,
+      "branchesValid": 2890,
+      "branchRate": 83.56401384083046
     },
     "secret": {
       "pathIncludes": [],

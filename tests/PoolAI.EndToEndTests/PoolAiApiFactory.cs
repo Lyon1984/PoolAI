@@ -21,6 +21,8 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
 
     internal TimeProvider AuthorizationTimeProvider { get; set; } = TimeProvider.System;
 
+    internal RecordingAccessSessionValidator AccessSessionValidator { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         Dictionary<string, string?> configurationValues = ValidConfiguration();
@@ -41,7 +43,7 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
             services.RemoveAll<INtpOffsetProbe>();
             services.AddSingleton<INtpOffsetProbe>(NtpOffsetProbe);
             services.RemoveAll<IAccessSessionValidator>();
-            services.AddSingleton<IAccessSessionValidator, AlwaysActiveAccessSessionValidator>();
+            services.AddSingleton<IAccessSessionValidator>(AccessSessionValidator);
             services.RemoveAll<TimeProvider>();
             services.AddSingleton(AuthorizationTimeProvider);
         });
@@ -92,15 +94,4 @@ internal class PoolAiApiFactory : WebApplicationFactory<PoolAiApi::Program>
         };
     }
 
-    private sealed class AlwaysActiveAccessSessionValidator : IAccessSessionValidator
-    {
-        public ValueTask<bool> IsActiveAsync(
-            Guid userId,
-            Guid sessionFamilyId,
-            long tokenVersion,
-            CancellationToken cancellationToken) => ValueTask.FromResult(
-                userId != Guid.Empty
-                && sessionFamilyId != Guid.Empty
-                && tokenVersion > 0);
-    }
 }

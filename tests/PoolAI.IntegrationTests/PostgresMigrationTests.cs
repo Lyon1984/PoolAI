@@ -41,6 +41,8 @@ public sealed partial class PostgresMigrationTests
         await AssertRuntimeRolePermissionsAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertIdentityM1E2RuntimePermissionsAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await AssertIdentityM1E3RuntimePermissionsAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertIdentityEntryPointSecurityAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
@@ -49,8 +51,11 @@ public sealed partial class PostgresMigrationTests
             catalog.Assets[0],
             connectionString,
             cancellationToken).ConfigureAwait(true);
-        await AssertFutureHistoryRejectedAsync(migrator, connectionString, cancellationToken)
-            .ConfigureAwait(true);
+        await AssertFutureHistoryRejectedAsync(
+            migrator,
+            catalog.Assets[^1].Version + 1,
+            connectionString,
+            cancellationToken).ConfigureAwait(true);
     }
 
     [Fact]
@@ -98,6 +103,9 @@ public sealed partial class PostgresMigrationTests
         await AssertIdentityEntryPointSecurityAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
+        await AssertIdentityM1E3RuntimePermissionsAsync(
+            administratorConnectionString,
+            cancellationToken).ConfigureAwait(true);
         await AssertRuntimeSchemaCreateRevokedAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
@@ -133,7 +141,7 @@ public sealed partial class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(5L, Assert.IsType<long>(scalar));
+        Assert.Equal(6L, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(
@@ -410,6 +418,7 @@ public sealed partial class PostgresMigrationTests
 
     private static async ValueTask AssertFutureHistoryRejectedAsync(
         PostgresMigrator migrator,
+        long futureVersion,
         string connectionString,
         CancellationToken cancellationToken)
     {
@@ -417,8 +426,10 @@ public sealed partial class PostgresMigrationTests
         using NpgsqlCommand future = dataSource.CreateCommand("""
             INSERT INTO public.poolai_schema_migrations (
                 version, name, checksum_sha256, applied_by
-            ) VALUES (6, '0006_future.sql', repeat('a', 64), 'future-release');
+            ) VALUES ($1, $2, repeat('a', 64), 'future-release');
             """);
+        future.Parameters.AddWithValue(futureVersion);
+        future.Parameters.AddWithValue($"{futureVersion:D4}_future.sql");
         await future.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
