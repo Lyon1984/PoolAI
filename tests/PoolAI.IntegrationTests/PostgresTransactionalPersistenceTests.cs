@@ -13,6 +13,10 @@ namespace PoolAI.IntegrationTests;
 [Collection(PostgresRuntimeTestGroup.Name)]
 public sealed class PostgresTransactionalPersistenceTests
 {
+    private static readonly Guid GroupCreateActorId =
+        Guid.Parse("01900000-0000-7000-8000-0000000007f0");
+    private static readonly Guid GroupCreateActorStamp =
+        Guid.Parse("01900000-0000-7000-8000-0000000007f1");
     private readonly PostgresRuntimeFixture _fixture;
 
     public PostgresTransactionalPersistenceTests(PostgresRuntimeFixture fixture)
@@ -254,15 +258,41 @@ public sealed class PostgresTransactionalPersistenceTests
         PostgresTransactionSession session,
         CancellationToken cancellationToken)
     {
+        using (NpgsqlCommand actor = session.CreateCommand("""
+                   INSERT INTO public.users (
+                       id, email, normalized_email, display_name,
+                       password_hash, security_stamp
+                   ) VALUES (
+                       $1, 'm1e4-transaction-probe@example.test',
+                       'm1e4-transaction-probe@example.test',
+                       'M1-E4 Transaction Probe', 'poolai-password-v1:test', $2
+                   )
+                   ON CONFLICT DO NOTHING;
+                   """))
+        {
+            actor.Parameters.AddWithValue(GroupCreateActorId);
+            actor.Parameters.AddWithValue(GroupCreateActorStamp);
+            _ = await actor.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         using NpgsqlCommand command = session.CreateCommand("""
-            INSERT INTO public.groups (id, name)
-            VALUES ($1, $2);
+            SELECT disposition
+            FROM public.poolai_group_create(
+                $1, $2, NULL, $3, 1000, $4, $5, $6, $7,
+                'integration transaction probe');
             """);
         command.Parameters.AddWithValue(groupId.Value);
         command.Parameters.AddWithValue($"integration-{groupId.Value:N}");
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(GroupCreateActorId);
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue($"integration:group:create:{groupId.Value:N}");
         Assert.Equal(
-            1,
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+            "created",
+            Assert.IsType<string>(await command
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private async ValueTask<bool> GroupExistsAsync(

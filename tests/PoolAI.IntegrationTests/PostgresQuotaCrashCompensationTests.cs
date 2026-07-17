@@ -92,9 +92,8 @@ public sealed class PostgresQuotaCrashCompensationTests
         await AssertCurrentRoleAsync(session, "poolai_api", cancellationToken).ConfigureAwait(false);
         await InsertIdentityAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         await InsertGroupAndSupplyAsync(session, scenario, cancellationToken).ConfigureAwait(false);
-        await InsertAccessGrantAsync(session, scenario, cancellationToken).ConfigureAwait(false);
-        await InitializeQuotaAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         await ActivateGroupAsync(session, scenario, cancellationToken).ConfigureAwait(false);
+        await InsertAccessGrantAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -156,13 +155,26 @@ public sealed class PostgresQuotaCrashCompensationTests
         CrashScenario scenario,
         CancellationToken cancellationToken)
     {
+        MutationIds mutation = MutationIds.Create("initialize");
         using NpgsqlCommand command = session.CreateCommand("""
-            INSERT INTO public.groups (id, name)
-            VALUES ($1, $2);
+            SELECT disposition
+            FROM public.poolai_group_create(
+                $1, $2, NULL, $3, $4, $5, $6, $7, $8,
+                'AC-039 fixture initialization');
             """);
         command.Parameters.AddWithValue(scenario.GroupId);
         command.Parameters.AddWithValue(scenario.GroupName);
-        await AssertSingleRowAsync(command, cancellationToken).ConfigureAwait(false);
+        command.Parameters.AddWithValue(scenario.PeriodId);
+        command.Parameters.AddWithValue(scenario.TotalTokens);
+        command.Parameters.AddWithValue(scenario.UserId);
+        command.Parameters.AddWithValue(mutation.EventId);
+        command.Parameters.AddWithValue(mutation.OutboxId);
+        command.Parameters.AddWithValue(mutation.IdempotencyKey);
+        Assert.Equal(
+            "created",
+            Assert.IsType<string>(await command
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private static async ValueTask InsertAccountAsync(
@@ -230,63 +242,37 @@ public sealed class PostgresQuotaCrashCompensationTests
         CancellationToken cancellationToken)
     {
         using (NpgsqlCommand template = session.CreateCommand("""
-                   INSERT INTO public.subscription_templates (
-                       id, group_id, name, default_duration_days
-                   ) VALUES ($1, $2, $3, 30);
+                   SELECT disposition
+                   FROM public.poolai_subscription_template_create(
+                       $1, $2, $3, NULL, 30);
                    """))
         {
             template.Parameters.AddWithValue(scenario.TemplateId);
             template.Parameters.AddWithValue(scenario.GroupId);
             template.Parameters.AddWithValue(scenario.TemplateName);
-            await AssertSingleRowAsync(template, cancellationToken).ConfigureAwait(false);
+            Assert.Equal(
+                "created",
+                Assert.IsType<string>(await template
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
         }
 
         using NpgsqlCommand subscription = session.CreateCommand("""
-            INSERT INTO public.subscriptions (
-                id, user_id, group_id, template_id, template_name_snapshot,
-                starts_at, expires_at, assigned_by, change_reason
-            ) VALUES (
-                $1, $2, $3, $4, $5,
+            SELECT disposition
+            FROM public.poolai_subscription_assign(
+                $1, $2, $3,
                 clock_timestamp() - interval '1 minute',
-                clock_timestamp() + interval '1 day', $2, 'AC-039 fixture'
-            );
+                clock_timestamp() + interval '1 day',
+                $2, 'AC-039 fixture');
             """);
         subscription.Parameters.AddWithValue(scenario.SubscriptionId);
         subscription.Parameters.AddWithValue(scenario.UserId);
-        subscription.Parameters.AddWithValue(scenario.GroupId);
         subscription.Parameters.AddWithValue(scenario.TemplateId);
-        subscription.Parameters.AddWithValue(scenario.TemplateName);
-        await AssertSingleRowAsync(subscription, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async ValueTask InitializeQuotaAsync(
-        PostgresTransactionSession session,
-        CrashScenario scenario,
-        CancellationToken cancellationToken)
-    {
-        MutationIds mutation = MutationIds.Create("initialize");
-        using NpgsqlCommand command = session.CreateCommand("""
-            SELECT result_period_id, result_total_tokens::text,
-                   result_consumed_tokens::text, result_reserved_tokens::text
-            FROM public.poolai_quota_initialize(
-                $1, $2, $3, $4, $5, $6, $7, 'AC-039 fixture initialization');
-            """);
-        command.Parameters.AddWithValue(scenario.GroupId);
-        command.Parameters.AddWithValue(scenario.PeriodId);
-        command.Parameters.AddWithValue(scenario.TotalTokens);
-        command.Parameters.AddWithValue(mutation.EventId);
-        command.Parameters.AddWithValue(mutation.OutboxId);
-        command.Parameters.AddWithValue(scenario.UserId);
-        command.Parameters.AddWithValue(mutation.IdempotencyKey);
-        using NpgsqlDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
-        Assert.Equal(scenario.PeriodId, reader.GetGuid(0));
-        Assert.Equal("1000", reader.GetString(1));
-        Assert.Equal("0", reader.GetString(2));
-        Assert.Equal("0", reader.GetString(3));
-        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal(
+            "created",
+            Assert.IsType<string>(await subscription
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private static async ValueTask ActivateGroupAsync(
@@ -295,17 +281,18 @@ public sealed class PostgresQuotaCrashCompensationTests
         CancellationToken cancellationToken)
     {
         using NpgsqlCommand command = session.CreateCommand("""
-            UPDATE public.groups
-            SET status = 'active',
-                activation_supply_readiness_token = $2,
-                activation_supply_observed_at = clock_timestamp(),
-                version = version + 1,
-                updated_at = clock_timestamp()
-            WHERE id = $1 AND status = 'disabled';
+            SELECT disposition
+            FROM public.poolai_group_update(
+                $1, 1, false, NULL, false, NULL,
+                'active', 'AC-039 fixture activation', $2, clock_timestamp());
             """);
         command.Parameters.AddWithValue(scenario.GroupId);
         command.Parameters.AddWithValue(scenario.ReadinessToken);
-        await AssertSingleRowAsync(command, cancellationToken).ConfigureAwait(false);
+        Assert.Equal(
+            "updated",
+            Assert.IsType<string>(await command
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private async ValueTask ReserveAttemptAsync(

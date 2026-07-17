@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Identity.Abstractions;
+using PoolAI.Modules.Identity.Application;
 using PoolAI.Modules.Identity.Application.Ports;
 using PoolAI.Modules.Identity.Infrastructure.Security;
 
@@ -132,6 +133,28 @@ public sealed class IdentitySessionSecurityFailureCoverageTests
                 ["Auth:Jwt:SigningKey"] = Convert.ToBase64String(signingKey),
                 ["Auth:Jwt:Issuer"] = " PoolAI",
             })));
+    }
+
+    [Theory]
+    [InlineData("Auth:Login:MaxFailures", "2")]
+    [InlineData("Auth:Login:MaxFailures", "21")]
+    [InlineData("Auth:Login:LockoutMinutes", "0")]
+    [InlineData("Auth:Login:LockoutMinutes", "1441")]
+    [InlineData("Auth:Jwt:RefreshTokenDays", "29")]
+    public void SessionPolicyConfigurationRejectsValuesOutsideFrozenBounds(
+        string key,
+        string value)
+    {
+        IConfiguration configuration = Configuration(
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                [key] = value,
+            });
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => SessionPolicy.FromConfiguration(configuration));
+
+        Assert.Equal("Identity session policy configuration is invalid.", exception.Message);
     }
 
     [Fact]

@@ -4,12 +4,14 @@ using PoolAI.Adapters.OpenAI;
 using PoolAI.Application.Orchestration;
 using PoolAI.Modules.Gateway;
 using PoolAI.Modules.GroupQuota;
+using PoolAI.Modules.GroupQuota.Endpoints;
 using PoolAI.Modules.Identity;
 using PoolAI.Modules.Identity.Endpoints;
 using PoolAI.Modules.Operations;
 using PoolAI.Modules.Operations.Infrastructure.Configuration;
 using PoolAI.Modules.Routing;
 using PoolAI.Modules.SubscriptionAccess;
+using PoolAI.Modules.SubscriptionAccess.Endpoints;
 using PoolAI.Modules.Supply;
 using PoolAI.Modules.Usage;
 using PoolAI.Api;
@@ -36,7 +38,7 @@ builder.Services
         builder.Configuration.GetValue("Data:Postgres:MaxPoolSize", 100))
     .AddApplicationOrchestration()
     .AddIdentityModule(builder.Configuration)
-    .AddSubscriptionAccessModule()
+    .AddSubscriptionAccessModule(builder.Configuration)
     .AddGroupQuotaModule()
     .AddSupplyModule()
     .AddRoutingModule()
@@ -63,6 +65,9 @@ app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapIdentityEndpoints();
+app.MapGroupQuotaEndpoints();
+app.MapSubscriptionAccessEndpoints();
+app.MapUserGroupPoolEndpoints();
 app.MapHealthChecks(
     "/health/live",
     new HealthCheckOptions { Predicate = _ => false });

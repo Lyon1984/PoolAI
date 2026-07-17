@@ -7,24 +7,24 @@
         "PoolAI.Modules.GroupQuota"
       ],
       "pathEndsWith": [],
-      "linesCovered": 8,
-      "linesValid": 8,
+      "linesCovered": 2120,
+      "linesValid": 2120,
       "lineRate": 100,
-      "branchesCovered": 0,
-      "branchesValid": 0,
-      "branchRate": null
+      "branchesCovered": 767,
+      "branchesValid": 826,
+      "branchRate": 92.85714285714286
     },
     "auth": {
       "pathIncludes": [
         "PoolAI.Modules.Identity"
       ],
       "pathEndsWith": [],
-      "linesCovered": 8577,
-      "linesValid": 9053,
-      "lineRate": 94.74207445045842,
-      "branchesCovered": 2415,
-      "branchesValid": 2890,
-      "branchRate": 83.56401384083046
+      "linesCovered": 8630,
+      "linesValid": 9108,
+      "lineRate": 94.75186649099693,
+      "branchesCovered": 2433,
+      "branchesValid": 2902,
+      "branchRate": 83.83873190902825
     },
     "secret": {
       "pathIncludes": [],

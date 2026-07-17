@@ -136,6 +136,7 @@ public sealed class RepositoryLayoutTests
             [
                 "PoolAI.BuildingBlocks",
                 "PoolAI.Contracts",
+                "PoolAI.Infrastructure.Postgres",
                 "PoolAI.Modules.SubscriptionAccess.Abstractions",
                 "PoolAI.Modules.Operations.Abstractions",
                 "PoolAI.Modules.Identity.Abstractions",

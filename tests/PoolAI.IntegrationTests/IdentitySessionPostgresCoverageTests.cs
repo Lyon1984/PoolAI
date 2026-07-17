@@ -112,6 +112,64 @@ public sealed class IdentitySessionPostgresCoverageTests(PostgresRuntimeFixture 
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
+    public async Task CurrentUserStatusReaderReturnsEveryRoleLifecycleAndMissingUser()
+    {
+        // Governing contracts: DEC-031 and M1-E4 Group/Subscription authorization.
+        // Cross-context callers receive one fresh canonical Identity projection;
+        // missing users are explicit failures and disabled users remain observable.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        NpgsqlDataSource dataSource = _fixture.ApiServices.GetRequiredService<NpgsqlDataSource>();
+        Assert.Throws<ArgumentNullException>(
+            static () => new PostgresIdentitySessionReader(null!));
+        PostgresIdentitySessionReader reader = new(dataSource);
+
+        Result<UserStatusSnapshot> missing = await reader.GetCurrentAsync(
+            EntityId.New(),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(missing.IsFailure);
+        Assert.Equal("resource_not_found", missing.Error.Code);
+
+        SessionRuntime runtime = Runtime();
+        (Guid RoleId, SystemRole Role)[] roles =
+        [
+            (AdminRoleId, SystemRole.Admin),
+            (OperatorRoleId, SystemRole.Operator),
+            (AuditorRoleId, SystemRole.Auditor),
+            (UserRoleId, SystemRole.User),
+        ];
+        foreach ((Guid roleId, SystemRole expectedRole) in roles)
+        {
+            AuthenticationUserSnapshot user = await InsertUserAsync(
+                runtime.Repository,
+                roleId,
+                cancellationToken: cancellationToken).ConfigureAwait(true);
+            Result<UserStatusSnapshot> current = await reader.GetCurrentAsync(
+                user.Id,
+                cancellationToken).ConfigureAwait(true);
+
+            Assert.True(current.IsSuccess);
+            Assert.Equal(user.Id, current.Value.UserId);
+            Assert.Equal(UserLifecycle.Active, current.Value.Lifecycle);
+            Assert.Equal(expectedRole, current.Value.Role);
+            Assert.Equal(user.TokenVersion, current.Value.TokenVersion);
+            Assert.Equal(user.Version, current.Value.Version);
+            Assert.True(current.Value.ObservedAt > DateTimeOffset.MinValue);
+        }
+
+        AuthenticationUserSnapshot disabled = await InsertUserAsync(
+            runtime.Repository,
+            UserRoleId,
+            status: "disabled",
+            cancellationToken: cancellationToken).ConfigureAwait(true);
+        Result<UserStatusSnapshot> disabledStatus = await reader.GetCurrentAsync(
+            disabled.Id,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(disabledStatus.IsSuccess);
+        Assert.Equal(UserLifecycle.Disabled, disabledStatus.Value.Lifecycle);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
     public async Task EveryRequestStrongReadsUserRoleStatusAndTokenVersion()
     {
         // Governing contract: DEC-031. Each authorization call executes the

@@ -37,6 +37,12 @@ const ETAG_EXEMPT_IDEMPOTENT_OPERATIONS = new Set([
   'beginMyTotpSetup',
 ])
 
+const STRICT_ADMIN_LIST_QUERY_OPERATIONS = new Set([
+  'adminListGroups',
+  'adminListSubscriptionTemplates',
+  'adminListSubscriptions',
+])
+
 const BODY_ERROR_RESPONSE_BINDINGS = {
   control: {
     '413': {
@@ -469,6 +475,13 @@ function validateOperations(openApi) {
             `${operation.operationId} ${status} must reference ${expectedReference} for ${binding.code}.`,
           )
         }
+      }
+
+      if (STRICT_ADMIN_LIST_QUERY_OPERATIONS.has(operation.operationId)) {
+        invariant(
+          operation.responses['400']?.$ref === '#/components/responses/BadRequest',
+          `${operation.operationId} must declare 400 through #/components/responses/BadRequest for invalid query input.`,
+        )
       }
 
       const requiresIfMatch =

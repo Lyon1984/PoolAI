@@ -170,6 +170,13 @@ export async function runSelfTests({
     'logout with a request body must declare 400 invalid_request',
   )
 
+  const missingAdminListBadRequest = structuredClone(openApi)
+  delete findOperation(missingAdminListBadRequest, 'adminListGroups').operation.responses['400']
+  negative(
+    () => validateContract(missingAdminListBadRequest),
+    'adminListGroups must declare 400 through #/components/responses/BadRequest for invalid query input',
+  )
+
   const missingBodyPayloadTooLarge = structuredClone(openApi)
   delete findOperation(missingBodyPayloadTooLarge, 'login').operation.responses['413']
   negative(

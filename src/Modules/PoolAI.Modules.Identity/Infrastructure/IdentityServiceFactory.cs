@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using PoolAI.Modules.Identity.Abstractions;
 using PoolAI.Modules.Identity.Application.Ports;
 using PoolAI.Modules.Identity.Infrastructure.Persistence;
 
@@ -19,6 +20,13 @@ internal static class IdentityServiceFactory
     {
         ArgumentNullException.ThrowIfNull(serviceProvider);
         return new PostgresIdentitySessionRepository(
+            serviceProvider.GetRequiredService<NpgsqlDataSource>());
+    }
+
+    internal static IUserStatusReader CreateUserStatusReader(IServiceProvider serviceProvider)
+    {
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        return new PostgresIdentitySessionReader(
             serviceProvider.GetRequiredService<NpgsqlDataSource>());
     }
 }

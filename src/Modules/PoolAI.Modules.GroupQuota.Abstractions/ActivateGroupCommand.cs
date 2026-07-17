@@ -6,4 +6,8 @@ public sealed record ActivateGroupCommand(
     long ExpectedVersion,
     string IdempotencyKey,
     string Reason,
-    SupplyReadinessEvidence SupplyEvidence);
+    SupplyReadinessEvidence? SupplyEvidence,
+    GroupMetadataPatch? MetadataPatch = null,
+    EntityId? RequestId = null,
+    string? IpAddress = null,
+    string? UserAgent = null);
