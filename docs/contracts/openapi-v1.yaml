@@ -6497,7 +6497,7 @@ components:
           $ref: '#/components/schemas/Timestamp'
     AuditActorType:
       type: string
-      enum: [user, admin, operator, auditor, system, service]
+      enum: [user, admin, operator, system, service]
     AuditEvent:
       type: object
       additionalProperties: false

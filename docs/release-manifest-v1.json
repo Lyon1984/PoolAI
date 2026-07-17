@@ -4,7 +4,7 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "423b21351ee33948307765ad943b13e3e3848103df6b7466579b174bdf592705"
+    "sha256": "d8887b322bebc575005a2b170be6a17cf002de94154c94cbfa8a729bf091f076"
   },
   "postgres": {
     "required_server_major": 18,
