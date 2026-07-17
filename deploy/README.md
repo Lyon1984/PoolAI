@@ -21,6 +21,12 @@ under ignored `.tools/compose/secrets`, and Compose refuses interpolation unless
 volumes; this repository intentionally contains no volume/database destruction
 helper.
 
+The Api receives dedicated, independently generated secret files for JWT signing,
+refresh-token hashing, TOTP recovery-code hashing, login-IP rate-limit scoping,
+password-reset scoping, one-time-token hashing, API-key hashing, idempotency, and
+envelope encryption. The Worker does not mount or require the Identity Api
+secrets.
+
 Use `tools/local-dev/prepare-compose.sh` followed by
 `tools/local-dev/compose-up.sh`. Static topology validation is available through
 `tools/local-dev/validate-compose.sh` and does not start containers.

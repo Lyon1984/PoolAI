@@ -3,6 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using PoolAI.Modules.Identity.Application;
 
 namespace PoolAI.Api;
 
@@ -22,6 +23,15 @@ internal static class ControlPlaneAuthentication
                 options,
                 configuration,
                 signingKey));
+        services.AddSingleton<ControlPlaneJwtEvents>();
+        services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+            .Configure<TimeProvider>(static (options, timeProvider) =>
+                options.TokenValidationParameters.LifetimeValidator =
+                    (notBefore, expires, _, parameters) => IsLifetimeValid(
+                        notBefore,
+                        expires,
+                        parameters.ClockSkew,
+                        timeProvider));
         services.AddAuthorization();
         return services;
     }
@@ -32,6 +42,7 @@ internal static class ControlPlaneAuthentication
         byte[] signingKey)
     {
         options.MapInboundClaims = false;
+        options.EventsType = typeof(ControlPlaneJwtEvents);
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -40,6 +51,7 @@ internal static class ControlPlaneAuthentication
             ValidAudience = configuration["Auth:Jwt:Audience"] ?? "PoolAI.Web",
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(signingKey),
+            ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
             RequireSignedTokens = true,
             RequireExpirationTime = true,
             ValidateLifetime = true,
@@ -49,22 +61,48 @@ internal static class ControlPlaneAuthentication
             NameClaimType = JwtRegisteredClaimNames.Sub,
             RoleClaimType = "role",
         };
-        options.Events = new JwtBearerEvents
-        {
-            OnTokenValidated = ValidateRequiredClaimsAsync,
-            OnChallenge = WriteChallengeAsync,
-            OnForbidden = WriteForbiddenAsync,
-        };
     }
 
-    private static Task ValidateRequiredClaimsAsync(TokenValidatedContext context)
+    private static bool IsLifetimeValid(
+        DateTime? notBefore,
+        DateTime? expires,
+        TimeSpan clockSkew,
+        TimeProvider timeProvider)
+    {
+        if (expires is null || notBefore > expires)
+        {
+            return false;
+        }
+
+        DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+        return (notBefore is null || notBefore.Value <= now + clockSkew)
+            && expires.Value >= now - clockSkew;
+    }
+}
+
+#pragma warning disable MA0048 // Authentication configuration and its scheme events form one cohesive surface.
+internal sealed class ControlPlaneJwtEvents : JwtBearerEvents
+{
+    private const string DependencyUnavailableItem = "poolai.auth.session-dependency-unavailable";
+    private readonly IAccessSessionValidator _sessionValidator;
+
+    public ControlPlaneJwtEvents(IAccessSessionValidator sessionValidator)
+    {
+        _sessionValidator = sessionValidator
+            ?? throw new ArgumentNullException(nameof(sessionValidator));
+    }
+
+    public override async Task TokenValidated(TokenValidatedContext context)
     {
         ClaimsPrincipal principal = context.Principal!;
         string? subject = principal.FindFirstValue(JwtRegisteredClaimNames.Sub);
         string? role = principal.FindFirstValue("role");
         string? tokenVersion = principal.FindFirstValue("token_version");
+        string? sessionFamily = principal.FindFirstValue("sid");
         if (!Guid.TryParse(subject, out Guid subjectId)
             || subjectId == Guid.Empty
+            || !Guid.TryParse(sessionFamily, out Guid familyId)
+            || familyId == Guid.Empty
             || role is not ("admin" or "operator" or "auditor" or "user")
             || !long.TryParse(
                 tokenVersion,
@@ -74,14 +112,48 @@ internal static class ControlPlaneAuthentication
             || parsedTokenVersion <= 0)
         {
             context.Fail("The access token is missing required identity claims.");
+            return;
         }
 
-        return Task.CompletedTask;
+        try
+        {
+            if (!await _sessionValidator.IsActiveAsync(
+                    subjectId,
+                    familyId,
+                    parsedTokenVersion,
+                    context.HttpContext.RequestAborted)
+                .ConfigureAwait(false))
+            {
+                context.Fail("The access-token session family is no longer active.");
+            }
+        }
+        catch (OperationCanceledException)
+            when (context.HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            context.HttpContext.Items[DependencyUnavailableItem] = true;
+            context.Fail("The access-token session authority is unavailable.");
+        }
     }
 
-    private static Task WriteChallengeAsync(JwtBearerChallengeContext context)
+    public override Task Challenge(JwtBearerChallengeContext context)
     {
         context.HandleResponse();
+        if (context.HttpContext.Items.ContainsKey(DependencyUnavailableItem))
+        {
+            return ControlPlaneProblemWriter.WriteAsync(
+                context.HttpContext,
+                StatusCodes.Status503ServiceUnavailable,
+                "dependency_unavailable",
+                "Authentication dependency unavailable",
+                "The session authority is temporarily unavailable.",
+                retryable: true,
+                retryAfterSeconds: 1);
+        }
+
         context.Response.Headers.WWWAuthenticate = "Bearer";
         string code = context.AuthenticateFailure is null
             ? "authentication_required"
@@ -98,7 +170,7 @@ internal static class ControlPlaneAuthentication
             retryable: false);
     }
 
-    private static Task WriteForbiddenAsync(ForbiddenContext context) =>
+    public override Task Forbidden(ForbiddenContext context) =>
         ControlPlaneProblemWriter.WriteAsync(
             context.HttpContext,
             StatusCodes.Status403Forbidden,
@@ -107,3 +179,4 @@ internal static class ControlPlaneAuthentication
             "The authenticated user does not have the required role.",
             retryable: false);
 }
+#pragma warning restore MA0048

@@ -117,6 +117,25 @@ internal sealed class PostgresIdentityRepository : IIdentityRepository
           AND revoked_at IS NULL;
         """;
 
+    private const string RevokeTotpChallengesForDisabledUserSql = """
+        UPDATE public.one_time_tokens
+        SET revoked_at = clock_timestamp(),
+            revoke_reason = 'user_disabled'
+        WHERE user_id = $1
+          AND purpose = 'totp_challenge'
+          AND used_at IS NULL
+          AND revoked_at IS NULL;
+        """;
+
+    private const string RevokeRefreshSessionsForDisabledUserSql = """
+        UPDATE public.refresh_sessions
+        SET status = 'revoked',
+            revoked_at = clock_timestamp(),
+            revoke_reason = 'user_disabled'
+        WHERE user_id = $1
+          AND status = 'active';
+        """;
+
     private const string InsertPasswordResetTokenSql = """
         INSERT INTO public.one_time_tokens (
             id, user_id, purpose, token_hash, pepper_version, expires_at
@@ -201,6 +220,16 @@ internal sealed class PostgresIdentityRepository : IIdentityRepository
             revoke_reason = 'password_reset'
         WHERE user_id = $1
           AND status = 'active';
+        """;
+
+    private const string RevokeOpenTotpChallengesForPasswordResetSql = """
+        UPDATE public.one_time_tokens
+        SET revoked_at = clock_timestamp(),
+            revoke_reason = 'password_reset'
+        WHERE user_id = $1
+          AND purpose = 'totp_challenge'
+          AND used_at IS NULL
+          AND revoked_at IS NULL;
         """;
 
     private readonly NpgsqlDataSource _dataSource;
@@ -417,6 +446,20 @@ internal sealed class PostgresIdentityRepository : IIdentityRepository
             _ = await revokeResetTokens
                 .ExecuteNonQueryAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            using NpgsqlCommand revokeTotpChallenges = session.CreateCommand(
+                RevokeTotpChallengesForDisabledUserSql);
+            revokeTotpChallenges.Parameters.AddWithValue(userId.Value);
+            _ = await revokeTotpChallenges
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            using NpgsqlCommand revokeRefreshSessions = session.CreateCommand(
+                RevokeRefreshSessionsForDisabledUserSql);
+            revokeRefreshSessions.Parameters.AddWithValue(userId.Value);
+            _ = await revokeRefreshSessions
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
 
         return new UpdateUserPersistenceResult(
@@ -547,6 +590,15 @@ internal sealed class PostgresIdentityRepository : IIdentityRepository
         {
             revokeSessions.Parameters.AddWithValue(userId.Value.Value);
             _ = await revokeSessions.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        using (NpgsqlCommand revokeTotpChallenges = session.CreateCommand(
+            RevokeOpenTotpChallengesForPasswordResetSql))
+        {
+            revokeTotpChallenges.Parameters.AddWithValue(userId.Value.Value);
+            _ = await revokeTotpChallenges
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
 
         IdentityUser user = await GetAsync(

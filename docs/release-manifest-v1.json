@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "e2b0d295eff895cbe2608aee4c8e702df17afb791138b6d2c1338c7af35d441c"
+    "sha256": "1e025400073d4cbad8bbda9759b0b8d8adeb6bbd49f277f976e8ac087575c28e"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 4,
-    "maximum_compatible_version": 4,
+    "minimum_compatible_version": 5,
+    "maximum_compatible_version": 5,
     "migrations": [
       {
         "version": 1,
@@ -34,6 +34,12 @@
         "name": "0004_identity_m1_e1.sql",
         "source": "docs/database/0004_identity_m1_e1.sql",
         "sha256": "80a11f61cc84d1f6fbf151557e5b4b54c28411104dc4a1a066d5f86561968b58"
+      },
+      {
+        "version": 5,
+        "name": "0005_identity_m1_e2.sql",
+        "source": "docs/database/0005_identity_m1_e2.sql",
+        "sha256": "cf0f791b3db4767dd73a7c4418a3ce179d72ccfa33714330987ab8087fc4f1c5"
       }
     ]
   },
@@ -42,7 +48,7 @@
     "contract_version": 1,
     "key_schema_version": "r1",
     "contract_source": "docs/runtime/redis-contract.md",
-    "contract_sha256": "7d79d37852f56400a816e83bc161c92bd567b9a6380340cda4d2c05a1d94a3b7",
+    "contract_sha256": "6a290604dc2b4117b0c4b2eb2fe37ee74283de277e0a3e42f3a166f741f4175e",
     "scripts": [
       {
         "name": "fixed_window_increment",

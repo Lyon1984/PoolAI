@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net.Mail;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Http;
 using PoolAI.Contracts.Generated;
 using PoolAI.Modules.Identity.Abstractions;
@@ -20,6 +22,14 @@ internal static class IdentityHttp
         return TryGetActor(context, out IdentityActor? actor)
             ? actor!
             : throw new InvalidOperationException("The authenticated principal is missing required identity claims.");
+    }
+
+    public static SessionActor RequireSessionActor(HttpContext context)
+    {
+        return TryGetSessionActor(context, out SessionActor? actor)
+            ? actor!
+            : throw new InvalidOperationException(
+                "The authenticated principal is missing required session claims.");
     }
 
     public static bool TryGetActor(HttpContext context, out IdentityActor? actor)
@@ -45,6 +55,24 @@ internal static class IdentityHttp
         }
 
         actor = new IdentityActor(new EntityId(userId), role, tokenVersion);
+        return true;
+    }
+
+    public static bool TryGetSessionActor(HttpContext context, out SessionActor? actor)
+    {
+        if (!TryGetActor(context, out IdentityActor? identityActor)
+            || !Guid.TryParse(context.User.FindFirstValue("sid"), out Guid familyId)
+            || familyId == Guid.Empty)
+        {
+            actor = null;
+            return false;
+        }
+
+        actor = new SessionActor(
+            identityActor!.UserId,
+            identityActor.Role,
+            identityActor.TokenVersion,
+            new EntityId(familyId));
         return true;
     }
 
@@ -169,6 +197,139 @@ internal static class IdentityHttp
                 "Unsupported media type",
                 $"This operation requires {expected}.",
                 retryable: false);
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(LoginRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (!IsEmail(request.Email))
+        {
+            errors["/email"] =
+                ["A supported email mailbox of at most 254 characters is required."];
+        }
+
+        AddCredentialLengthError(
+            errors,
+            "/password",
+            request.Password,
+            minimumLength: 1,
+            message: "The password must contain between 1 and 1024 characters.");
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        TotpVerifyRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (request.ChallengeId == Guid.Empty)
+        {
+            errors["/challenge_id"] = ["A non-empty challenge UUID is required."];
+        }
+
+        AddTotpCodeError(errors, request.TotpCode);
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        RefreshRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (request.RefreshToken is null || request.RefreshToken.Length is < 32 or > 4096)
+        {
+            errors["/refresh_token"] =
+                ["The refresh token must contain between 32 and 4096 characters."];
+        }
+
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        LogoutRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (request.RefreshToken.HasValue
+            && (request.RefreshToken.Value is null
+                || request.RefreshToken.Value.Length is < 32 or > 4096))
+        {
+            errors["/refresh_token"] =
+                ["The refresh token must contain between 32 and 4096 characters."];
+        }
+
+        if (request.AllSessions.HasValue
+            && request.AllSessions.Value
+            && request.RefreshToken.HasValue)
+        {
+            errors["/"] =
+                ["refresh_token must be omitted when all_sessions is true."];
+        }
+
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        PasswordChangeRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        AddCredentialLengthError(
+            errors,
+            "/current_password",
+            request.CurrentPassword,
+            minimumLength: 1,
+            message: "The current password must contain between 1 and 1024 characters.");
+        AddCredentialLengthError(
+            errors,
+            "/new_password",
+            request.NewPassword,
+            minimumLength: 12,
+            message: "The new password must contain between 12 and 1024 characters.");
+        if (string.IsNullOrWhiteSpace(request.Reason)
+            || request.Reason.Length > 500)
+        {
+            errors["/reason"] =
+                ["A non-blank reason of at most 500 characters is required."];
+        }
+
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        TotpSetupRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        AddCredentialLengthError(
+            errors,
+            "/current_password",
+            request.CurrentPassword,
+            minimumLength: 1,
+            message: "The current password must contain between 1 and 1024 characters.");
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        TotpConfirmRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (request.ChallengeId == Guid.Empty)
+        {
+            errors["/challenge_id"] = ["A non-empty challenge UUID is required."];
+        }
+
+        AddTotpCodeError(errors, request.TotpCode);
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
+        TotpDisableRequest request)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        AddCredentialLengthError(
+            errors,
+            "/current_password",
+            request.CurrentPassword,
+            minimumLength: 1,
+            message: "The current password must contain between 1 and 1024 characters.");
+        AddTotpCodeError(errors, request.TotpCode);
+        return errors;
     }
 
     public static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(UserCreateRequest request)
@@ -347,6 +508,54 @@ internal static class IdentityHttp
 
     public static string ETag(long version) => $"\"v{version.ToString(CultureInfo.InvariantCulture)}\"";
 
+    public static void NoStore(HttpContext context) =>
+        context.Response.Headers.CacheControl = "no-store";
+
+    public static TokenPair ToContract(TokenPairView value) => new()
+    {
+        TokenType = "Bearer",
+        AccessToken = value.AccessToken,
+        ExpiresIn = value.ExpiresIn,
+        RefreshToken = value.RefreshToken,
+        RefreshExpiresIn = value.RefreshExpiresIn,
+    };
+
+    public static MfaChallenge ToContract(LoginMfaResultView value) => new()
+    {
+        Object = "mfa_required",
+        ChallengeId = value.ChallengeId.Value,
+        ExpiresIn = value.ExpiresIn,
+    };
+
+    public static CurrentUserProfile ToContract(CurrentUserView value) => new()
+    {
+        Id = value.Id.Value,
+        Email = value.Email,
+        DisplayName = value.DisplayName,
+        Role = ToContractRole(value.Role),
+        Status = value.Status is UserLifecycle.Active ? UserStatus.Active : UserStatus.Disabled,
+        TotpEnabled = value.TotpEnabled,
+        PasswordChangedAt = value.PasswordChangedAt is null
+            ? default
+            : new Optional<DateTimeOffset?>(value.PasswordChangedAt),
+        Version = value.Version,
+        CreatedAt = value.CreatedAt,
+        UpdatedAt = value.UpdatedAt,
+    };
+
+    public static TotpSetupResult ToContract(TotpSetupView value) => new()
+    {
+        ChallengeId = value.ChallengeId.Value,
+        Secret = value.Secret,
+        OtpauthUri = value.OtpauthUri,
+        ExpiresIn = value.ExpiresIn,
+    };
+
+    public static TotpConfirmResult ToContract(TotpConfirmView value) => new()
+    {
+        RecoveryCodes = value.RecoveryCodes,
+    };
+
     public static PoolAI.Contracts.Generated.User ToContract(UserView value) => new()
     {
         Id = value.Id.Value,
@@ -456,6 +665,28 @@ internal static class IdentityHttp
 
     private static HttpError MapError(ResultError error) => error.Code switch
     {
+        "invalid_credentials" => new(
+            error.Code, 401, "Invalid credentials", "The supplied credentials are invalid.", false),
+        "invalid_user_token" => new(
+            error.Code, 401, "Invalid user token", "The user access token is invalid or revoked.", false),
+        "mfa_challenge_invalid" => new(
+            error.Code, 401, "Invalid MFA challenge", "The MFA challenge is invalid, expired, or already used.", false),
+        "totp_code_invalid" => new(
+            error.Code, 401, "Invalid TOTP code", "The TOTP code is invalid.", false),
+        "refresh_token_invalid" => new(
+            error.Code, 401, "Invalid refresh token", "The refresh token is invalid or expired.", false),
+        "refresh_token_reused" => new(
+            error.Code, 401, "Refresh token reused", "The rotated refresh token was reused and its family was revoked.", false),
+        "account_locked" => new(
+            error.Code, 429, "Account locked", "The account is temporarily locked.", true, error.RetryAfterSeconds),
+        "user_disabled" => new(
+            error.Code, 403, "User disabled", "The user is disabled.", false),
+        "totp_already_enabled" => new(
+            error.Code, 409, "TOTP already enabled", "TOTP is already enabled for this user.", false),
+        "totp_not_enabled" => new(
+            error.Code, 409, "TOTP not enabled", "TOTP is not enabled for this user.", false),
+        "totp_setup_expired" => new(
+            error.Code, 409, "TOTP setup expired", "The pending TOTP setup has expired.", false),
         "role_required" or "forbidden" => new(
             "role_required", 403, "Required role missing", "The required role is missing.", false),
         "resource_not_found" => new(
@@ -550,7 +781,47 @@ internal static class IdentityHttp
     public static string? UserAgent(HttpContext context)
     {
         string value = context.Request.Headers.UserAgent.ToString();
-        return string.IsNullOrWhiteSpace(value) ? null : value[..Math.Min(value.Length, 512)];
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        byte[] input = Encoding.UTF8.GetBytes(value[..Math.Min(value.Length, 512)]);
+        byte[] digest = SHA256.HashData(input);
+        try
+        {
+            return string.Concat("sha256:", Convert.ToHexStringLower(digest));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(input);
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
+    private static void AddCredentialLengthError(
+        Dictionary<string, IReadOnlyList<string>> errors,
+        string pointer,
+        string? value,
+        int minimumLength,
+        string message)
+    {
+        if (value is null || value.Length < minimumLength || value.Length > 1024)
+        {
+            errors[pointer] = [message];
+        }
+    }
+
+    private static void AddTotpCodeError(
+        Dictionary<string, IReadOnlyList<string>> errors,
+        string? value)
+    {
+        if (value is null
+            || value.Length != 6
+            || value.Any(static character => character is < '0' or > '9'))
+        {
+            errors["/totp_code"] = ["A six-digit TOTP code is required."];
+        }
     }
 
     private static bool TryParseRole(string? value, out SystemRole role)
@@ -567,9 +838,8 @@ internal static class IdentityHttp
     }
 
     private static string PasswordFieldPointer(HttpContext context) =>
-        context.Request.Path.Equals(
-            "/api/v1/auth/reset-password",
-            StringComparison.Ordinal)
+        context.Request.Path.Equals("/api/v1/auth/reset-password", StringComparison.Ordinal)
+        || context.Request.Path.Equals("/api/v1/me/password", StringComparison.Ordinal)
             ? "/new_password"
             : "/temporary_password";
 

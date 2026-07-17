@@ -13,6 +13,7 @@ x-common-app-environment: &common-app-environment
   Auth__Jwt__AccessTokenMinutes: "15"
   Auth__Jwt__RefreshTokenDays: "30"
   Auth__Jwt__ClockSkewSeconds: "30"
+  Auth__RefreshToken__CurrentPepperVersion: "1"
   Auth__Password__MinLength: "12"
   Auth__PasswordReset__TokenMinutes: "30"
   Auth__PasswordReset__IpRequestsPerMinute: "5"
@@ -21,6 +22,10 @@ x-common-app-environment: &common-app-environment
   Auth__TOTP__Issuer: PoolAI
   Auth__TOTP__StepSeconds: "30"
   Auth__TOTP__AllowedAdjacentSteps: "1"
+  Auth__TOTP__RecoveryCodePepperVersion: "1"
+  Auth__Login__IpFailuresPerMinute: "20"
+  Auth__Login__MaxFailures: "5"
+  Auth__Login__LockoutMinutes: "15"
   ApiKeys__Prefix: sk-pool-
   Data__Postgres__CommandTimeoutSeconds: "30"
   Data__Postgres__MaxPoolSize: "100"
@@ -288,10 +293,16 @@ services:
         target: Data__Redis__ConnectionString
       - source: jwt-signing-key
         target: Auth__Jwt__SigningKey
+      - source: auth-refresh-token-current-pepper
+        target: Auth__RefreshToken__CurrentPepper
       - source: auth-password-reset-rate-scope-pepper
         target: Auth__PasswordReset__RateLimitScopePepper
       - source: auth-token-hash-current-pepper
         target: Auth__TokenHash__CurrentPepper
+      - source: auth-totp-recovery-code-pepper
+        target: Auth__TOTP__RecoveryCodePepper
+      - source: auth-login-rate-scope-pepper
+        target: Auth__Login__RateLimitScopePepper
       - source: api-key-current-pepper
         target: ApiKeys__CurrentPepper
       - source: idempotency-request-hash-pepper
@@ -408,10 +419,16 @@ secrets:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/redis-connection-string
   jwt-signing-key:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-jwt-signing-key
+  auth-refresh-token-current-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-refresh-token-current-pepper
   auth-password-reset-rate-scope-pepper:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-password-reset-rate-scope-pepper
   auth-token-hash-current-pepper:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-token-hash-current-pepper
+  auth-totp-recovery-code-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-totp-recovery-code-pepper
+  auth-login-rate-scope-pepper:
+    file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/auth-login-rate-scope-pepper
   api-key-current-pepper:
     file: ${POOLAI_SECRET_DIR:?run tools/local-dev/prepare-compose.sh}/api-keys-current-pepper
   idempotency-request-hash-pepper:

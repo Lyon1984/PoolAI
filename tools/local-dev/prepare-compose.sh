@@ -88,11 +88,39 @@ ensure_random_hex postgres-worker-password
 ensure_random_hex postgres-migrator-password
 ensure_random_hex redis-password
 ensure_random_base64 auth-jwt-signing-key
+ensure_random_base64 auth-refresh-token-current-pepper
 ensure_random_base64 auth-password-reset-rate-scope-pepper
 ensure_random_base64 auth-token-hash-current-pepper
+ensure_random_base64 auth-totp-recovery-code-pepper
+ensure_random_base64 auth-login-rate-scope-pepper
 ensure_random_base64 api-keys-current-pepper
 ensure_random_base64 idempotency-request-hash-pepper
 ensure_random_base64 envelope-current-key
+
+ensure_distinct_secrets() {
+    while [ "$#" -gt 1 ]; do
+        current="$1"
+        current_value=$(tr -d '\r\n' < "$current")
+        shift
+        for candidate in "$@"; do
+            candidate_value=$(tr -d '\r\n' < "$candidate")
+            if [ "$current_value" = "$candidate_value" ]; then
+                fail "purpose-specific secrets must be distinct: $(basename "$current") and $(basename "$candidate")"
+            fi
+        done
+    done
+}
+
+ensure_distinct_secrets \
+    "$secret_dir/auth-jwt-signing-key" \
+    "$secret_dir/auth-refresh-token-current-pepper" \
+    "$secret_dir/auth-password-reset-rate-scope-pepper" \
+    "$secret_dir/auth-token-hash-current-pepper" \
+    "$secret_dir/auth-totp-recovery-code-pepper" \
+    "$secret_dir/auth-login-rate-scope-pepper" \
+    "$secret_dir/api-keys-current-pepper" \
+    "$secret_dir/idempotency-request-hash-pepper" \
+    "$secret_dir/envelope-current-key"
 
 postgres_api_password=$(tr -d '\r\n' < "$secret_dir/postgres-api-password")
 postgres_worker_password=$(tr -d '\r\n' < "$secret_dir/postgres-worker-password")
@@ -272,8 +300,11 @@ chmod 644 \
     "$secret_dir/redis.conf" \
     "$secret_dir/redis-connection-string" \
     "$secret_dir/auth-jwt-signing-key" \
+    "$secret_dir/auth-refresh-token-current-pepper" \
     "$secret_dir/auth-password-reset-rate-scope-pepper" \
     "$secret_dir/auth-token-hash-current-pepper" \
+    "$secret_dir/auth-totp-recovery-code-pepper" \
+    "$secret_dir/auth-login-rate-scope-pepper" \
     "$secret_dir/api-keys-current-pepper" \
     "$secret_dir/idempotency-request-hash-pepper" \
     "$secret_dir/envelope-current-key" \

@@ -5,8 +5,11 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using PoolAI.BuildingBlocks;
 using PoolAI.Database.Migrations;
+using PoolAI.Modules.Identity.Application.Ports;
 using PoolAI.Modules.Identity.Infrastructure.Security;
 using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
@@ -15,6 +18,7 @@ namespace PoolAI.EndToEndTests;
 
 internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
 {
+    internal const string OriginalPassword = "Original-Password-123!";
     private static readonly Guid UserRoleId = Guid.Parse(
         "01900000-0000-7000-8000-000000000004");
     private PostgreSqlContainer? postgres;
@@ -110,6 +114,30 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             .ConfigureAwait(false));
     }
 
+    internal async ValueTask EnableTotpAsync(
+        Guid userId,
+        string base32Secret,
+        CancellationToken cancellationToken)
+    {
+        ITotpSecretEnvelope envelope = apiFactory!.Services
+            .GetRequiredService<ITotpSecretEnvelope>();
+        JsonElement encrypted = envelope.Encrypt(
+            base32Secret,
+            TotpSecretEnvelopeTarget.User,
+            new EntityId(userId));
+        using NpgsqlCommand command = AdministratorDataSource.CreateCommand("""
+            UPDATE public.users
+            SET totp_secret_envelope = $2::jsonb,
+                totp_last_accepted_step = NULL
+            WHERE id = $1;
+            """);
+        command.Parameters.AddWithValue(userId);
+        command.Parameters.AddWithValue(encrypted.GetRawText());
+        Assert.Equal(
+            1,
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+    }
+
     public async ValueTask DisposeAsync()
     {
         Client?.Dispose();
@@ -179,13 +207,13 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             ActiveUserId,
             ActiveEmail,
             "active",
-            passwordHasher.Hash("Original-Password-123!"),
+            passwordHasher.Hash(OriginalPassword),
             cancellationToken).ConfigureAwait(false);
         await InsertUserAsync(
             DisabledUserId,
             DisabledEmail,
             "disabled",
-            passwordHasher.Hash("Original-Password-123!"),
+            passwordHasher.Hash(OriginalPassword),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -232,9 +260,15 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             ["App:AllowedHosts:0"] = "localhost",
             ["Cors:AllowedOrigins:0"] = "http://localhost",
             ["Auth:Jwt:SigningKey"] = SecretBase64(),
+            ["Auth:RefreshToken:CurrentPepperVersion"] = "7",
+            ["Auth:RefreshToken:CurrentPepper"] = SecretBase64(),
             ["Auth:PasswordReset:RateLimitScopePepper"] = SecretBase64(),
             ["Auth:TokenHash:CurrentPepperVersion"] = "7",
             ["Auth:TokenHash:CurrentPepper"] = SecretBase64(),
+            ["Auth:TOTP:RecoveryCodePepperVersion"] = "7",
+            ["Auth:TOTP:RecoveryCodePepper"] = SecretBase64(),
+            ["Auth:Login:IpFailuresPerMinute"] = "20",
+            ["Auth:Login:RateLimitScopePepper"] = SecretBase64(),
             ["ApiKeys:CurrentPepper"] = SecretBase64(),
             ["Idempotency:RequestHashPepper"] = SecretBase64(),
             ["Data:Postgres:ConnectionString"] = postgresConnectionString,

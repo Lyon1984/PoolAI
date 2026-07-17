@@ -240,6 +240,14 @@ public sealed class IdentityVerticalSliceTests
         UserView roleChanged,
         CancellationToken cancellationToken)
     {
+        EntityId refreshSessionId = await InsertRefreshSessionAsync(
+            administrator,
+            roleChanged.Id,
+            cancellationToken).ConfigureAwait(true);
+        EntityId totpChallengeId = await InsertLoginTotpChallengeAsync(
+            administrator,
+            roleChanged.Id,
+            cancellationToken).ConfigureAwait(true);
         EntityId disableRequestId = EntityId.New();
         Result<IdentityCommandOutcome<UserView>> disabled = await update.ExecuteAsync(
             new UpdateUserCommand(
@@ -265,6 +273,16 @@ public sealed class IdentityVerticalSliceTests
         Assert.Equal("user", facts.Role);
         Assert.Equal("disabled", facts.Status);
         Assert.Equal(disabled.Value.Value.Version, facts.Version);
+        await AssertRefreshSessionRevokedAsync(
+            administrator,
+            refreshSessionId,
+            cancellationToken,
+            "user_disabled").ConfigureAwait(true);
+        await AssertTotpChallengeRevokedAsync(
+            administrator,
+            totpChallengeId,
+            "user_disabled",
+            cancellationToken).ConfigureAwait(true);
         Assert.Equal(disabled.Value.Value.Version, facts.TokenVersion);
         await AssertAuditIdempotencyHashAsync(
             administrator,
@@ -535,10 +553,11 @@ public sealed class IdentityVerticalSliceTests
             administrator,
             activeUserId,
             cancellationToken).ConfigureAwait(true);
-        EntityId refreshSessionId = await InsertRefreshSessionAsync(
-            administrator,
-            activeUserId,
-            cancellationToken).ConfigureAwait(true);
+        (EntityId refreshSessionId, EntityId totpChallengeId) =
+            await InsertRevocableIdentityArtifactsAsync(
+                administrator,
+                activeUserId,
+                cancellationToken).ConfigureAwait(true);
         ICompletePasswordResetUseCase complete = services
             .GetRequiredService<ICompletePasswordResetUseCase>();
         EntityId completeRequestId = EntityId.New();
@@ -575,6 +594,7 @@ public sealed class IdentityVerticalSliceTests
             administrator,
             activeUserId,
             refreshSessionId,
+            totpChallengeId,
             completeRequestId,
             beforeReset,
             afterReset,
@@ -593,6 +613,7 @@ public sealed class IdentityVerticalSliceTests
         NpgsqlDataSource administrator,
         EntityId activeUserId,
         EntityId refreshSessionId,
+        EntityId totpChallengeId,
         EntityId completeRequestId,
         UserSecurityFacts beforeReset,
         UserSecurityFacts afterReset,
@@ -608,6 +629,11 @@ public sealed class IdentityVerticalSliceTests
         await AssertRefreshSessionRevokedAsync(
             administrator,
             refreshSessionId,
+            cancellationToken).ConfigureAwait(true);
+        await AssertTotpChallengeRevokedAsync(
+            administrator,
+            totpChallengeId,
+            "password_reset",
             cancellationToken).ConfigureAwait(true);
         TokenFacts newestToken = await ReadTokenAsync(
             administrator,
@@ -785,13 +811,20 @@ public sealed class IdentityVerticalSliceTests
         configuration["Health:Ntp:Port"] = "123";
         configuration["App:PublicBaseUrl"] = "https://app.poolai.test/base/";
         configuration["Email:FromAddress"] = "no-reply@poolai.test";
+        configuration["Auth:Jwt:SigningKey"] = SecretBase64();
         configuration["Auth:Password:MinLength"] = "12";
         configuration["Auth:PasswordReset:TokenMinutes"] = "30";
+        configuration["Auth:RefreshToken:CurrentPepperVersion"] = "7";
+        configuration["Auth:RefreshToken:CurrentPepper"] = SecretBase64();
         configuration["Auth:TokenHash:CurrentPepperVersion"] = "7";
         configuration["Auth:TokenHash:CurrentPepper"] = SecretBase64();
         configuration["Auth:PasswordReset:RateLimitScopePepper"] = SecretBase64();
         configuration["Auth:PasswordReset:IpRequestsPerMinute"] = "5";
         configuration["Auth:PasswordReset:AccountRequestsPerMinute"] = "3";
+        configuration["Auth:TOTP:RecoveryCodePepperVersion"] = "7";
+        configuration["Auth:TOTP:RecoveryCodePepper"] = SecretBase64();
+        configuration["Auth:Login:IpFailuresPerMinute"] = "20";
+        configuration["Auth:Login:RateLimitScopePepper"] = SecretBase64();
         configuration["Idempotency:RequestHashPepper"] = SecretBase64();
         configuration["Secrets:Envelope:CurrentKeyId"] = "email-k1";
         configuration["Secrets:Envelope:CurrentKey"] = envelopeKey;
@@ -904,10 +937,54 @@ public sealed class IdentityVerticalSliceTests
         return sessionId;
     }
 
+    private static async ValueTask<(EntityId RefreshSessionId, EntityId TotpChallengeId)>
+        InsertRevocableIdentityArtifactsAsync(
+            NpgsqlDataSource dataSource,
+            EntityId userId,
+            CancellationToken cancellationToken)
+    {
+        EntityId refreshSessionId = await InsertRefreshSessionAsync(
+            dataSource,
+            userId,
+            cancellationToken).ConfigureAwait(false);
+        EntityId totpChallengeId = await InsertLoginTotpChallengeAsync(
+            dataSource,
+            userId,
+            cancellationToken).ConfigureAwait(false);
+        return (refreshSessionId, totpChallengeId);
+    }
+
+    private static async ValueTask<EntityId> InsertLoginTotpChallengeAsync(
+        NpgsqlDataSource dataSource,
+        EntityId userId,
+        CancellationToken cancellationToken)
+    {
+        EntityId challengeId = EntityId.New();
+        using NpgsqlCommand command = dataSource.CreateCommand("""
+            INSERT INTO public.one_time_tokens (
+                id, user_id, purpose, token_hash, pepper_version, expires_at,
+                challenge_kind, security_stamp, token_version
+            )
+            SELECT $1, id, 'totp_challenge', $2, 1,
+                   clock_timestamp() + interval '5 minutes',
+                   'login', security_stamp, token_version
+            FROM public.users
+            WHERE id = $3;
+            """);
+        command.Parameters.AddWithValue(challengeId.Value);
+        command.Parameters.AddWithValue(RandomNumberGenerator.GetBytes(32));
+        command.Parameters.AddWithValue(userId.Value);
+        Assert.Equal(
+            1,
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+        return challengeId;
+    }
+
     private static async ValueTask AssertRefreshSessionRevokedAsync(
         NpgsqlDataSource dataSource,
         EntityId sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string expectedReason = "password_reset")
     {
         using NpgsqlCommand command = dataSource.CreateCommand("""
             SELECT status, revoked_at IS NOT NULL, revoke_reason
@@ -920,7 +997,26 @@ public sealed class IdentityVerticalSliceTests
         Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
         Assert.Equal("revoked", reader.GetString(0));
         Assert.True(reader.GetBoolean(1));
-        Assert.Equal("password_reset", reader.GetString(2));
+        Assert.Equal(expectedReason, reader.GetString(2));
+    }
+
+    private static async ValueTask AssertTotpChallengeRevokedAsync(
+        NpgsqlDataSource dataSource,
+        EntityId challengeId,
+        string expectedReason,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = dataSource.CreateCommand("""
+            SELECT revoked_at IS NOT NULL, revoke_reason
+            FROM public.one_time_tokens
+            WHERE id = $1;
+            """);
+        command.Parameters.AddWithValue(challengeId.Value);
+        using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        Assert.True(reader.GetBoolean(0));
+        Assert.Equal(expectedReason, reader.GetString(1));
     }
 
     private static async ValueTask AssertIdentityFactCardinalityAsync(

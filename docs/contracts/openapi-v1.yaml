@@ -266,7 +266,14 @@ paths:
       tags: [Auth]
       operationId: login
       summary: 用户登录
-      description: 封闭注册；不存在自助注册端点。登录失败不泄露邮箱是否存在。
+      description: |
+        封闭注册；不存在自助注册端点。未知邮箱、错误密码和锁定期内的错误密码
+        统一返回 `invalid_credentials`；只有 active User 的密码正确且仍在锁定中时才返回
+        `account_locked + Retry-After`，disabled User 只在密码正确后返回 `user_disabled`。锁定使用
+        PostgreSQL clock；锁定期的错误密码不延长锁定/改写失败数，到期后当前错误密码
+        从失败数 1 重新累计，正确密码清空失败数/锁定。
+        本端点与 login TOTP 校验失败共享 Login IP fixed-window；失败路径所需 Redis 判定异常时
+        fail-closed 为 `coordination_unavailable`。
       security: []
       requestBody:
         required: true
@@ -313,7 +320,11 @@ paths:
       tags: [Auth]
       operationId: refreshSession
       summary: 单次轮换 Refresh Token
-      description: Refresh Token 只能成功使用一次；重放返回 `refresh_token_reused`。
+      description: |
+        Refresh Token 只能成功使用一次；重放返回 `refresh_token_reused` 并撤销整个 family。
+        issued/expiry/rotation/revoke 都使用 PostgreSQL clock。成功轮换保持 `family_id` 不变，
+        新 generation 从本次数据库时间重新获得固定 30 天有效期（滑动），新 Access JWT
+        的 `sid` 仍是该 `family_id`。
       security: []
       requestBody:
         required: true
@@ -358,6 +369,12 @@ paths:
       tags: [Auth]
       operationId: logout
       summary: 撤销当前会话或全部会话
+      description: |
+        省略 body 或 `all_sessions=false` 时，撤销 Access JWT `sid` 对应的当前 refresh family。
+        若提供 `refresh_token`，只在它属于 actor 且属于当前 `sid` family 时执行该撤销；
+        不属于 actor/当前 family、无效或已撤销 token 均返回幂等 `204` no-op。
+        `all_sessions=true` 时 `refresh_token` 必须省略，否则 `422 validation_failed`；成功时撤销
+        该 User 的全部 refresh family 并恰好递增一次 `token_version`。
       x-required-roles: [user, auditor, operator, admin]
       security:
         - UserJwt: []
@@ -377,7 +394,9 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '204':
-          description: 已撤销；重复调用也返回 204
+          description: |
+            本次请求已通过 UserJwt family 存活验证并完成撤销，或所提 refresh token
+            是不泄露状态的幂等 no-op。family 撤销后重用原 Access JWT 是 401 `invalid_user_token`。
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -395,7 +414,11 @@ paths:
       tags: [Auth]
       operationId: verifyLoginTotp
       summary: 使用一次性 MFA challenge 完成登录
-      description: challenge 有效期 5 分钟且只能成功使用一次；正式 Token 只在校验成功后签发。
+      description: |
+        challenge 有效期 5 分钟且只能成功使用一次；正式 Token 只在校验成功后签发。
+        challenge 保存发起时 User `security_stamp/token_version`；验证时快照不一致或 User 非 active
+        统一返回 `mfa_challenge_invalid`。TOTP 错误/重放不增加 PostgreSQL 密码锁定计数，
+        但与 login 失败共享 Login IP fixed-window；所需 Redis 判定异常时 fail-closed。
       security: []
       requestBody:
         required: true
@@ -602,7 +625,10 @@ paths:
       operationId: beginMyTotpSetup
       summary: 创建待确认 TOTP 设置
       x-required-roles: [user, auditor, operator, admin]
-      description: 返回的 secret/challenge 只用于本次设置，10 分钟后过期；尚不启用 TOTP。
+      description: |
+        返回的 secret/challenge 只用于本次设置，10 分钟后过期；尚不启用 TOTP。
+        pending seed 与幂等秘密响应由 `0005` 前向迁移增加的 envelope 持久结构支持，
+        不得将 seed/otpauth URI 明文存入 idempotency 表、日志、审计或事件。
       security:
         - UserJwt: []
       parameters:
@@ -655,6 +681,11 @@ paths:
       operationId: confirmMyTotpSetup
       summary: 校验当前码并启用 TOTP
       x-required-roles: [user, auditor, operator, admin]
+      description: |
+        成功时启用 TOTP，撤销全部 refresh family，并通过 TOTP secret/security stamp 变更
+        恰好递增一次 `token_version/version`。恰好 8 个恢复码只在首次成功响应或同一
+        `Idempotency-Key` 的原响应安全重放中回显，数据库只存专用 pepper HMAC。R1 当前不提供
+        recovery-code 登录/恢复入口；disable 及下次 enable/re-enable 撤销旧恢复码。
       security:
         - UserJwt: []
       parameters:
@@ -712,6 +743,9 @@ paths:
       operationId: disableMyTotp
       summary: 使用密码与当前 TOTP 关闭二次认证
       x-required-roles: [user, auditor, operator, admin]
+      description: |
+        成功时关闭 TOTP、撤销全部 refresh family 与全部恢复码，并通过 TOTP secret/
+        security stamp 变更恰好递增一次 `token_version/version`，强制重新登录。
       security:
         - UserJwt: []
       parameters:
@@ -3158,8 +3192,12 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        控制面短期 Access JWT，放在 `Authorization: Bearer <jwt>`。管理员权限由
-        token claim 与数据库当前角色共同校验，不能用 `sk-` Key 替代。
+        控制面短期 Access JWT，放在 `Authorization: Bearer <jwt>`，必须包含
+        `sid=<refresh family_id>`。所有 M1-E2 `UserJwt` 请求必须强读 PostgreSQL，
+        确认该 User 的该 family 仍有 active、未过期 refresh generation；否则返回
+        `invalid_user_token`，使 current-family logout 立即使该 family 的 Access JWT 失效。
+        M1-E3 仍负责完整 canonical User status/role/token_version 强读、四角色 Policy 和
+        资源级检查；M1-E2 family 检查不代替该验收。不能用 `sk-` Key 替代。
 
   parameters:
     Cursor:
@@ -5005,6 +5043,9 @@ components:
           maxItems: 8
           items:
             type: string
+          description: |
+            恰好 8 个恢复码，只在 confirm 首次成功或同幂等键的原响应安全重放中回显。
+            服务端只持久化专用 pepper HMAC；R1 当前无 recovery-code 登录入口。
           readOnly: true
     TotpDisableRequest:
       type: object
@@ -5034,16 +5075,22 @@ components:
     LogoutRequest:
       type: object
       additionalProperties: false
+      description: |
+        `all_sessions=true` 时禁止提供 `refresh_token`；违反时返回 `422 validation_failed`。
+        省略 body 或 `all_sessions=false` 时以 JWT `sid` 定位当前 family。
       properties:
         refresh_token:
           type: string
           minLength: 32
           maxLength: 4096
           writeOnly: true
-          description: 省略时撤销当前 Access JWT 对应会话
+          description: |
+            可选的当前-family 所有权证据；属于 actor 且与 JWT `sid` family 一致时撤销该 family。
+            不属于 actor/当前 family、无效或已撤销均返回幂等 204 no-op。
         all_sessions:
           type: boolean
           default: false
+          description: true 时撤销调用 User 全部 refresh family 并递增 token_version；此时 refresh_token 必须省略。
     TokenPair:
       type: object
       additionalProperties: false
@@ -5065,7 +5112,7 @@ components:
         refresh_expires_in:
           type: integer
           const: 2592000
-          description: Refresh Token 固定 30 天
+          description: 当前 Refresh Token generation 从本次 PostgreSQL 发行时间起固定 30 天；每次成功轮换滑动重置。
 
     PageInfo:
       type: object
