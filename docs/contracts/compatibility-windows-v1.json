@@ -3,14 +3,14 @@
   "windows": [
     {
       "id": "m1-e4-admin-list-validation-responses",
-      "status": "proposed",
+      "status": "accepted",
       "scope": "openapi-v1-compatibility-window",
       "baseRef": "5ef07fcc762ed0d11d79eeee3012967d1eac6121",
       "baseOpenApiSha256": "d8887b322bebc575005a2b170be6a17cf002de94154c94cbfa8a729bf091f076",
       "headOpenApiSha256": "43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada",
       "adr": "docs/architecture/adr/0005-open-exact-v1-compatibility-window-for-admin-list-validation.md",
       "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
-      "approvalEvidence": null,
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5010008464",
       "allowedFailures": [
         "#/paths/~1api~1v1~1admin~1groups/get/responses/400: new response status was added to an existing operation",
         "#/paths/~1api~1v1~1admin~1subscription-templates/get/responses/400: new response status was added to an existing operation",

@@ -1,6 +1,6 @@
 # ADR 0005: Open an exact v1 compatibility window for Admin list validation
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-17
 - Decider: PoolAI public-contract owner (`@Lyon1984`); the decision takes effect only with the approval evidence below
 - Relates to: M1-E4 Issue #13 and sign-off control Issue #44
@@ -9,7 +9,7 @@
 - Base OpenAPI SHA-256: `d8887b322bebc575005a2b170be6a17cf002de94154c94cbfa8a729bf091f076`
 - Target OpenAPI SHA-256: `43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5010008464)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups/get/responses/400: new response status was added to an existing operation`
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1subscription-templates/get/responses/400: new response status was added to an existing operation`
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1subscriptions/get/responses/400: new response status was added to an existing operation`
