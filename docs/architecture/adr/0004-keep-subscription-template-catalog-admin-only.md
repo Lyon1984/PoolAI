@@ -1,9 +1,10 @@
 # ADR 0004: Keep the Subscription Template catalog admin-only
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-17
-- Decider: `@Lyon1984` (pending explicit approval)
+- Decider: `@Lyon1984`
 - Relates to: M1-E4, DEC-011, AC-008, AC-009
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5010109179)
 
 ## Context
 
