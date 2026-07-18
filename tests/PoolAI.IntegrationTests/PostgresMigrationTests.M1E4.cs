@@ -48,6 +48,49 @@ public sealed partial class PostgresMigrationTests
                 + "clock_timestamp(), clock_timestamp() + interval '1 day', "
                 + "'01900000-0000-7000-8000-000000000794', 'bypass');",
             cancellationToken).ConfigureAwait(false);
+        foreach (string table in new[]
+                 {
+                     "groups",
+                     "subscription_templates",
+                     "subscriptions",
+                 })
+        {
+            await AssertPermissionDeniedAsync(
+                connectionString,
+                $"SET ROLE poolai_api; DELETE FROM public.{table} WHERE false;",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            """
+            SET ROLE poolai_api;
+            MERGE INTO public.groups AS target
+            USING (SELECT NULL::uuid AS id WHERE false) AS source
+              ON target.id = source.id
+            WHEN MATCHED THEN UPDATE SET name = target.name;
+            """,
+            cancellationToken).ConfigureAwait(false);
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            """
+            SET ROLE poolai_api;
+            MERGE INTO public.subscription_templates AS target
+            USING (SELECT NULL::uuid AS id WHERE false) AS source
+              ON target.id = source.id
+            WHEN MATCHED THEN UPDATE SET name = target.name;
+            """,
+            cancellationToken).ConfigureAwait(false);
+        await AssertPermissionDeniedAsync(
+            connectionString,
+            """
+            SET ROLE poolai_api;
+            MERGE INTO public.subscriptions AS target
+            USING (SELECT NULL::uuid AS id WHERE false) AS source
+              ON target.id = source.id
+            WHEN MATCHED THEN UPDATE SET status = target.status;
+            """,
+            cancellationToken).ConfigureAwait(false);
         await AssertPermissionDeniedAsync(
             connectionString,
             "SET ROLE poolai_api; SELECT * FROM public.poolai_quota_initialize("
@@ -100,6 +143,8 @@ public sealed partial class PostgresMigrationTests
               );
             """;
         using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
+        await AssertM1E4TablePrivilegeCatalogAsync(dataSource, cancellationToken)
+            .ConfigureAwait(false);
         using (NpgsqlCommand security = dataSource.CreateCommand(SecuritySql))
         {
             Assert.Equal(
@@ -144,6 +189,153 @@ public sealed partial class PostgresMigrationTests
         Assert.Equal(
             3L,
             Assert.IsType<long>(await retiredQuotaWrites
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
+    }
+
+    private static async ValueTask AssertM1E4TablePrivilegeCatalogAsync(
+        NpgsqlDataSource dataSource,
+        CancellationToken cancellationToken)
+    {
+        const string PrivilegeSql = """
+            WITH scope(grantee, table_name) AS (
+                VALUES
+                    ('poolai_api', 'groups'),
+                    ('poolai_api', 'subscription_templates'),
+                    ('poolai_api', 'subscriptions'),
+                    ('poolai_worker', 'groups'),
+                    ('poolai_worker', 'subscription_templates'),
+                    ('poolai_worker', 'subscriptions'),
+                    ('PUBLIC', 'groups'),
+                    ('PUBLIC', 'subscription_templates'),
+                    ('PUBLIC', 'subscriptions')
+            ), table_grants AS (
+                SELECT privilege.grantee,
+                       privilege.table_name,
+                       string_agg(
+                           DISTINCT privilege.privilege_type || ':'
+                               || privilege.is_grantable,
+                           ',' ORDER BY privilege.privilege_type || ':'
+                               || privilege.is_grantable
+                       ) AS privilege_types
+                FROM information_schema.table_privileges AS privilege
+                WHERE privilege.table_schema = 'public'
+                  AND privilege.grantee IN ('poolai_api', 'poolai_worker', 'PUBLIC')
+                  AND privilege.table_name IN (
+                      'groups', 'subscription_templates', 'subscriptions'
+                  )
+                GROUP BY privilege.grantee, privilege.table_name
+            ), column_grants AS (
+                SELECT privilege.grantee,
+                       privilege.table_name,
+                       string_agg(
+                           DISTINCT privilege.privilege_type || ':'
+                               || privilege.is_grantable,
+                           ',' ORDER BY privilege.privilege_type || ':'
+                               || privilege.is_grantable
+                       ) AS privilege_types
+                FROM information_schema.column_privileges AS privilege
+                WHERE privilege.table_schema = 'public'
+                  AND privilege.grantee IN ('poolai_api', 'poolai_worker', 'PUBLIC')
+                  AND privilege.table_name IN (
+                      'groups', 'subscription_templates', 'subscriptions'
+                  )
+                GROUP BY privilege.grantee, privilege.table_name
+            )
+            SELECT scope.grantee,
+                   scope.table_name,
+                   coalesce(table_grants.privilege_types, ''),
+                   coalesce(column_grants.privilege_types, '')
+            FROM scope
+            LEFT JOIN table_grants USING (grantee, table_name)
+            LEFT JOIN column_grants USING (grantee, table_name);
+            """;
+        Dictionary<string, (string TablePrivileges, string ColumnPrivileges)> actual =
+            new(StringComparer.Ordinal);
+        using NpgsqlCommand command = dataSource.CreateCommand(PrivilegeSql);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            actual.Add(
+                $"{reader.GetString(0)}:{reader.GetString(1)}",
+                (reader.GetString(2), reader.GetString(3)));
+        }
+
+        Dictionary<string, (string TablePrivileges, string ColumnPrivileges)> expected =
+            new(StringComparer.Ordinal);
+        foreach (string table in new[]
+                 {
+                     "groups",
+                     "subscription_templates",
+                     "subscriptions",
+                 })
+        {
+            expected.Add($"poolai_api:{table}", ("SELECT:NO", "SELECT:NO"));
+            expected.Add($"poolai_worker:{table}", (string.Empty, string.Empty));
+            expected.Add($"PUBLIC:{table}", (string.Empty, string.Empty));
+        }
+
+        Assert.Equal(expected.Count, actual.Count);
+        foreach ((string key, (string TablePrivileges, string ColumnPrivileges) privileges) in
+                 expected)
+        {
+            Assert.Equal(privileges, actual[key]);
+        }
+
+        using NpgsqlCommand effective = dataSource.CreateCommand("""
+            WITH scope(role_name, table_name, expected_select) AS (
+                VALUES
+                    ('poolai_api', 'groups', true),
+                    ('poolai_api', 'subscription_templates', true),
+                    ('poolai_api', 'subscriptions', true),
+                    ('poolai_worker', 'groups', false),
+                    ('poolai_worker', 'subscription_templates', false),
+                    ('poolai_worker', 'subscriptions', false)
+            ), invalid_privilege AS (
+                SELECT 1
+                FROM scope
+                WHERE pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'SELECT')
+                      IS DISTINCT FROM expected_select
+                   OR pg_catalog.has_any_column_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'SELECT')
+                      IS DISTINCT FROM expected_select
+                   OR pg_catalog.has_table_privilege(
+                          role_name,
+                          pg_catalog.format('public.%I', table_name),
+                          'SELECT WITH GRANT OPTION')
+                   OR pg_catalog.has_any_column_privilege(
+                          role_name,
+                          pg_catalog.format('public.%I', table_name),
+                          'SELECT WITH GRANT OPTION')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'INSERT')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'UPDATE')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'DELETE')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'TRUNCATE')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'REFERENCES')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'TRIGGER')
+                   OR pg_catalog.has_table_privilege(
+                          role_name, pg_catalog.format('public.%I', table_name), 'MAINTAIN')
+            ), unexpected_membership AS (
+                SELECT 1
+                FROM pg_catalog.pg_auth_members AS membership
+                JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+                WHERE member.rolname IN ('poolai_api', 'poolai_worker')
+            )
+            SELECT (SELECT count(*) FROM invalid_privilege)
+                 + (SELECT count(*) FROM unexpected_membership);
+            """);
+        Assert.Equal(
+            0L,
+            Assert.IsType<long>(await effective
                 .ExecuteScalarAsync(cancellationToken)
                 .ConfigureAwait(false)));
     }

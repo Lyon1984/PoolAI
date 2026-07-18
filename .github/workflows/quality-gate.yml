@@ -7,7 +7,9 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: read
+  issues: read
 
 concurrency:
   group: quality-gate-${{ github.ref }}
@@ -45,6 +47,13 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
+
+      - name: Verify ADR 0006 GitHub approval evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ADR0006_EVENT_NAME: ${{ github.event_name }}
+          ADR0006_SIGNING_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: node eng/policies/validate-traceability.mjs --github-evidence
 
       - name: Activate pnpm
         run: |

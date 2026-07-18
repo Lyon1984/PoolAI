@@ -79,6 +79,404 @@ public sealed class PostgresQuotaCrashCompensationTests
         AssertLateAdjustment(adjusted, conservative);
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ReserveAndSubscriptionRevokeLinearizeInBothCommitOrders()
+    {
+        // Governing contract: docs/database/README.md sections 3 and 11.3.
+        // The PostgreSQL row locks, rather than a positive cache, decide whether
+        // the already-admitted attempt or the revoke is first.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await AssertReserveFirstAsync(
+            CrashScenario.Create(),
+            cancellationToken).ConfigureAwait(true);
+        await AssertRevokeFirstAsync(
+            CrashScenario.Create(),
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ReserveSamplesDatabaseClockAfterWaitingForSubscriptionLock()
+    {
+        // Governing contract: docs/database/README.md sections 3 and 5.
+        // The expiry boundary is written with the PostgreSQL clock only after
+        // pg_blocking_pids proves reserve is waiting on the Subscription row.
+        // A pre-wait clock sample would still admit; a post-wait sample must reject.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await AssertPostWaitSubscriptionExpiryAsync(
+            CrashScenario.Create(),
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task RouteProviderMismatchRollsBackDispatchSettlementAndAdjustmentFacts()
+    {
+        // Governing contract: ADR 0006 Family A and docs/database/README.md
+        // section 3. This case independently corrupts the frozen Account provider
+        // identity across all three fact-writing entry points.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await AssertRouteProviderMismatchAcrossFactEntryPointsAsync(
+            CrashScenario.Create(),
+            SetAccountProviderAsync,
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ChannelProviderMismatchRollsBackDispatchSettlementAndAdjustmentFacts()
+    {
+        // Governing contract: ADR 0006 Family A and docs/database/README.md
+        // section 3. This case independently corrupts the frozen Channel provider
+        // identity across all three fact-writing entry points.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await AssertRouteProviderMismatchAcrossFactEntryPointsAsync(
+            CrashScenario.Create(),
+            SetChannelProviderAsync,
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    private async ValueTask PrepareProviderMismatchScenarioAsync(
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        await PrepareAdmissionFixtureAsync(scenario, cancellationToken).ConfigureAwait(false);
+        await ReserveAttemptAsync(
+            scenario,
+            scenario.Dispatched,
+            expectedReservedTokens: "200",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask AssertRouteProviderMismatchAcrossFactEntryPointsAsync(
+        CrashScenario scenario,
+        Func<CrashScenario, string, CancellationToken, ValueTask> setRouteProvider,
+        CancellationToken cancellationToken)
+    {
+        await PrepareProviderMismatchScenarioAsync(scenario, cancellationToken)
+            .ConfigureAwait(false);
+        await AssertProviderMismatchDoesNotWriteAndRestoreAsync(
+            scenario,
+            setRouteProvider,
+            ApiFactory(),
+            "poolai_api",
+            session => CallMarkDispatchedAsync(
+                session,
+                scenario,
+                Provider,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+
+        DateTimeOffset dispatchStartedAt = await MarkDispatchedAsync(
+            scenario,
+            cancellationToken).ConfigureAwait(false);
+        await AssertProviderMismatchDoesNotWriteAndRestoreAsync(
+            scenario,
+            setRouteProvider,
+            ApiFactory(),
+            "poolai_api",
+            session => CallSettleAsync(
+                session,
+                scenario,
+                Provider,
+                dispatchStartedAt,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+
+        await SettleAttemptAsync(
+            scenario,
+            dispatchStartedAt,
+            cancellationToken).ConfigureAwait(false);
+        CrashState settled = await ReadCrashStateAsync(
+            scenario.Dispatched,
+            cancellationToken).ConfigureAwait(false);
+        await AssertProviderMismatchDoesNotWriteAndRestoreAsync(
+            scenario,
+            setRouteProvider,
+            WorkerFactory(),
+            "poolai_worker",
+            session => CallAdjustmentAsync(
+                session,
+                scenario,
+                settled,
+                Provider,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask AssertProviderMismatchDoesNotWriteAndRestoreAsync(
+        CrashScenario scenario,
+        Func<CrashScenario, string, CancellationToken, ValueTask> setRouteProvider,
+        IUnitOfWorkFactory unitOfWorkFactory,
+        string expectedRole,
+        Func<PostgresTransactionSession, Task> operation,
+        CancellationToken cancellationToken)
+    {
+        await setRouteProvider(scenario, "openai_compatible", cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await AssertProviderMismatchDoesNotWriteAsync(
+                scenario,
+                unitOfWorkFactory,
+                expectedRole,
+                operation,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await setRouteProvider(scenario, Provider, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask AssertReserveFirstAsync(
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        await PrepareAdmissionFixtureAsync(scenario, cancellationToken).ConfigureAwait(false);
+        CrashAttempt attempt = scenario.Dispatched;
+        IUnitOfWork reserveUnitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable reserveLease =
+            reserveUnitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession reserveSession =
+            PostgresUnitOfWorkAccessor.Require(reserveUnitOfWork.Context);
+        await InsertUsageRequestAsync(reserveSession, scenario, attempt, cancellationToken)
+            .ConfigureAwait(false);
+        await CallReserveAsync(
+            reserveSession,
+            scenario,
+            attempt,
+            attempt.EstimatedTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            cancellationToken).ConfigureAwait(false);
+        int reservePid = await ReadBackendPidAsync(reserveSession, cancellationToken).ConfigureAwait(false);
+
+        IUnitOfWork revokeUnitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable revokeLease =
+            revokeUnitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession revokeSession =
+            PostgresUnitOfWorkAccessor.Require(revokeUnitOfWork.Context);
+        int revokePid = await ReadBackendPidAsync(revokeSession, cancellationToken).ConfigureAwait(false);
+        Task<ControlMutation> revokeTask = CallRevokeSubscriptionAsync(
+            revokeSession,
+            scenario,
+            cancellationToken).AsTask();
+        bool waitedForReserve = await WaitForBackendLockAsync(
+            revokePid, reservePid, cancellationToken).ConfigureAwait(false);
+
+        DateTimeOffset releaseClock = await ReadDatabaseClockAsync(
+            reserveSession,
+            cancellationToken).ConfigureAwait(false);
+        await reserveUnitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        ControlMutation revoke = await revokeTask.ConfigureAwait(false);
+        await revokeUnitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        Assert.True(
+            waitedForReserve,
+            "Subscription revoke did not wait for the reserve transaction's canonical row locks.");
+        Assert.Equal(new ControlMutation("updated", true, 2), revoke);
+
+        AdmissionLinearizationState state = await ReadAdmissionLinearizationStateAsync(
+            scenario,
+            attempt,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal("revoked", state.SubscriptionStatus);
+        Assert.Equal(2, state.SubscriptionVersion);
+        Assert.True(state.RequestExists);
+        Assert.Equal(1, state.ReservationCount);
+        Assert.Equal(1, state.ReservedEventCount);
+        Assert.True(
+            state.SubscriptionUpdatedAt >= releaseClock,
+            "Revoke must sample its persisted time only after the reserve lock wait completes.");
+    }
+
+    private async ValueTask AssertRevokeFirstAsync(
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        await PrepareAdmissionFixtureAsync(scenario, cancellationToken).ConfigureAwait(false);
+        CrashAttempt attempt = scenario.Dispatched;
+        // A pre-existing request models failover and isolates the reserve fence;
+        // the first-attempt path still inserts request + reservation in one UoW.
+        await InsertCommittedUsageRequestAsync(scenario, attempt, cancellationToken)
+            .ConfigureAwait(false);
+
+        IUnitOfWork revokeUnitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable revokeLease =
+            revokeUnitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession revokeSession =
+            PostgresUnitOfWorkAccessor.Require(revokeUnitOfWork.Context);
+        int revokePid = await ReadBackendPidAsync(
+            revokeSession, cancellationToken).ConfigureAwait(false);
+        ControlMutation revoke = await CallRevokeSubscriptionAsync(
+            revokeSession,
+            scenario,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(new ControlMutation("updated", true, 2), revoke);
+
+        PendingReserve reserve = await StartReserveAsync(
+            scenario, attempt, cancellationToken).ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable reserveLease =
+            reserve.UnitOfWork.ConfigureAwait(false);
+        bool waitedForRevoke = await WaitForBackendLockAsync(
+            reserve.BackendPid, revokePid, cancellationToken).ConfigureAwait(false);
+
+        await revokeUnitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+            () => reserve.Operation).ConfigureAwait(false);
+
+        Assert.True(
+            waitedForRevoke,
+            "Reserve did not wait for the uncommitted Subscription revoke.");
+        Assert.Equal(PostgresErrorCodes.RaiseException, exception.SqlState);
+        Assert.Equal("subscription_inactive", exception.MessageText);
+
+        AdmissionLinearizationState state = await ReadAdmissionLinearizationStateAsync(
+            scenario,
+            attempt,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal("revoked", state.SubscriptionStatus);
+        Assert.Equal(2, state.SubscriptionVersion);
+        Assert.True(state.RequestExists);
+        Assert.Equal(0, state.ReservationCount);
+        Assert.Equal(0, state.ReservedEventCount);
+    }
+
+    private async ValueTask AssertPostWaitSubscriptionExpiryAsync(
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        await PrepareAdmissionFixtureAsync(scenario, cancellationToken).ConfigureAwait(false);
+        CrashAttempt attempt = scenario.Dispatched;
+        // A committed request models failover and leaves this scenario focused
+        // on the canonical Subscription lock and the reserve clock boundary.
+        await InsertCommittedUsageRequestAsync(scenario, attempt, cancellationToken)
+            .ConfigureAwait(false);
+
+        NpgsqlConnection expiryConnection = await _fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable expiryConnectionLease =
+            expiryConnection.ConfigureAwait(false);
+        NpgsqlTransaction expiryTransaction = await expiryConnection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable expiryTransactionLease =
+            expiryTransaction.ConfigureAwait(false);
+        int expiryPid = await LockSubscriptionForUpdateAsync(
+            expiryConnection,
+            expiryTransaction,
+            scenario.SubscriptionId,
+            cancellationToken).ConfigureAwait(false);
+
+        PendingReserve reserve = await StartReserveAsync(
+            scenario, attempt, cancellationToken).ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable reserveLease =
+            reserve.UnitOfWork.ConfigureAwait(false);
+        bool waitedForExpiry = await WaitForBackendLockAsync(
+            reserve.BackendPid, expiryPid, cancellationToken).ConfigureAwait(false);
+
+        DateTimeOffset expiryBoundary = await ExpireLockedSubscriptionAtDatabaseClockAsync(
+            expiryConnection,
+            expiryTransaction,
+            scenario.SubscriptionId,
+            cancellationToken).ConfigureAwait(false);
+        await expiryTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+            () => reserve.Operation).ConfigureAwait(false);
+
+        Assert.True(
+            waitedForExpiry,
+            "Reserve did not wait for the transaction holding the Subscription row.");
+        Assert.Equal(PostgresErrorCodes.RaiseException, exception.SqlState);
+        Assert.Equal("subscription_inactive", exception.MessageText);
+
+        AdmissionLinearizationState state = await ReadAdmissionLinearizationStateAsync(
+            scenario,
+            attempt,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal("active", state.SubscriptionStatus);
+        Assert.Equal(2, state.SubscriptionVersion);
+        Assert.Equal(expiryBoundary, state.SubscriptionExpiresAt);
+        Assert.True(state.RequestExists);
+        Assert.Equal(0, state.ReservationCount);
+        Assert.Equal(0, state.ReservedEventCount);
+    }
+
+    private async ValueTask<PendingReserve> StartReserveAsync(
+        CrashScenario scenario,
+        CrashAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
+        int backendPid = await ReadBackendPidAsync(session, cancellationToken)
+            .ConfigureAwait(false);
+        Task operation = CallReserveAsync(
+            session,
+            scenario,
+            attempt,
+            attempt.EstimatedTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            cancellationToken).AsTask();
+        return new PendingReserve(unitOfWork, backendPid, operation);
+    }
+
+    private async ValueTask InsertCommittedUsageRequestAsync(
+        CrashScenario scenario,
+        CrashAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
+        await InsertUsageRequestAsync(session, scenario, attempt, cancellationToken)
+            .ConfigureAwait(false);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask AssertProviderMismatchDoesNotWriteAsync(
+        CrashScenario scenario,
+        IUnitOfWorkFactory unitOfWorkFactory,
+        string expectedRole,
+        Func<PostgresTransactionSession, Task> operation,
+        CancellationToken cancellationToken)
+    {
+        string before = await ReadRouteFactFingerprintAsync(
+            scenario,
+            cancellationToken).ConfigureAwait(false);
+        IUnitOfWork unitOfWork = await unitOfWorkFactory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
+        await AssertCurrentRoleAsync(session, expectedRole, cancellationToken)
+            .ConfigureAwait(false);
+        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+            () => operation(session)).ConfigureAwait(false);
+        Assert.Equal(PostgresErrorCodes.RaiseException, exception.SqlState);
+        Assert.Equal("reservation_provider_mismatch", exception.MessageText);
+        Assert.Equal(
+            before,
+            await ReadRouteFactFingerprintAsync(
+                scenario,
+                cancellationToken).ConfigureAwait(false));
+    }
+
     private async ValueTask PrepareAdmissionFixtureAsync(
         CrashScenario scenario,
         CancellationToken cancellationToken)
@@ -409,6 +807,19 @@ public sealed class PostgresQuotaCrashCompensationTests
         CrashScenario scenario,
         CancellationToken cancellationToken)
     {
+        return await CallMarkDispatchedAsync(
+            session,
+            scenario,
+            Provider,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<DateTimeOffset> CallMarkDispatchedAsync(
+        PostgresTransactionSession session,
+        CrashScenario scenario,
+        string provider,
+        CancellationToken cancellationToken)
+    {
         MutationIds mutation = MutationIds.Create("dispatch");
         CrashAttempt attempt = scenario.Dispatched;
         using NpgsqlCommand command = session.CreateCommand("""
@@ -419,7 +830,7 @@ public sealed class PostgresQuotaCrashCompensationTests
         command.Parameters.AddWithValue(scenario.GroupId);
         command.Parameters.AddWithValue(attempt.AttemptId);
         command.Parameters.AddWithValue(attempt.LeaseOwner);
-        command.Parameters.AddWithValue(Provider);
+        command.Parameters.AddWithValue(provider);
         command.Parameters.AddWithValue(Model);
         command.Parameters.AddWithValue(attempt.EstimatedInputTokens);
         command.Parameters.AddWithValue(attempt.EstimatedOutputTokens);
@@ -434,6 +845,373 @@ public sealed class PostgresQuotaCrashCompensationTests
         DateTimeOffset dispatchStartedAt = reader.GetFieldValue<DateTimeOffset>(1);
         Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
         return dispatchStartedAt;
+    }
+
+    private async ValueTask SettleAttemptAsync(
+        CrashScenario scenario,
+        DateTimeOffset dispatchStartedAt,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await ApiFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
+        await AssertCurrentRoleAsync(session, "poolai_api", cancellationToken).ConfigureAwait(false);
+        await CallSettleAsync(
+            session,
+            scenario,
+            Provider,
+            dispatchStartedAt,
+            cancellationToken).ConfigureAwait(false);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask CallSettleAsync(
+        PostgresTransactionSession session,
+        CrashScenario scenario,
+        string provider,
+        DateTimeOffset dispatchStartedAt,
+        CancellationToken cancellationToken)
+    {
+        CrashAttempt attempt = scenario.Dispatched;
+        MutationIds mutation = MutationIds.Create("settle");
+        DateTimeOffset completedAt = await ReadDatabaseClockAsync(session, cancellationToken)
+            .ConfigureAwait(false);
+        string upstreamRequestId = $"ac39-upstream-{attempt.AttemptId:N}";
+        using NpgsqlCommand command = session.CreateCommand("""
+            SELECT result_status, result_consumed_tokens::text,
+                   result_reserved_tokens::text
+            FROM public.poolai_quota_settle(
+                $1, $2, $3, $4, $5, $6, 'succeeded', 200, NULL::text,
+                $7, $8, 0, 0, 0, 'upstream', $9,
+                '{"source":"ac39"}'::jsonb,
+                $10, NULL::timestamptz, $11, 'succeeded', $12, $13, $14
+            );
+            """);
+        command.Parameters.AddWithValue(scenario.GroupId);
+        command.Parameters.AddWithValue(attempt.AttemptId);
+        command.Parameters.AddWithValue(scenario.AccountId);
+        command.Parameters.AddWithValue(scenario.ChannelId);
+        command.Parameters.AddWithValue(provider);
+        command.Parameters.AddWithValue(Model);
+        command.Parameters.AddWithValue(attempt.EstimatedInputTokens);
+        command.Parameters.AddWithValue(attempt.EstimatedOutputTokens);
+        command.Parameters.AddWithValue(upstreamRequestId);
+        command.Parameters.AddWithValue(dispatchStartedAt);
+        command.Parameters.AddWithValue(completedAt);
+        command.Parameters.AddWithValue(mutation.EventId);
+        command.Parameters.AddWithValue(mutation.OutboxId);
+        command.Parameters.AddWithValue(mutation.IdempotencyKey);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        Assert.Equal("settled", reader.GetString(0));
+        Assert.Equal(
+            attempt.EstimatedTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            reader.GetString(1));
+        Assert.Equal("0", reader.GetString(2));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    private static async ValueTask<ControlMutation> CallRevokeSubscriptionAsync(
+        PostgresTransactionSession session,
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = session.CreateCommand("""
+            SELECT disposition, was_changed, current_version
+            FROM public.poolai_subscription_update(
+                $1, 1, false, NULL::timestamptz,
+                false, NULL::timestamptz, 'revoked', false,
+                $2, 'ADR 0006 reserve/revoke linearization');
+            """);
+        command.Parameters.AddWithValue(scenario.SubscriptionId);
+        command.Parameters.AddWithValue(scenario.UserId);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        ControlMutation mutation = new(
+            reader.GetString(0),
+            reader.GetBoolean(1),
+            reader.GetInt64(2));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return mutation;
+    }
+
+    private static async ValueTask<int> LockSubscriptionForUpdateAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT pg_catalog.pg_backend_pid()
+            FROM public.subscriptions AS subscription
+            WHERE subscription.id = $1
+            FOR UPDATE;
+            """;
+        command.Parameters.AddWithValue(subscriptionId);
+        return Assert.IsType<int>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
+    }
+
+    private static async ValueTask<DateTimeOffset> ExpireLockedSubscriptionAtDatabaseClockAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            WITH boundary AS MATERIALIZED (
+                SELECT pg_catalog.clock_timestamp() AS expires_at
+            )
+            UPDATE public.subscriptions AS subscription
+            SET expires_at = boundary.expires_at,
+                change_reason = 'ADR 0006 post-wait database clock boundary',
+                version = subscription.version + 1,
+                updated_at = boundary.expires_at
+            FROM boundary
+            WHERE subscription.id = $1
+            RETURNING subscription.expires_at;
+            """;
+        command.Parameters.AddWithValue(subscriptionId);
+        DateTime timestamp = Assert.IsType<DateTime>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
+        Assert.Equal(DateTimeKind.Utc, timestamp.Kind);
+        return new DateTimeOffset(timestamp);
+    }
+
+    private static async ValueTask<DateTimeOffset> ReadDatabaseClockAsync(
+        PostgresTransactionSession session,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = session.CreateCommand("SELECT clock_timestamp();");
+        DateTime timestamp = Assert.IsType<DateTime>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
+        Assert.Equal(DateTimeKind.Utc, timestamp.Kind);
+        return new DateTimeOffset(timestamp);
+    }
+
+    private static async ValueTask<int> ReadBackendPidAsync(
+        PostgresTransactionSession session,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = session.CreateCommand("SELECT pg_catalog.pg_backend_pid();");
+        return Assert.IsType<int>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
+    }
+
+    private async ValueTask<bool> WaitForBackendLockAsync(
+        int blockedProcessId,
+        int blockingProcessId,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; attempt < 200; attempt++)
+        {
+            using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_stat_activity AS activity
+                    WHERE activity.pid = $1
+                      AND activity.wait_event_type = 'Lock'
+                      AND $2 = ANY (pg_catalog.pg_blocking_pids(activity.pid))
+                );
+                """);
+            command.Parameters.AddWithValue(blockedProcessId);
+            command.Parameters.AddWithValue(blockingProcessId);
+            if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true)
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    private async ValueTask<AdmissionLinearizationState> ReadAdmissionLinearizationStateAsync(
+        CrashScenario scenario,
+        CrashAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT subscription.status,
+                   subscription.version,
+                   subscription.updated_at,
+                   subscription.expires_at,
+                   EXISTS (
+                       SELECT 1 FROM public.usage_requests AS request
+                       WHERE request.request_id = $2
+                   ),
+                   (
+                       SELECT count(*) FROM public.group_token_reservations AS reservation
+                       WHERE reservation.attempt_id = $3
+                   ),
+                   (
+                       SELECT count(*) FROM public.group_quota_events AS event
+                       WHERE event.attempt_id = $3 AND event.event_type = 'reserved'
+                   )
+            FROM public.subscriptions AS subscription
+            WHERE subscription.id = $1;
+            """);
+        command.Parameters.AddWithValue(scenario.SubscriptionId);
+        command.Parameters.AddWithValue(attempt.RequestId);
+        command.Parameters.AddWithValue(attempt.AttemptId);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        AdmissionLinearizationState state = new(
+            reader.GetString(0),
+            reader.GetInt64(1),
+            reader.GetFieldValue<DateTimeOffset>(2),
+            reader.GetFieldValue<DateTimeOffset>(3),
+            reader.GetBoolean(4),
+            reader.GetInt64(5),
+            reader.GetInt64(6));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return state;
+    }
+
+    private async ValueTask SetAccountProviderAsync(
+        CrashScenario scenario,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlConnection connection = await _fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable connectionLease = connection.ConfigureAwait(false);
+        NpgsqlTransaction transaction = await connection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable transactionLease = transaction.ConfigureAwait(false);
+        using (NpgsqlCommand replicationRole = connection.CreateCommand())
+        {
+            replicationRole.Transaction = transaction;
+            replicationRole.CommandText = "SET LOCAL session_replication_role = replica;";
+            _ = await replicationRole
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        using (NpgsqlCommand updateProvider = connection.CreateCommand())
+        {
+            updateProvider.Transaction = transaction;
+            updateProvider.CommandText = """
+                UPDATE public.accounts
+                SET provider = $2
+                WHERE id = $1 AND provider IS DISTINCT FROM $2;
+                """;
+            updateProvider.Parameters.AddWithValue(scenario.AccountId);
+            updateProvider.Parameters.AddWithValue(provider);
+            Assert.Equal(
+                1,
+                await updateProvider
+                    .ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false));
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask SetChannelProviderAsync(
+        CrashScenario scenario,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlConnection connection = await _fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable connectionLease = connection.ConfigureAwait(false);
+        NpgsqlTransaction transaction = await connection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable transactionLease = transaction.ConfigureAwait(false);
+        using (NpgsqlCommand replicationRole = connection.CreateCommand())
+        {
+            replicationRole.Transaction = transaction;
+            replicationRole.CommandText = "SET LOCAL session_replication_role = replica;";
+            _ = await replicationRole
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        using (NpgsqlCommand updateProvider = connection.CreateCommand())
+        {
+            updateProvider.Transaction = transaction;
+            updateProvider.CommandText = """
+                UPDATE public.channels
+                SET provider = $2
+                WHERE id = $1 AND provider IS DISTINCT FROM $2;
+                """;
+            updateProvider.Parameters.AddWithValue(scenario.ChannelId);
+            updateProvider.Parameters.AddWithValue(provider);
+            Assert.Equal(
+                1,
+                await updateProvider
+                    .ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false));
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<string> ReadRouteFactFingerprintAsync(
+        CrashScenario scenario,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT jsonb_build_object(
+                'period', to_jsonb(period),
+                'reservation', to_jsonb(reservation),
+                'request', to_jsonb(request),
+                'usage_attempts', (
+                    SELECT coalesce(jsonb_agg(to_jsonb(attempt) ORDER BY attempt.attempt_id), '[]')
+                    FROM public.usage_attempts AS attempt WHERE attempt.attempt_id = $2
+                ),
+                'adjustments', (
+                    SELECT coalesce(
+                        jsonb_agg(to_jsonb(adjustment) ORDER BY adjustment.attempt_id), '[]')
+                    FROM public.usage_attempt_adjustments AS adjustment
+                    WHERE adjustment.attempt_id = $2
+                ),
+                'events', (
+                    SELECT coalesce(jsonb_agg(to_jsonb(event) ORDER BY event.id), '[]')
+                    FROM public.group_quota_events AS event
+                    WHERE event.group_id = $1 AND event.attempt_id = $2
+                ),
+                'outbox_messages', (
+                    SELECT coalesce(jsonb_agg(to_jsonb(message) ORDER BY message.id), '[]')
+                    FROM public.outbox_messages AS message
+                    WHERE message.aggregate_id = $1
+                      AND message.payload ->> 'attempt_id' = $2::text
+                )
+            )::text
+            FROM public.group_token_reservations AS reservation
+            JOIN public.group_quota_periods AS period ON period.id = reservation.period_id
+            JOIN public.usage_requests AS request ON request.request_id = reservation.request_id
+            WHERE reservation.group_id = $1 AND reservation.attempt_id = $2;
+            """);
+        command.Parameters.AddWithValue(scenario.GroupId);
+        command.Parameters.AddWithValue(scenario.Dispatched.AttemptId);
+        return Assert.IsType<string>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
     }
 
     private async ValueTask ForceLeasesExpiredAsync(
@@ -519,23 +1297,39 @@ public sealed class PostgresQuotaCrashCompensationTests
         CrashState conservative,
         CancellationToken cancellationToken)
     {
+        await CallAdjustmentAsync(
+            session,
+            scenario,
+            conservative,
+            Provider,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask CallAdjustmentAsync(
+        PostgresTransactionSession session,
+        CrashScenario scenario,
+        CrashState conservative,
+        string provider,
+        CancellationToken cancellationToken)
+    {
         MutationIds mutation = MutationIds.Create("adjust");
         using NpgsqlCommand command = session.CreateCommand("""
             SELECT result_reservation_status, result_previous_tokens::text,
                    result_corrected_tokens::text, result_delta_tokens::text,
                    result_consumed_tokens::text, result_reserved_tokens::text
             FROM public.poolai_quota_adjust_usage(
-                $1, $2, $3, $4, 'openai', 'gpt-ac39', 'failed',
+                $1, $2, $3, $4, $5, 'gpt-ac39', 'failed',
                 NULL::integer, 'reservation_lease_expired_after_dispatch',
                 100, 55, 0, 0, 0, 'upstream', NULL::text,
                 '{"source":"late-ac39"}'::jsonb,
-                $5, NULL::timestamptz, $6, 'failed', $7, $8, $9, $10
+                $6, NULL::timestamptz, $7, 'failed', $8, $9, $10, $11
             );
             """);
         command.Parameters.AddWithValue(scenario.GroupId);
         command.Parameters.AddWithValue(scenario.Dispatched.AttemptId);
         command.Parameters.AddWithValue(scenario.AccountId);
         command.Parameters.AddWithValue(scenario.ChannelId);
+        command.Parameters.AddWithValue(provider);
         command.Parameters.AddWithValue(Assert.IsType<DateTimeOffset>(conservative.DispatchStartedAt));
         command.Parameters.AddWithValue(Assert.IsType<DateTimeOffset>(conservative.AttemptCompletedAt));
         command.Parameters.AddWithValue(mutation.EventId);
@@ -833,4 +1627,23 @@ public sealed class PostgresQuotaCrashCompensationTests
         string? AdjustmentEventDeltaConsumed,
         string? AdjustmentTerminalStatus,
         Guid ReservationId);
+
+    private sealed record ControlMutation(
+        string Disposition,
+        bool WasChanged,
+        long CurrentVersion);
+
+    private sealed record PendingReserve(
+        IUnitOfWork UnitOfWork,
+        int BackendPid,
+        Task Operation);
+
+    private sealed record AdmissionLinearizationState(
+        string SubscriptionStatus,
+        long SubscriptionVersion,
+        DateTimeOffset SubscriptionUpdatedAt,
+        DateTimeOffset SubscriptionExpiresAt,
+        bool RequestExists,
+        long ReservationCount,
+        long ReservedEventCount);
 }

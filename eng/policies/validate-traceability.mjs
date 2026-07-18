@@ -22,13 +22,23 @@ const manifestPath = resolve(root, 'docs/traceability/release-1-traceability.jso
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 const executionSpec = readFileSync(resolve(root, 'docs/开发执行规格-v1.0.md'), 'utf8')
 const systemPlan = readFileSync(resolve(root, 'docs/系统重构方案-v1.0.md'), 'utf8')
+const adr0006Path = 'docs/architecture/adr/0006-register-group-subscription-lifecycle-fence.md'
+const systemPlanPath = 'docs/系统重构方案-v1.0.md'
+const currentStatePath = 'docs/project-memory/current-state.md'
+const adr0006 = readFileSync(
+  resolve(root, adr0006Path),
+  'utf8',
+)
 const qualityGate = readFileSync(resolve(root, 'eng/test/quality-gate.sh'), 'utf8')
+const qualityGateWorkflow = readFileSync(resolve(root, '.github/workflows/quality-gate.yml'), 'utf8')
+const currentState = readFileSync(resolve(root, currentStatePath), 'utf8')
 const frontendPackage = JSON.parse(readFileSync(resolve(root, 'frontend/package.json'), 'utf8'))
 const xunitRunnerConfig = JSON.parse(readFileSync(resolve(root, 'tests/xunit.runner.json'), 'utf8'))
 const failures = []
 const validationModes = process.argv.slice(2)
 const structureOnly = validationModes.length === 1 && validationModes[0] === '--structure-only'
 const compiledTests = validationModes.length === 1 && validationModes[0] === '--compiled-tests'
+const githubEvidence = validationModes.length === 1 && validationModes[0] === '--github-evidence'
 const expectedDecisionIds = Array.from({ length: 42 }, (_, index) => `DEC-${String(index + 1).padStart(3, '0')}`)
 const expectedAcceptanceIds = Array.from({ length: 45 }, (_, index) => `AC-${String(index + 1).padStart(3, '0')}`)
 const allowedSuites = new Set([
@@ -55,9 +65,1471 @@ const fail = (message) => failures.push(message)
 const sorted = (values) => [...values].sort()
 const sameValues = (left, right) => JSON.stringify(sorted(left)) === JSON.stringify(sorted(right))
 const duplicates = (values) => [...new Set(values.filter((value, index) => values.indexOf(value) !== index))]
+const semanticMarkdownText = (source) => source
+  .replaceAll(/<!--[\s\S]*?-->/gu, '')
+  .replaceAll(/\]\([^\r\n)]*\)/gu, ']')
+  .replaceAll(/<\/?[A-Za-z][^>\r\n]*>/gu, '')
+  .replaceAll(/&#(?:x([0-9a-f]+)|([0-9]+));/giu, (_match, hex, decimal) => {
+    const value = Number.parseInt(hex ?? decimal, hex ? 16 : 10)
+    return Number.isSafeInteger(value) && value >= 0 && value <= 0x10ffff
+      ? String.fromCodePoint(value)
+      : ''
+  })
+  .replaceAll(/&[A-Za-z][A-Za-z0-9]+;/gu, '')
+  .replaceAll(/\\([\\`*_[\]{}()#+.!~>-])/gu, '$1')
+  .replaceAll(/[\*_`~\[\]]/gu, '')
+  .normalize('NFKC')
+  .replaceAll(/[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, '')
+const adr0006ReferenceSource =
+  String.raw`(?<![\p{L}\p{N}])ADR[^\p{L}\p{N}\r\n]{0,16}0006(?![\p{L}\p{N}])`
+const adr0006ReferencePattern = new RegExp(adr0006ReferenceSource, 'iu')
+const adr0006ReferenceScanPattern = new RegExp(adr0006ReferenceSource, 'giu')
+const hasAdr0006Reference = (source) => adr0006ReferencePattern.test(semanticMarkdownText(source))
+const countAdr0006References = (source) => [
+  ...semanticMarkdownText(source)
+    .replaceAll(/\r?\n/gu, ' ')
+    .matchAll(adr0006ReferenceScanPattern),
+].length
 
-if (!structureOnly && !compiledTests) {
-  fail('Choose exactly one traceability mode: --structure-only or --compiled-tests.')
+const adr0006ApprovalUrlPattern =
+  /^https:\/\/github\.com\/Lyon1984\/PoolAI\/issues\/44#issuecomment-[1-9][0-9]*$/u
+const adr0006CiUrlPattern =
+  /^https:\/\/github\.com\/Lyon1984\/PoolAI\/actions\/runs\/[1-9][0-9]*$/u
+const adr0006ProposedDecider =
+  'PoolAI architecture owner (`@Lyon1984`) — pending explicit approval'
+const adr0006AcceptedDecider = 'PoolAI architecture owner (`@Lyon1984`)'
+const adr0006ApprovalLinkLabel = 'Issue #44 approval comment'
+const adr0006PlanApprovalLinkLabel = 'Issue #44 永久批准评论'
+const adr0006PlanSectionHeading = '### 6.2 模型请求 Process Manager'
+const adr0006PlanStatusPrefix = '- ADR 0006 治理状态：'
+const adr0006PlanScopeBullet = [
+  '- 按 [`ADR 0006`](architecture/adr/0006-register-group-subscription-lifecycle-fence.md)，跨 Context 数据库 `SELECT`/行锁候选 registry 只含三个 family：',
+  '**Family A** 是 `poolai_quota_reserve` 的 canonical admission 与既有结算路径的 route/provider identity 验证；',
+  '**Family B** 是 `poolai_validate_group_activation` 的点时 activation guard；',
+  '**Family C** 是 Group–Subscription lifecycle fence。',
+  '精确函数、表、字段、锁序和等待后数据库时钟规则只在架构与数据库契约维护；',
+  '三类均不授权跨 Context 写入、共享 UoW 或通用 SQL executor。',
+  '旧 activation evidence 或 Redis snapshot 也不能代替 Family A 的强读。',
+].join('')
+const adr0006ProposedPlanStatus =
+  '- ADR 0006 治理状态：**Proposed**（待 `@Lyon1984` 明确批准；不是 M1-E4 architecture sign-off 或 release-ready 证据）。'
+const adr0006AcceptedPlanStatus = (approvalUrl) =>
+  `- ADR 0006 治理状态：**Accepted**（[${adr0006PlanApprovalLinkLabel}](${approvalUrl})）。`
+const adr0006MemoryStatusPrefix = adr0006PlanStatusPrefix
+const adr0006ProposedMemoryStatus = adr0006ProposedPlanStatus
+const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
+const adr0006AllowedCurrentStateReferenceDigests = new Set([
+  'ec871fd618754aaac9c15851d9e88ff2d53a74c37660ac0804fc4f69d9308614',
+  'e980fc221a4df4abf74abdb694efa81ff0dd750cef0d2a53e518cadeb2ad5039',
+  'b6f23587ec2ed0bf00afac63922de7412777b586756e0ac94180af484a3f4e79',
+  '08c0188c5cec0b7000e71ba426146c6c1cfa29abfaf1fbea55dbe0b5ec056194',
+])
+const adr0006ApprovalTemplate = [
+  'APPROVED: ADR 0006 — Freeze the cross-context database read/lock allowlist',
+  '',
+  'I, @Lyon1984, approve exactly these three exception families:',
+  '- Family A: GroupQuota canonical admission and route-identity validation, including only the registered Account/Channel id + provider locks on settle, mark-dispatched, and adjust-usage.',
+  '- Family B: the registered Group activation guard.',
+  '- Family C: the registered bidirectional Group–Subscription lifecycle fence.',
+  '',
+  'I approve only the stated cross-context SELECT/row locks, the global Quota → Group → Template/Subscription lock order, post-wait PostgreSQL clock checks, and short transactions.',
+  '',
+  'Excluded: every additional function, table, field, consumer, or lock direction; cross-context DML or trigger-side mutation; dynamic or generic SQL; shared DbContext, Repository, or Unit of Work; and HTTP, SMTP, Redis, SSE, backoff, or other external waits. This comment does not approve database migration 0007, its manifest/checksum or remote execution, PR merge, Issue closure, M1-E4 completion, RC/GA, deployment, or production release.',
+  '',
+  'Approved candidate head: `<APPROVED_CANDIDATE_SHA>`',
+  'Approved quality-gate run: <APPROVED_QUALITY_RUN_URL>',
+  'Approved security-evidence run: <APPROVED_SECURITY_RUN_URL>',
+].join('\n')
+const adr0006ApprovalTemplateBegin = '<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_BEGIN -->'
+const adr0006ApprovalTemplateEnd = '<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_END -->'
+const adr0006ApprovalTemplateBlock = [
+  adr0006ApprovalTemplateBegin,
+  '```text',
+  adr0006ApprovalTemplate,
+  '```',
+  adr0006ApprovalTemplateEnd,
+].join('\n')
+
+const adrMetadataValues = (source, label) => {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return [...source.matchAll(new RegExp(`^- ${escapedLabel}: ([^\\r\\n]*)$`, 'gmu'))]
+    .map((match) => match[1])
+}
+
+const adrMetadataLikeCount = (source, label) => {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return [...source.matchAll(new RegExp(`^-\\s*${escapedLabel}\\s*:`, 'gimu'))].length
+}
+
+const parseExactMarkdownLink = (source, expectedLabel) => {
+  const match = source.match(/^\[([^\]\r\n]+)\]\(([^()\s]+)\)$/u)
+  if (!match || match[1] !== expectedLabel) {
+    return null
+  }
+  return match[2]
+}
+
+const extractAdr0006ApprovalTemplate = (source) => {
+  const markerCounts = [adr0006ApprovalTemplateBegin, adr0006ApprovalTemplateEnd]
+    .map((marker) => source.split(marker).length - 1)
+  const matches = [...source.matchAll(
+    /<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_BEGIN -->\r?\n```text\r?\n([\s\S]*?)\r?\n```\r?\n<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_END -->/gu,
+  )]
+  if (markerCounts.some((count) => count !== 1) || matches.length !== 1) {
+    return null
+  }
+  return matches[0][1].replaceAll('\r\n', '\n')
+}
+
+const extractSystemPlanSection62 = (source) => {
+  const sectionFailures = []
+  const headings = [...source.matchAll(/^### 6\.2(?:[ \t]+[^\r\n]+)?$/gmu)]
+  if (headings.length !== 1 || headings[0][0] !== adr0006PlanSectionHeading) {
+    sectionFailures.push(`The system plan must contain exactly one ${adr0006PlanSectionHeading} heading.`)
+    return { section: null, failures: sectionFailures }
+  }
+  const section = source.match(
+    /^### 6\.2(?:[ \t]+[^\r\n]+)?\r?\n[\s\S]*?(?=^### 6\.3(?:[ \t]+[^\r\n]+)?$)/mu,
+  )?.[0] ?? null
+  if (!section) {
+    sectionFailures.push('The system-plan section 6.2 must end at one following section 6.3 heading.')
+  }
+  return { section, failures: sectionFailures }
+}
+
+const validateAdr0006Governance = (adrSource, planSource) => {
+  const governanceFailures = []
+  const reject = (message) => governanceFailures.push(message)
+  if (planSource.includes('<!--')) {
+    reject('The system plan must not contain HTML comments because they can join hidden ADR status text across lines.')
+  }
+  const statusValues = adrMetadataValues(adrSource, 'Status')
+  const deciderValues = adrMetadataValues(adrSource, 'Decider')
+  const approvalValues = adrMetadataValues(adrSource, 'Approval evidence')
+  const candidateHeadValues = adrMetadataValues(adrSource, 'Approved candidate head')
+  const approvedCiValues = adrMetadataValues(adrSource, 'Approved CI')
+  const candidateHeadLikeCount = adrMetadataLikeCount(adrSource, 'Approved candidate head')
+  const approvedCiLikeCount = adrMetadataLikeCount(adrSource, 'Approved CI')
+  const planSectionResult = extractSystemPlanSection62(planSource)
+  for (const sectionFailure of planSectionResult.failures) {
+    reject(sectionFailure)
+  }
+  const planSection = planSectionResult.section ?? ''
+
+  if (statusValues.length !== 1 || adrMetadataLikeCount(adrSource, 'Status') !== 1) {
+    reject('ADR 0006 must declare exactly one Status metadata field.')
+  }
+  if (deciderValues.length !== 1 || adrMetadataLikeCount(adrSource, 'Decider') !== 1) {
+    reject('ADR 0006 must declare exactly one Decider metadata field.')
+  }
+  if (approvalValues.length !== 1 || adrMetadataLikeCount(adrSource, 'Approval evidence') !== 1) {
+    reject('ADR 0006 must declare exactly one Approval evidence metadata field.')
+  }
+  if (extractAdr0006ApprovalTemplate(adrSource) !== adr0006ApprovalTemplate) {
+    reject('ADR 0006 must declare exactly one unchanged canonical APPROVED comment template.')
+  }
+
+  const status = statusValues[0]?.match(/^\*\*(Proposed|Accepted)\*\*$/u)?.[1]
+  if (!status) {
+    reject('ADR 0006 Status must be exactly **Proposed** or **Accepted**.')
+    return governanceFailures
+  }
+
+  const decider = deciderValues[0] ?? ''
+  const approval = approvalValues[0] ?? ''
+  const planLines = planSection.split(/\r?\n/u)
+  const fullPlanLines = planSource.split(/\r?\n/u)
+  const planStatusLines = planLines
+    .filter((line) => line.startsWith(adr0006PlanStatusPrefix))
+  const planAdr0006Lines = fullPlanLines
+    .filter((line) => hasAdr0006Reference(line))
+  const planStatusTokens = [...planSection.matchAll(/\b(?:Proposed|Accepted)\b/giu)]
+  const planIssueCommentOccurrences = [...planSection.matchAll(
+    /https:\/\/github\.com\/Lyon1984\/PoolAI\/issues\/44#issuecomment-[^\s)\]。；,]*/gu,
+  )].map((match) => match[0])
+
+  if (planStatusLines.length !== 1
+      || planStatusTokens.length !== 1
+      || countAdr0006References(planSource) !== 2
+      || planAdr0006Lines.length !== 2
+      || !planAdr0006Lines.includes(adr0006PlanScopeBullet)
+      || !planAdr0006Lines.includes(planStatusLines[0])) {
+    reject('The complete system plan may contain ADR 0006 only in one canonical section 6.2 scope bullet and one normalized standalone status bullet.')
+  }
+
+  if (status === 'Proposed') {
+    if (decider !== adr0006ProposedDecider) {
+      reject(`Proposed ADR 0006 Decider must be exactly: ${adr0006ProposedDecider}`)
+    }
+    if (approval !== '**Pending explicit approval**') {
+      reject('Proposed ADR 0006 Approval evidence must remain exactly **Pending explicit approval**.')
+    }
+    if (candidateHeadValues.length > 0
+        || approvedCiValues.length > 0
+        || candidateHeadLikeCount > 0
+        || approvedCiLikeCount > 0) {
+      reject('Proposed ADR 0006 must not prefill Approved candidate head or Approved CI metadata.')
+    }
+    if (planStatusLines[0] !== adr0006ProposedPlanStatus) {
+      reject('The system-plan ADR 0006 Proposed status bullet must match the canonical line exactly.')
+    }
+    if (planIssueCommentOccurrences.length > 0) {
+      reject('Proposed ADR 0006 must not bind an Issue #44 approval comment in system-plan section 6.2.')
+    }
+  } else {
+    if (candidateHeadValues.length !== 1 || candidateHeadLikeCount !== 1) {
+      reject('Accepted ADR 0006 must declare exactly one Approved candidate head metadata field.')
+    }
+    if (approvedCiValues.length !== 1 || approvedCiLikeCount !== 1) {
+      reject('Accepted ADR 0006 must declare exactly one Approved CI metadata field.')
+    }
+    if (!/^`(?!0{40}`$)[0-9a-f]{40}`$/u.test(candidateHeadValues[0] ?? '')) {
+      reject('Accepted ADR 0006 Approved candidate head must be one non-zero 40-character lowercase Git SHA.')
+    }
+    const approvedCiMatch = approvedCiValues[0]?.match(
+      /^\[quality\]\((https:\/\/github\.com\/Lyon1984\/PoolAI\/actions\/runs\/[1-9][0-9]*)\), \[security\]\((https:\/\/github\.com\/Lyon1984\/PoolAI\/actions\/runs\/[1-9][0-9]*)\)$/u,
+    )
+    const qualityCiUrl = approvedCiMatch?.[1]
+    const securityCiUrl = approvedCiMatch?.[2]
+    if (!qualityCiUrl
+        || !securityCiUrl
+        || !adr0006CiUrlPattern.test(qualityCiUrl)
+        || !adr0006CiUrlPattern.test(securityCiUrl)
+        || !isAuditableHttpsReference(qualityCiUrl)
+        || !isAuditableHttpsReference(securityCiUrl)) {
+      reject('Accepted ADR 0006 Approved CI must contain exact quality and security Lyon1984/PoolAI Actions run URLs.')
+    } else if (qualityCiUrl === securityCiUrl) {
+      reject('Accepted ADR 0006 quality and security evidence must use two distinct Actions runs.')
+    }
+    if (decider !== adr0006AcceptedDecider) {
+      reject(`Accepted ADR 0006 Decider must be exactly: ${adr0006AcceptedDecider}`)
+    }
+    const approvalUrl = parseExactMarkdownLink(approval, adr0006ApprovalLinkLabel)
+    if (!approvalUrl
+        || !adr0006ApprovalUrlPattern.test(approvalUrl)
+        || !isAuditableHttpsReference(approvalUrl)) {
+      reject(`Accepted ADR 0006 Approval evidence must be one exact [${adr0006ApprovalLinkLabel}](URL) link.`)
+    }
+    const expectedPlanStatus = approvalUrl ? adr0006AcceptedPlanStatus(approvalUrl) : null
+    if (!expectedPlanStatus || planStatusLines[0] !== expectedPlanStatus) {
+      reject('The system-plan ADR 0006 Accepted status bullet must be exact and use the canonical Markdown link label.')
+    }
+    if (planIssueCommentOccurrences.length !== 1) {
+      reject('Accepted ADR 0006 must bind exactly one Issue #44 approval-comment URL in system-plan section 6.2.')
+    } else if (approvalUrl && planIssueCommentOccurrences[0] !== approvalUrl) {
+      reject('The system-plan ADR 0006 permanent approval evidence must bind the same Issue #44 comment URL as the ADR.')
+    }
+  }
+
+  return governanceFailures
+}
+
+const validateAdr0006CurrentState = (source, status, approvalUrl = null) => {
+  const memoryFailures = []
+  const lines = source.split(/\r?\n/u)
+  const statusLines = lines.filter((line) => line.startsWith(adr0006MemoryStatusPrefix))
+  const referenceLines = lines.filter((line) => hasAdr0006Reference(line))
+  const nonStatusReferenceDigests = referenceLines
+    .filter((line) => !line.startsWith(adr0006MemoryStatusPrefix))
+    .map((line) => createHash('sha256').update(line).digest('hex'))
+  const expectedStatusLine = status === 'Proposed'
+    ? adr0006ProposedMemoryStatus
+    : status === 'Accepted' && approvalUrl
+      ? adr0006AcceptedMemoryStatus(approvalUrl)
+      : null
+  if (source.includes('<!--')
+      || statusLines.length !== 1
+      || !expectedStatusLine
+      || statusLines[0] !== expectedStatusLine
+      || countAdr0006References(source) !== 5
+      || referenceLines.length !== 5
+      || !sameValues(nonStatusReferenceDigests, adr0006AllowedCurrentStateReferenceDigests)) {
+    memoryFailures.push('Project memory must contain one canonical ADR 0006 status bullet plus only the four reviewed non-status reference lines, with no HTML comments or hidden cross-line reference.')
+  }
+  return memoryFailures
+}
+
+const withAdr0006Template = (metadata) => `${metadata}\n\n${adr0006ApprovalTemplateBlock}`
+const withSystemPlanFixture = (sectionBody) => [
+  '# System-plan fixture',
+  adr0006PlanSectionHeading,
+  sectionBody,
+  '### 6.3 Fixture',
+  'Fixture tail.',
+].join('\n')
+const adr0006GovernanceFixtures = {
+  acceptedUrl: 'https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5012345678',
+  candidateHead: '0123456789abcdef0123456789abcdef01234567',
+  qualityCiUrl: 'https://github.com/Lyon1984/PoolAI/actions/runs/5012345678',
+  securityCiUrl: 'https://github.com/Lyon1984/PoolAI/actions/runs/5012345679',
+}
+adr0006GovernanceFixtures.proposedAdr = withAdr0006Template([
+  '- Status: **Proposed**',
+  `- Decider: ${adr0006ProposedDecider}`,
+  '- Approval evidence: **Pending explicit approval**',
+].join('\n'))
+adr0006GovernanceFixtures.proposedPlan = withSystemPlanFixture([
+  adr0006PlanScopeBullet,
+  adr0006ProposedPlanStatus,
+].join('\n'))
+adr0006GovernanceFixtures.acceptedAdr = withAdr0006Template([
+  '- Status: **Accepted**',
+  `- Decider: ${adr0006AcceptedDecider}`,
+  `- Approval evidence: [${adr0006ApprovalLinkLabel}](${adr0006GovernanceFixtures.acceptedUrl})`,
+  `- Approved candidate head: \`${adr0006GovernanceFixtures.candidateHead}\``,
+  `- Approved CI: [quality](${adr0006GovernanceFixtures.qualityCiUrl}), [security](${adr0006GovernanceFixtures.securityCiUrl})`,
+].join('\n'))
+adr0006GovernanceFixtures.acceptedPlan =
+  withSystemPlanFixture([
+    adr0006PlanScopeBullet,
+    adr0006AcceptedPlanStatus(adr0006GovernanceFixtures.acceptedUrl),
+  ].join('\n'))
+adr0006GovernanceFixtures.proposedMemory = currentState
+adr0006GovernanceFixtures.acceptedMemory = currentState.replace(
+  adr0006ProposedMemoryStatus,
+  adr0006AcceptedMemoryStatus(adr0006GovernanceFixtures.acceptedUrl),
+)
+
+for (const [label, adrSource, planSection] of [
+  ['Proposed', adr0006GovernanceFixtures.proposedAdr, adr0006GovernanceFixtures.proposedPlan],
+  ['Accepted', adr0006GovernanceFixtures.acceptedAdr, adr0006GovernanceFixtures.acceptedPlan],
+]) {
+  if (validateAdr0006Governance(adrSource, planSection).length > 0) {
+    fail(`ADR 0006 governance self-test rejected a valid ${label} state.`)
+  }
+}
+for (const [label, source, status, approvalUrl] of [
+  ['Proposed', adr0006GovernanceFixtures.proposedMemory, 'Proposed', null],
+  ['Accepted', adr0006GovernanceFixtures.acceptedMemory, 'Accepted', adr0006GovernanceFixtures.acceptedUrl],
+]) {
+  if (validateAdr0006CurrentState(source, status, approvalUrl).length > 0) {
+    fail(`ADR 0006 current-state self-test rejected a valid ${label} state.`)
+  }
+}
+for (const [label, source, status, approvalUrl] of [
+  [
+    'a duplicate canonical status bullet',
+    `${adr0006GovernanceFixtures.proposedMemory}\n${adr0006ProposedMemoryStatus}`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an out-of-band Accepted claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR 0006 is Accepted.`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a Markdown-emphasized out-of-band approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR **0006** 已批准并生效。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a Markdown-link-label out-of-band approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\n[ADR **0006**](../architecture/adr/0006.md) 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an HTML-emphasized out-of-band approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR <strong>0006</strong> 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an unseparated out-of-band approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR0006 已批准并生效。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a hyphenated out-of-band Accepted claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR-0006 is Accepted.`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a zero-width numeric-entity approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR 00&#x200b;06 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a named-whitespace-entity approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR&Tab;0006 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a cross-line HTML-comment approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR<!--\n-->0006 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an unregistered Chinese approval synonym',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR 0006 已正式批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an unregistered English approval synonym',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR 0006 received approval.`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an Accepted bullet with a different comment URL',
+    adr0006GovernanceFixtures.acceptedMemory.replace('5012345678', '5012345679'),
+    'Accepted',
+    adr0006GovernanceFixtures.acceptedUrl,
+  ],
+]) {
+  if (validateAdr0006CurrentState(source, status, approvalUrl).length === 0) {
+    fail(`ADR 0006 current-state self-test accepted ${label}.`)
+  }
+}
+
+const invalidAdr0006GovernanceFixtures = [
+  [
+    'a duplicate Proposed Decider',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      '- Approval evidence:',
+      `- Decider: ${adr0006ProposedDecider}\n- Approval evidence:`,
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'an approximate Proposed Decider',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      adr0006ProposedDecider,
+      'PoolAI architecture owner (`@Lyon1984`) — approval pending',
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'an approximate Accepted Decider',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      adr0006AcceptedDecider,
+      `${adr0006AcceptedDecider} — approved`,
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'a Proposed ADR with non-pending evidence',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      '**Pending explicit approval**',
+      `[${adr0006ApprovalLinkLabel}](${adr0006GovernanceFixtures.acceptedUrl})`,
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'a Proposed ADR with prefilled candidate evidence',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      '- Approval evidence: **Pending explicit approval**',
+      `- Approval evidence: **Pending explicit approval**\n- Approved candidate head: \`${adr0006GovernanceFixtures.candidateHead}\``,
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'a Proposed ADR with malformed prefilled CI evidence',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      '- Approval evidence: **Pending explicit approval**',
+      '- Approval evidence: **Pending explicit approval**\n- Approved CI : forged',
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'a Proposed ADR with lowercase prefilled candidate evidence',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      '- Approval evidence: **Pending explicit approval**',
+      `- Approval evidence: **Pending explicit approval**\n- approved candidate head: \`${adr0006GovernanceFixtures.candidateHead}\``,
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+  [
+    'an Accepted ADR missing the candidate head',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      `- Approved candidate head: \`${adr0006GovernanceFixtures.candidateHead}\`\n`,
+      '',
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with a spoofed approval-link label',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      `[${adr0006ApprovalLinkLabel}]`,
+      '[APPROVED by Lyon1984]',
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with an approval URL suffix',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      adr0006GovernanceFixtures.acceptedUrl,
+      `${adr0006GovernanceFixtures.acceptedUrl}/forged`,
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with a non-lowercase candidate head',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      adr0006GovernanceFixtures.candidateHead,
+      adr0006GovernanceFixtures.candidateHead.toUpperCase(),
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with CI evidence from another repository',
+    adr0006GovernanceFixtures.acceptedAdr.replaceAll(
+      'https://github.com/Lyon1984/PoolAI/actions/runs/',
+      'https://github.com/dotnet/runtime/actions/runs/',
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with a CI URL suffix',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      adr0006GovernanceFixtures.qualityCiUrl,
+      `${adr0006GovernanceFixtures.qualityCiUrl}/attempts/1`,
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR with a lowercase duplicate CI field',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      '- Approved candidate head:',
+      '- approved ci: forged\n- Approved candidate head:',
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted ADR that reuses one CI run',
+    adr0006GovernanceFixtures.acceptedAdr.replace(
+      adr0006GovernanceFixtures.securityCiUrl,
+      adr0006GovernanceFixtures.qualityCiUrl,
+    ),
+    adr0006GovernanceFixtures.acceptedPlan,
+  ],
+  [
+    'an Accepted plan with a spoofed approval-link label',
+    adr0006GovernanceFixtures.acceptedAdr,
+    adr0006GovernanceFixtures.acceptedPlan.replace(
+      `[${adr0006PlanApprovalLinkLabel}]`,
+      '[APPROVED]',
+    ),
+  ],
+  [
+    'an Accepted plan with a URL suffix after its Markdown link',
+    adr0006GovernanceFixtures.acceptedAdr,
+    adr0006GovernanceFixtures.acceptedPlan.replace(
+      adr0006AcceptedPlanStatus(adr0006GovernanceFixtures.acceptedUrl),
+      `${adr0006AcceptedPlanStatus(adr0006GovernanceFixtures.acceptedUrl)} forged`,
+    ),
+  ],
+  [
+    'an Accepted plan with a mismatched link target',
+    adr0006GovernanceFixtures.acceptedAdr,
+    adr0006GovernanceFixtures.acceptedPlan.replace('5012345678', '5012345679'),
+  ],
+  [
+    'an Accepted plan with an extra status sentence',
+    adr0006GovernanceFixtures.acceptedAdr,
+    `${adr0006GovernanceFixtures.acceptedPlan}\nADR 0006 is also Accepted.`,
+  ],
+  [
+    'an Accepted plan with a lowercase extra status sentence',
+    adr0006GovernanceFixtures.acceptedAdr,
+    `${adr0006GovernanceFixtures.acceptedPlan}\nADR 0006 remains accepted.`,
+  ],
+  [
+    'an Accepted plan with a Chinese extra approval sentence',
+    adr0006GovernanceFixtures.acceptedAdr,
+    `${adr0006GovernanceFixtures.acceptedPlan}\nADR 0006 已经批准。`,
+  ],
+  [
+    'a Proposed plan with a Chinese approved-and-effective bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR 0006 已批准并生效。`,
+  ],
+  [
+    'a Proposed plan with a Markdown-emphasized approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR **0006** 已批准并生效。`,
+  ],
+  [
+    'a Proposed plan with a Markdown-link-label approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\n[ADR **0006**](architecture/adr/0006.md) 已批准。`,
+  ],
+  [
+    'a Proposed plan with an HTML-emphasized approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR <strong>0006</strong> 已批准。`,
+  ],
+  [
+    'a Proposed plan with an unseparated approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR0006 已批准并生效。`,
+  ],
+  [
+    'a Proposed plan with a hyphenated Accepted bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR-0006 is Accepted.`,
+  ],
+  [
+    'a Proposed plan with a zero-width numeric-entity approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR 00&#x200b;06 已批准。`,
+  ],
+  [
+    'a Proposed plan with a named-whitespace-entity approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR&Tab;0006 已批准。`,
+  ],
+  [
+    'a Proposed plan with a cross-line HTML-comment approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR<!--\n-->0006 已批准。`,
+  ],
+  [
+    'a Proposed plan with a Chinese signed-and-permanent bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR 0006 已签署并永久生效。`,
+  ],
+  [
+    'an Accepted plan with a duplicate status bullet',
+    adr0006GovernanceFixtures.acceptedAdr,
+    `${adr0006GovernanceFixtures.acceptedPlan}\n${adr0006GovernanceFixtures.acceptedPlan}`,
+  ],
+  [
+    'a Proposed plan carrying an approval URL',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR 0006 approval: ${adr0006GovernanceFixtures.acceptedUrl}`,
+  ],
+  [
+    'an ADR with a modified canonical APPROVED template',
+    adr0006GovernanceFixtures.proposedAdr.replace(
+      'APPROVED: ADR 0006',
+      'APPROVED ADR 0006',
+    ),
+    adr0006GovernanceFixtures.proposedPlan,
+  ],
+]
+for (const [label, adrSource, planSection] of invalidAdr0006GovernanceFixtures) {
+  if (validateAdr0006Governance(adrSource, planSection).length === 0) {
+    fail(`ADR 0006 governance self-test accepted ${label}.`)
+  }
+}
+
+const validSectionFixture = adr0006GovernanceFixtures.proposedPlan
+if (extractSystemPlanSection62(validSectionFixture).failures.length > 0) {
+  fail('ADR 0006 governance self-test rejected one valid system-plan section 6.2 heading.')
+}
+if (extractSystemPlanSection62(`${validSectionFixture}\n### 6.2 Duplicate`).failures.length === 0) {
+  fail('ADR 0006 governance self-test accepted duplicate system-plan section 6.2 headings.')
+}
+
+const systemPlanSection62 = extractSystemPlanSection62(systemPlan)
+for (const sectionFailure of systemPlanSection62.failures) {
+  fail(sectionFailure)
+}
+const dataPlaneSection = systemPlanSection62.section
+const expectedCrossContextFamilies = ['A', 'B', 'C']
+const crossContextFamilyMarkers = new Map([
+  ['Family A canonical admission and route identity', [
+    'Family A',
+    'poolai_quota_reserve',
+    'route/provider identity',
+  ]],
+  ['Family B activation guard', [
+    'Family B',
+    'poolai_validate_group_activation',
+  ]],
+  ['Family C Group–Subscription lifecycle fence', [
+    'Family C',
+    'Group–Subscription lifecycle fence',
+  ]],
+])
+
+if (!dataPlaneSection) {
+  fail('The system plan must retain section 6.2 for the model-request process manager.')
+} else {
+  const registeredFamilies = [...dataPlaneSection.matchAll(/\bFamily\s+([A-Z])\b/gu)]
+    .map((match) => match[1])
+  if (!sameValues(new Set(registeredFamilies), expectedCrossContextFamilies)) {
+    fail('The system-plan data-plane rules must register exactly Family A, Family B, and Family C.')
+  }
+  if (!dataPlaneSection.includes('只含三个 family')) {
+    fail('The system-plan data-plane rules must state that the ADR 0006 registry contains only three families.')
+  }
+  if (/是仅有的跨\s*Context\s*数据库窄例外/u.test(dataPlaneSection)) {
+    fail('The system-plan data-plane rules retain the stale two-exception summary.')
+  }
+  if (!dataPlaneSection.includes('ADR 0006')) {
+    fail('The system-plan data-plane rules must link the cross-context database registry to ADR 0006.')
+  }
+  for (const [family, markers] of crossContextFamilyMarkers) {
+    const missingMarkers = markers.filter((marker) => !dataPlaneSection.includes(marker))
+    if (missingMarkers.length > 0) {
+      fail(`The system-plan data-plane rules must summarize ${family}; missing: ${missingMarkers.join(', ')}.`)
+    }
+  }
+
+}
+
+for (const governanceFailure of validateAdr0006Governance(adr0006, systemPlan)) {
+  fail(governanceFailure)
+}
+
+const expectedQualityGateTrigger = [
+  'on:',
+  '  pull_request:',
+  '  push:',
+  '    branches:',
+  '      - main',
+  '',
+  'permissions:',
+].join('\n')
+const expectedQualityGatePermissions = new Map([
+  ['actions', 'read'],
+  ['contents', 'read'],
+  ['issues', 'read'],
+])
+const expectedQualityGateWorkflowSha256 =
+  '7d4fad5bcc221a858d15ea11a08e228594a4a4ca9dbc0d8360ac4bae95d90e50'
+const expectedNodeSetupStep = [
+  '      - name: Set up Node.js',
+  '        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0',
+  '        with:',
+  '          node-version-file: .node-version',
+  '          package-manager-cache: false',
+].join('\n')
+const expectedGithubEvidenceStep = [
+  '      - name: Verify ADR 0006 GitHub approval evidence',
+  '        env:',
+  '          GITHUB_TOKEN: ${{ github.token }}',
+  '          ADR0006_EVENT_NAME: ${{ github.event_name }}',
+  "          ADR0006_SIGNING_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+  '        run: node eng/policies/validate-traceability.mjs --github-evidence',
+].join('\n')
+const expectedGithubEvidenceStepLines = expectedGithubEvidenceStep.split('\n')
+
+const validateQualityGateEvidenceWorkflow = (source) => {
+  const workflowFailures = []
+  const reject = (message) => workflowFailures.push(message)
+  const normalizedSource = source.replaceAll('\r\n', '\n')
+  const lines = normalizedSource.split('\n')
+  const workflowDigest = createHash('sha256').update(normalizedSource).digest('hex')
+  if (workflowDigest !== expectedQualityGateWorkflowSha256) {
+    reject('quality-gate.yml must match the reviewed fail-closed workflow digest; any workflow change requires governance review and digest rotation.')
+  }
+  if (normalizedSource.split(expectedQualityGateTrigger).length - 1 !== 1
+      || lines.filter((line) => line === 'on:').length !== 1) {
+    reject('quality-gate.yml must run only for pull_request and push to main so only main pushes skip signing ancestry checks.')
+  }
+
+  const rootPermissionsIndex = lines.findIndex((line) => line === 'permissions:')
+  const rootPermissions = new Map()
+  let rootPermissionEntryCount = 0
+  if (rootPermissionsIndex >= 0) {
+    for (let index = rootPermissionsIndex + 1; index < lines.length; index += 1) {
+      const match = lines[index].match(/^  ([a-z-]+): (read|write|none)$/u)
+      if (!match) {
+        break
+      }
+      rootPermissionEntryCount += 1
+      rootPermissions.set(match[1], match[2])
+    }
+  }
+  if (rootPermissionsIndex < 0
+      || lines.filter((line) => line === 'permissions:').length !== 1
+      || rootPermissionEntryCount !== expectedQualityGatePermissions.size
+      || !sameValues(rootPermissions.keys(), expectedQualityGatePermissions.keys())
+      || [...expectedQualityGatePermissions]
+        .some(([name, value]) => rootPermissions.get(name) !== value)) {
+    reject('quality-gate.yml must grant exactly top-level contents:read, actions:read, and issues:read.')
+  }
+  if (source.includes('pull_request_target')) {
+    reject('quality-gate.yml must not use pull_request_target for ADR 0006 evidence verification.')
+  }
+  if (/\$\{\{\s*secrets\./u.test(source) || /\bPAT\b/iu.test(source)) {
+    reject('quality-gate.yml must use github.token rather than a PAT or repository secret.')
+  }
+  if (lines.some((line) => line === 'defaults:' || line === '    defaults:')) {
+    reject('quality-gate.yml must not define workflow-level or job-level defaults.')
+  }
+
+  const verifyStarts = lines
+    .map((line, index) => [line, index])
+    .filter(([line]) => line === '  verify:')
+    .map(([, index]) => index)
+  if (verifyStarts.length !== 1) {
+    reject('quality-gate.yml must contain exactly one verify job.')
+    return workflowFailures
+  }
+  const verifyStart = verifyStarts[0]
+  const nextJobOffset = lines.slice(verifyStart + 1)
+    .findIndex((line) => /^  [A-Za-z0-9_-]+:$/u.test(line))
+  const verifyEnd = nextJobOffset < 0 ? lines.length : verifyStart + 1 + nextJobOffset
+  const verifyLines = lines.slice(verifyStart, verifyEnd)
+  if (verifyLines.some((line) => /^    (?:if|continue-on-error):/u.test(line))) {
+    reject('quality-gate.yml verify job must not use job-level if or continue-on-error.')
+  }
+
+  const evidenceStarts = lines
+    .map((line, index) => [line, index])
+    .filter(([line]) => line === expectedGithubEvidenceStepLines[0])
+    .map(([, index]) => index)
+  if (evidenceStarts.length !== 1) {
+    reject('quality-gate.yml must contain exactly one ADR 0006 GitHub-evidence step.')
+    return workflowFailures
+  }
+  const evidenceStart = evidenceStarts[0]
+  if (evidenceStart <= verifyStart || evidenceStart >= verifyEnd) {
+    reject('The ADR 0006 GitHub-evidence step must belong to the verify job.')
+  }
+  for (const [offset, expectedLine] of expectedGithubEvidenceStepLines.entries()) {
+    if (lines[evidenceStart + offset] !== expectedLine) {
+      reject('The ADR 0006 GitHub-evidence step must match its complete canonical YAML block exactly.')
+      break
+    }
+  }
+  let nextNonEmpty = evidenceStart + expectedGithubEvidenceStepLines.length
+  while (nextNonEmpty < lines.length && lines[nextNonEmpty] === '') {
+    nextNonEmpty += 1
+  }
+  if (lines[nextNonEmpty] !== '      - name: Activate pnpm') {
+    reject('Activate pnpm must be the next non-empty line after the complete ADR 0006 evidence step.')
+  }
+  const expectedEvidencePrefix = `${expectedNodeSetupStep}\n\n${expectedGithubEvidenceStep}`
+  if (normalizedSource.split(expectedEvidencePrefix).length - 1 !== 1) {
+    reject('The ADR 0006 evidence step must be the immediate next step after the complete pinned Node setup step.')
+  }
+  const firstRunIndex = lines.findIndex((line) => /^\s+run:/u.test(line))
+  const evidenceRunIndex = evidenceStart + expectedGithubEvidenceStepLines.length - 1
+  if (firstRunIndex !== evidenceRunIndex) {
+    reject('The ADR 0006 evidence check must be the first workflow run step so no candidate command can mutate governance files before verification.')
+  }
+  return workflowFailures
+}
+
+for (const workflowFailure of validateQualityGateEvidenceWorkflow(qualityGateWorkflow)) {
+  fail(workflowFailure)
+}
+const evidenceRunLine = '        run: node eng/policies/validate-traceability.mjs --github-evidence'
+for (const [label, suffix] of [
+  ['continue-on-error', '        continue-on-error: true'],
+  ['an if condition', '        if: false'],
+  ['a custom shell', '        shell: bash {0}'],
+  ['a duplicate run key', '        run: true'],
+]) {
+  const mutatedWorkflow = qualityGateWorkflow.replace(
+    evidenceRunLine,
+    `${evidenceRunLine}\n${suffix}`,
+  )
+  if (validateQualityGateEvidenceWorkflow(mutatedWorkflow).length === 0) {
+    fail(`ADR 0006 workflow self-test accepted ${label} on the evidence step.`)
+  }
+}
+for (const [label, mutation] of [
+  ['a verify-job if', '  verify:\n    if: false'],
+  ['a spaced verify-job if', '  verify:\n    if : false'],
+  ['a quoted verify-job if', '  verify:\n    "if": false'],
+  ['verify-job continue-on-error', '  verify:\n    continue-on-error: true'],
+  ['workflow defaults', 'defaults:\n  run:\n    shell: bash {0}\n\njobs:'],
+  ['inline workflow defaults', 'defaults: {run: {shell: "bash {0} || true"}}\n\njobs:'],
+]) {
+  const mutatedWorkflow = label.includes('workflow defaults')
+    ? qualityGateWorkflow.replace('jobs:', mutation)
+    : qualityGateWorkflow.replace('  verify:', mutation)
+  if (validateQualityGateEvidenceWorkflow(mutatedWorkflow).length === 0) {
+    fail(`ADR 0006 workflow self-test accepted ${label}.`)
+  }
+}
+const insertedPreEvidenceStep = qualityGateWorkflow.replace(
+  expectedGithubEvidenceStep,
+  [
+    '      - name: Mutate governance state',
+    '        run: node malicious.mjs',
+    '',
+    expectedGithubEvidenceStep,
+  ].join('\n'),
+)
+if (validateQualityGateEvidenceWorkflow(insertedPreEvidenceStep).length === 0) {
+  fail('ADR 0006 workflow self-test accepted a candidate run step before evidence verification.')
+}
+
+if (!structureOnly && !compiledTests && !githubEvidence) {
+  fail('Choose exactly one traceability mode: --structure-only, --compiled-tests, or --github-evidence.')
+}
+
+const parseAdr0006Evidence = (source) => {
+  const status = adrMetadataValues(source, 'Status')[0]?.match(/^\*\*(Proposed|Accepted)\*\*$/u)?.[1]
+  const approvalUrl = parseExactMarkdownLink(
+    adrMetadataValues(source, 'Approval evidence')[0] ?? '',
+    adr0006ApprovalLinkLabel,
+  )
+  const candidateHead = adrMetadataValues(source, 'Approved candidate head')[0]
+    ?.match(/^`([0-9a-f]{40})`$/u)?.[1] ?? null
+  const approvedCi = adrMetadataValues(source, 'Approved CI')[0]?.match(
+    /^\[quality\]\((https:\/\/github\.com\/Lyon1984\/PoolAI\/actions\/runs\/[1-9][0-9]*)\), \[security\]\((https:\/\/github\.com\/Lyon1984\/PoolAI\/actions\/runs\/[1-9][0-9]*)\)$/u,
+  )
+  return {
+    status,
+    approvalUrl,
+    candidateHead,
+    qualityCiUrl: approvedCi?.[1] ?? null,
+    securityCiUrl: approvedCi?.[2] ?? null,
+  }
+}
+
+const currentAdr0006Evidence = parseAdr0006Evidence(adr0006)
+for (const memoryFailure of validateAdr0006CurrentState(
+  currentState,
+  currentAdr0006Evidence.status,
+  currentAdr0006Evidence.approvalUrl,
+)) {
+  fail(memoryFailure)
+}
+
+const buildAdr0006ApprovalBody = (evidence) => adr0006ApprovalTemplate
+  .replace('<APPROVED_CANDIDATE_SHA>', evidence.candidateHead)
+  .replace('<APPROVED_QUALITY_RUN_URL>', evidence.qualityCiUrl)
+  .replace('<APPROVED_SECURITY_RUN_URL>', evidence.securityCiUrl)
+
+const validateAdr0006CommentPayload = (payload, evidence) => {
+  const payloadFailures = []
+  const commentId = evidence.approvalUrl?.match(/#issuecomment-([1-9][0-9]*)$/u)?.[1]
+  const expectedIssueUrl = 'https://api.github.com/repos/Lyon1984/PoolAI/issues/44'
+  const expectedCommentApiUrl = commentId
+    ? `https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/${commentId}`
+    : null
+  if (payload?.issue_url !== expectedIssueUrl) {
+    payloadFailures.push('ADR 0006 approval comment issue_url must identify Lyon1984/PoolAI Issue #44 exactly.')
+  }
+  if (payload?.html_url !== evidence.approvalUrl) {
+    payloadFailures.push('ADR 0006 approval comment html_url must equal the ADR metadata URL exactly.')
+  }
+  if (payload?.url !== expectedCommentApiUrl) {
+    payloadFailures.push('ADR 0006 approval comment API url must identify the declared comment exactly.')
+  }
+  if (payload?.user?.login !== 'Lyon1984') {
+    payloadFailures.push('ADR 0006 approval comment must be authored by GitHub user Lyon1984.')
+  }
+  if (payload?.body !== buildAdr0006ApprovalBody(evidence)) {
+    payloadFailures.push('ADR 0006 approval comment body must equal the canonical APPROVED template exactly.')
+  }
+  return payloadFailures
+}
+
+const validateAdr0006WorkflowPayload = (payload, expectedName, expectedPath) => {
+  const payloadFailures = []
+  const workflowId = payload?.id
+  if (!Number.isSafeInteger(workflowId) || workflowId <= 0) {
+    payloadFailures.push(`ADR 0006 ${expectedName} workflow must expose one positive integer id.`)
+  }
+  if (payload?.name !== expectedName || payload?.path !== expectedPath) {
+    payloadFailures.push(`ADR 0006 ${expectedName} workflow must have its exact name and repository path.`)
+  }
+  if (payload?.state !== 'active') {
+    payloadFailures.push(`ADR 0006 ${expectedName} workflow must be active.`)
+  }
+  if (payload?.url !== `https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/${workflowId}`
+      || payload?.html_url !== `https://github.com/Lyon1984/PoolAI/blob/main/${expectedPath}`) {
+    payloadFailures.push(`ADR 0006 ${expectedName} workflow API and HTML URLs must identify the exact workflow.`)
+  }
+  return payloadFailures
+}
+
+const validateAdr0006RunPayload = (
+  payload,
+  workflow,
+  expectedName,
+  expectedPath,
+  expectedUrl,
+  candidateHead,
+) => {
+  const payloadFailures = []
+  const runId = expectedUrl?.match(/\/actions\/runs\/([1-9][0-9]*)$/u)?.[1]
+  const expectedApiUrl = runId
+    ? `https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/${runId}`
+    : null
+  if (payload?.name !== expectedName) {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must have workflow run name ${expectedName}.`)
+  }
+  if (payload?.status !== 'completed' || payload?.conclusion !== 'success') {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must be completed successfully.`)
+  }
+  if (payload?.head_sha !== candidateHead) {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must run on the approved candidate head.`)
+  }
+  if (payload?.html_url !== expectedUrl || payload?.url !== expectedApiUrl) {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence URL must match its declared Actions run exactly.`)
+  }
+  if (payload?.repository?.full_name !== 'Lyon1984/PoolAI') {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must belong to repository Lyon1984/PoolAI.`)
+  }
+  if (payload?.head_repository?.full_name !== 'Lyon1984/PoolAI') {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence head repository must be Lyon1984/PoolAI.`)
+  }
+  if (payload?.event !== 'pull_request') {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must come from a pull_request event.`)
+  }
+  if (payload?.path !== expectedPath) {
+    payloadFailures.push(`ADR 0006 ${expectedName} evidence must run the exact ${expectedPath} workflow path.`)
+  }
+  if (payload?.workflow_id !== workflow?.id || payload?.workflow_url !== workflow?.url) {
+    payloadFailures.push(`ADR 0006 ${expectedName} run must bind the exact active workflow id and URL.`)
+  }
+  return payloadFailures
+}
+
+const acceptedEvidenceFixture = parseAdr0006Evidence(adr0006GovernanceFixtures.acceptedAdr)
+const acceptedCommentId = acceptedEvidenceFixture.approvalUrl.match(/#issuecomment-([1-9][0-9]*)$/u)[1]
+const validCommentPayloadFixture = {
+  url: `https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/${acceptedCommentId}`,
+  issue_url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/44',
+  html_url: acceptedEvidenceFixture.approvalUrl,
+  user: { login: 'Lyon1984' },
+  body: buildAdr0006ApprovalBody(acceptedEvidenceFixture),
+}
+const validQualityRunPayloadFixture = {
+  url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/5012345678',
+  html_url: acceptedEvidenceFixture.qualityCiUrl,
+  name: 'quality-gate',
+  status: 'completed',
+  conclusion: 'success',
+  head_sha: acceptedEvidenceFixture.candidateHead,
+  repository: { full_name: 'Lyon1984/PoolAI' },
+  head_repository: { full_name: 'Lyon1984/PoolAI' },
+  event: 'pull_request',
+  path: '.github/workflows/quality-gate.yml',
+  workflow_id: 101,
+  workflow_url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/101',
+}
+const validQualityWorkflowPayloadFixture = {
+  id: 101,
+  name: 'quality-gate',
+  path: '.github/workflows/quality-gate.yml',
+  state: 'active',
+  url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/101',
+  html_url: 'https://github.com/Lyon1984/PoolAI/blob/main/.github/workflows/quality-gate.yml',
+}
+if (validateAdr0006CommentPayload(validCommentPayloadFixture, acceptedEvidenceFixture).length > 0) {
+  fail('ADR 0006 GitHub-evidence self-test rejected a valid Issue #44 approval comment.')
+}
+if (validateAdr0006WorkflowPayload(
+  validQualityWorkflowPayloadFixture,
+  'quality-gate',
+  '.github/workflows/quality-gate.yml',
+).length > 0) {
+  fail('ADR 0006 GitHub-evidence self-test rejected the valid quality-gate workflow identity.')
+}
+if (validateAdr0006RunPayload(
+  validQualityRunPayloadFixture,
+  validQualityWorkflowPayloadFixture,
+  'quality-gate',
+  '.github/workflows/quality-gate.yml',
+  acceptedEvidenceFixture.qualityCiUrl,
+  acceptedEvidenceFixture.candidateHead,
+).length > 0) {
+  fail('ADR 0006 GitHub-evidence self-test rejected a valid quality-gate run.')
+}
+for (const [label, payload] of [
+  ['the wrong Issue', { ...validCommentPayloadFixture, issue_url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/45' }],
+  ['a spoofed comment URL', { ...validCommentPayloadFixture, html_url: `${acceptedEvidenceFixture.approvalUrl}/forged` }],
+  ['a different author', { ...validCommentPayloadFixture, user: { login: 'lyon1984' } }],
+  ['a body suffix', { ...validCommentPayloadFixture, body: `${validCommentPayloadFixture.body}\nAPPROVED` }],
+]) {
+  if (validateAdr0006CommentPayload(payload, acceptedEvidenceFixture).length === 0) {
+    fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
+  }
+}
+
+const runReadOnlyGit = (argumentsList, encoding = 'utf8') => spawnSync(
+  'git',
+  argumentsList,
+  {
+    cwd: root,
+    encoding,
+    maxBuffer: 16 * 1024 * 1024,
+  },
+)
+
+const readGitBlob = (commit, path) => {
+  const result = runReadOnlyGit(['show', `${commit}:${path}`])
+  if (result.status !== 0) {
+    return {
+      source: null,
+      error: (result.stderr || result.stdout || 'no output').trim(),
+    }
+  }
+  return { source: result.stdout, error: null }
+}
+
+const normalizeAdr0006GovernanceMetadata = (source) => {
+  const ignoredLabels = [
+    'Status',
+    'Decider',
+    'Approval evidence',
+    'Approved candidate head',
+    'Approved CI',
+  ]
+  return source.split('\n')
+    .filter((line) => !ignoredLabels.some((label) => line.startsWith(`- ${label}:`)))
+    .join('\n')
+}
+
+const normalizeAdr0006PlanStatus = (source, expectedStatusLine) => {
+  const sectionResult = extractSystemPlanSection62(source)
+  if (sectionResult.failures.length > 0 || !sectionResult.section) {
+    return null
+  }
+  const sectionMatches = sectionResult.section.split(/\r?\n/u)
+    .filter((line) => line === expectedStatusLine)
+  const sourceLines = source.split('\n')
+  const sourceMatchIndexes = sourceLines
+    .map((line, index) => [line.endsWith('\r') ? line.slice(0, -1) : line, index])
+    .filter(([line]) => line === expectedStatusLine)
+    .map(([, index]) => index)
+  if (sectionMatches.length !== 1 || sourceMatchIndexes.length !== 1) {
+    return null
+  }
+  const matchIndex = sourceMatchIndexes[0]
+  const carriageReturn = sourceLines[matchIndex].endsWith('\r') ? '\r' : ''
+  sourceLines[matchIndex] = `- ADR 0006 治理状态：<SIGNING_STATE>${carriageReturn}`
+  return sourceLines.join('\n')
+}
+
+const normalizeAdr0006MemoryStatus = (source, expectedStatusLine) => {
+  const sourceLines = source.split('\n')
+  const sourceMatchIndexes = sourceLines
+    .map((line, index) => [line.endsWith('\r') ? line.slice(0, -1) : line, index])
+    .filter(([line]) => line === expectedStatusLine)
+    .map(([, index]) => index)
+  if (sourceMatchIndexes.length !== 1) {
+    return null
+  }
+  const matchIndex = sourceMatchIndexes[0]
+  const carriageReturn = sourceLines[matchIndex].endsWith('\r') ? '\r' : ''
+  sourceLines[matchIndex] = `- ADR 0006 治理状态：<SIGNING_STATE>${carriageReturn}`
+  return sourceLines.join('\n')
+}
+
+const normalizationPrefixFixture = '- ADR 0006 治理状态：forged outside section 6.2'
+const normalizedPrefixFixture = normalizeAdr0006PlanStatus(
+  adr0006GovernanceFixtures.proposedPlan.replace(
+    'Fixture tail.',
+    `${normalizationPrefixFixture}\nFixture tail.`,
+  ),
+  adr0006ProposedPlanStatus,
+)
+if (!normalizedPrefixFixture?.includes(normalizationPrefixFixture)) {
+  fail('ADR 0006 plan-normalization self-test removed a non-canonical prefix line outside section 6.2.')
+}
+if (normalizeAdr0006PlanStatus(
+  adr0006GovernanceFixtures.proposedPlan.replace(
+    adr0006ProposedPlanStatus,
+    `${adr0006ProposedPlanStatus}\n${adr0006ProposedPlanStatus}`,
+  ),
+  adr0006ProposedPlanStatus,
+) !== null) {
+  fail('ADR 0006 plan-normalization self-test accepted duplicate canonical status lines.')
+}
+if (normalizeAdr0006MemoryStatus(
+  `${adr0006GovernanceFixtures.proposedMemory}\n${adr0006ProposedMemoryStatus}`,
+  adr0006ProposedMemoryStatus,
+) !== null) {
+  fail('ADR 0006 current-state normalization self-test accepted duplicate canonical status lines.')
+}
+
+const validateAdr0006PrSigningTransition = (evidence, signingHead) => {
+  const transitionFailures = []
+  const reject = (message) => transitionFailures.push(message)
+  const candidateHead = evidence.candidateHead
+  const verifiedSigningHead = runReadOnlyGit(['rev-parse', '--verify', `${signingHead}^{commit}`])
+  const verifiedCandidateHead = runReadOnlyGit(['rev-parse', '--verify', `${candidateHead}^{commit}`])
+  if (verifiedSigningHead.status !== 0 || verifiedSigningHead.stdout.trim() !== signingHead) {
+    reject('ADR0006_SIGNING_HEAD must resolve to the exact 40-character PR head commit.')
+  }
+  if (verifiedCandidateHead.status !== 0 || verifiedCandidateHead.stdout.trim() !== candidateHead) {
+    reject('ADR 0006 Approved candidate head must resolve to the exact declared commit.')
+  }
+  if (transitionFailures.length > 0) {
+    return transitionFailures
+  }
+
+  const ancestor = runReadOnlyGit(['merge-base', '--is-ancestor', candidateHead, signingHead])
+  if (ancestor.status !== 0) {
+    reject('ADR 0006 Approved candidate head must be an ancestor of ADR0006_SIGNING_HEAD.')
+    return transitionFailures
+  }
+
+  const changedFilesResult = runReadOnlyGit(
+    ['diff', '--name-only', '--no-renames', '-z', candidateHead, signingHead, '--'],
+    null,
+  )
+  if (changedFilesResult.status !== 0) {
+    reject(`ADR 0006 signing-only diff could not be read: ${changedFilesResult.stderr.toString('utf8').trim()}`)
+    return transitionFailures
+  }
+  const changedFiles = changedFilesResult.stdout.toString('utf8').split('\0').filter(Boolean)
+  const allowedSigningFiles = [adr0006Path, systemPlanPath, currentStatePath]
+  if (duplicates(changedFiles).length > 0 || !sameValues(changedFiles, allowedSigningFiles)) {
+    reject(`ADR 0006 candidate..signing-head must change exactly ${allowedSigningFiles.join(' and ')}.`)
+  }
+
+  const candidateAdr = readGitBlob(candidateHead, adr0006Path)
+  const candidatePlan = readGitBlob(candidateHead, systemPlanPath)
+  const candidateMemory = readGitBlob(candidateHead, currentStatePath)
+  const signedAdr = readGitBlob(signingHead, adr0006Path)
+  const signedPlan = readGitBlob(signingHead, systemPlanPath)
+  const signedMemory = readGitBlob(signingHead, currentStatePath)
+  for (const [label, blob] of [
+    ['candidate ADR', candidateAdr],
+    ['candidate system plan', candidatePlan],
+    ['candidate current state', candidateMemory],
+    ['signed-head ADR', signedAdr],
+    ['signed-head system plan', signedPlan],
+    ['signed-head current state', signedMemory],
+  ]) {
+    if (blob.error) {
+      reject(`ADR 0006 ${label} could not be read from Git: ${blob.error}`)
+    }
+  }
+  if (transitionFailures.length > 0) {
+    return transitionFailures
+  }
+
+  for (const governanceFailure of validateAdr0006Governance(
+    candidateAdr.source,
+    candidatePlan.source,
+  )) {
+    reject(`ADR 0006 candidate governance is invalid: ${governanceFailure}`)
+  }
+  for (const governanceFailure of validateAdr0006Governance(
+    signedAdr.source,
+    signedPlan.source,
+  )) {
+    reject(`ADR 0006 signed-head governance is invalid: ${governanceFailure}`)
+  }
+  if (parseAdr0006Evidence(candidateAdr.source).status !== 'Proposed') {
+    reject('ADR 0006 Approved candidate head must contain the exact Proposed ADR state.')
+  }
+  const signedEvidence = parseAdr0006Evidence(signedAdr.source)
+  if (signedEvidence.status !== 'Accepted') {
+    reject('ADR0006_SIGNING_HEAD must contain the exact Accepted ADR state.')
+  }
+  if (JSON.stringify(signedEvidence) !== JSON.stringify(evidence)) {
+    reject('ADR0006_SIGNING_HEAD governance metadata must equal the checked ADR metadata exactly.')
+  }
+  for (const memoryFailure of validateAdr0006CurrentState(
+    candidateMemory.source,
+    'Proposed',
+  )) {
+    reject(`ADR 0006 candidate current state is invalid: ${memoryFailure}`)
+  }
+  for (const memoryFailure of validateAdr0006CurrentState(
+    signedMemory.source,
+    'Accepted',
+    signedEvidence.approvalUrl,
+  )) {
+    reject(`ADR 0006 signed-head current state is invalid: ${memoryFailure}`)
+  }
+  if (normalizeAdr0006GovernanceMetadata(candidateAdr.source)
+      !== normalizeAdr0006GovernanceMetadata(signedAdr.source)) {
+    reject('ADR 0006 candidate and signing head differ outside the allowed governance metadata.')
+  }
+  const normalizedCandidatePlan = normalizeAdr0006PlanStatus(
+    candidatePlan.source,
+    adr0006ProposedPlanStatus,
+  )
+  const normalizedSignedPlan = normalizeAdr0006PlanStatus(
+    signedPlan.source,
+    signedEvidence.approvalUrl
+      ? adr0006AcceptedPlanStatus(signedEvidence.approvalUrl)
+      : '',
+  )
+  if (!normalizedCandidatePlan
+      || !normalizedSignedPlan
+      || normalizedCandidatePlan !== normalizedSignedPlan) {
+    reject('ADR 0006 candidate and signing head system plans differ outside the normalized status bullet.')
+  }
+  const normalizedCandidateMemory = normalizeAdr0006MemoryStatus(
+    candidateMemory.source,
+    adr0006ProposedMemoryStatus,
+  )
+  const normalizedSignedMemory = normalizeAdr0006MemoryStatus(
+    signedMemory.source,
+    signedEvidence.approvalUrl
+      ? adr0006AcceptedMemoryStatus(signedEvidence.approvalUrl)
+      : '',
+  )
+  if (!normalizedCandidateMemory
+      || !normalizedSignedMemory
+      || normalizedCandidateMemory !== normalizedSignedMemory) {
+    reject('ADR 0006 candidate and signing head current-state files differ outside the canonical status bullet.')
+  }
+  return transitionFailures
+}
+
+const githubApiGet = async (url, token) => {
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'User-Agent': 'PoolAI-ADR0006-evidence-validator',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    redirect: 'error',
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub API returned HTTP ${response.status} for ${url}`)
+  }
+  return response.json()
+}
+
+const validateAdr0006GithubEvidence = async () => {
+  const evidenceFailures = []
+  const reject = (message) => evidenceFailures.push(message)
+  const evidence = parseAdr0006Evidence(adr0006)
+  if (evidence.status === 'Proposed') {
+    return evidenceFailures
+  }
+  if (evidence.status !== 'Accepted') {
+    reject('ADR 0006 GitHub evidence can be checked only for an exact Proposed or Accepted state.')
+    return evidenceFailures
+  }
+
+  const token = process.env.GITHUB_TOKEN
+  const eventName = process.env.ADR0006_EVENT_NAME
+  const signingHead = process.env.ADR0006_SIGNING_HEAD
+  if (typeof token !== 'string' || token.trim().length === 0) {
+    reject('Accepted ADR 0006 GitHub evidence requires a non-empty GITHUB_TOKEN.')
+  }
+  if (!['pull_request', 'push'].includes(eventName)) {
+    reject('Accepted ADR 0006 GitHub evidence requires ADR0006_EVENT_NAME=pull_request or push.')
+  }
+  if (!/^(?!0{40}$)[0-9a-f]{40}$/u.test(signingHead ?? '')) {
+    reject('Accepted ADR 0006 GitHub evidence requires one exact ADR0006_SIGNING_HEAD SHA.')
+  }
+  if (eventName === 'pull_request' && /^(?!0{40}$)[0-9a-f]{40}$/u.test(signingHead ?? '')) {
+    for (const transitionFailure of validateAdr0006PrSigningTransition(evidence, signingHead)) {
+      reject(transitionFailure)
+    }
+  }
+  if (evidenceFailures.length > 0) {
+    return evidenceFailures
+  }
+
+  const commentId = evidence.approvalUrl.match(/#issuecomment-([1-9][0-9]*)$/u)[1]
+  const qualityRunId = evidence.qualityCiUrl.match(/\/actions\/runs\/([1-9][0-9]*)$/u)[1]
+  const securityRunId = evidence.securityCiUrl.match(/\/actions\/runs\/([1-9][0-9]*)$/u)[1]
+  try {
+    const [comment, qualityRun, securityRun, qualityWorkflow, securityWorkflow] = await Promise.all([
+      githubApiGet(
+        `https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/${commentId}`,
+        token,
+      ),
+      githubApiGet(
+        `https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/${qualityRunId}`,
+        token,
+      ),
+      githubApiGet(
+        `https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/${securityRunId}`,
+        token,
+      ),
+      githubApiGet(
+        'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/quality-gate.yml',
+        token,
+      ),
+      githubApiGet(
+        'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/security-evidence.yml',
+        token,
+      ),
+    ])
+    for (const payloadFailure of validateAdr0006CommentPayload(comment, evidence)) {
+      reject(payloadFailure)
+    }
+    for (const payloadFailure of validateAdr0006WorkflowPayload(
+      qualityWorkflow,
+      'quality-gate',
+      '.github/workflows/quality-gate.yml',
+    )) {
+      reject(payloadFailure)
+    }
+    for (const payloadFailure of validateAdr0006WorkflowPayload(
+      securityWorkflow,
+      'security-evidence',
+      '.github/workflows/security-evidence.yml',
+    )) {
+      reject(payloadFailure)
+    }
+    for (const payloadFailure of validateAdr0006RunPayload(
+      qualityRun,
+      qualityWorkflow,
+      'quality-gate',
+      '.github/workflows/quality-gate.yml',
+      evidence.qualityCiUrl,
+      evidence.candidateHead,
+    )) {
+      reject(payloadFailure)
+    }
+    for (const payloadFailure of validateAdr0006RunPayload(
+      securityRun,
+      securityWorkflow,
+      'security-evidence',
+      '.github/workflows/security-evidence.yml',
+      evidence.securityCiUrl,
+      evidence.candidateHead,
+    )) {
+      reject(payloadFailure)
+    }
+  } catch (error) {
+    reject(`Accepted ADR 0006 GitHub API evidence verification failed closed: ${error.message}`)
+  }
+  return evidenceFailures
+}
+for (const [label, payload] of [
+  ['the wrong workflow name', { ...validQualityRunPayloadFixture, name: 'quality' }],
+  ['an in-progress run', { ...validQualityRunPayloadFixture, status: 'in_progress' }],
+  ['a failed run', { ...validQualityRunPayloadFixture, conclusion: 'failure' }],
+  ['a different head', { ...validQualityRunPayloadFixture, head_sha: '1123456789abcdef0123456789abcdef01234567' }],
+  ['a URL suffix', { ...validQualityRunPayloadFixture, html_url: `${acceptedEvidenceFixture.qualityCiUrl}/attempts/1` }],
+  ['a different repository', { ...validQualityRunPayloadFixture, repository: { full_name: 'Lyon1984/Other' } }],
+  ['a different head repository', { ...validQualityRunPayloadFixture, head_repository: { full_name: 'Lyon1984/Other' } }],
+  ['a push event', { ...validQualityRunPayloadFixture, event: 'push' }],
+  ['a different workflow path', { ...validQualityRunPayloadFixture, path: '.github/workflows/other.yml' }],
+  ['a different workflow id', { ...validQualityRunPayloadFixture, workflow_id: 102 }],
+  ['a different workflow URL', { ...validQualityRunPayloadFixture, workflow_url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/102' }],
+]) {
+  if (validateAdr0006RunPayload(
+    payload,
+    validQualityWorkflowPayloadFixture,
+    'quality-gate',
+    '.github/workflows/quality-gate.yml',
+    acceptedEvidenceFixture.qualityCiUrl,
+    acceptedEvidenceFixture.candidateHead,
+  ).length === 0) {
+    fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
+  }
+}
+for (const [label, payload] of [
+  ['a different workflow name', { ...validQualityWorkflowPayloadFixture, name: 'quality' }],
+  ['a different workflow path', { ...validQualityWorkflowPayloadFixture, path: '.github/workflows/other.yml' }],
+  ['a disabled workflow', { ...validQualityWorkflowPayloadFixture, state: 'disabled_manually' }],
+  ['a mismatched workflow id URL', { ...validQualityWorkflowPayloadFixture, id: 102 }],
+]) {
+  if (validateAdr0006WorkflowPayload(
+    payload,
+    'quality-gate',
+    '.github/workflows/quality-gate.yml',
+  ).length === 0) {
+    fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
+  }
 }
 if (xunitRunnerConfig.failSkips !== true) {
   fail('Traceability test evidence requires tests/xunit.runner.json to set failSkips to true.')
@@ -708,6 +2180,12 @@ if (!sameValues(registeredAcceptance, expectedAcceptanceIds) || duplicates(regis
   fail('The authoritative acceptance registry no longer contains AC-001..AC-045 exactly once.')
 }
 
+if (githubEvidence && failures.length === 0) {
+  for (const evidenceFailure of await validateAdr0006GithubEvidence()) {
+    fail(evidenceFailure)
+  }
+}
+
 if (failures.length > 0) {
   console.error(failures.map((failure) => `- ${failure}`).join('\n'))
   process.exitCode = 1
@@ -721,7 +2199,11 @@ if (failures.length > 0) {
     (criterion) => criterion.verification.status,
   )
   console.log(
-    `${compiledTests ? 'Traceability valid with compiled xUnit discovery' : 'Traceability structure valid; compiled xUnit discovery pending'}: `
+    `${compiledTests
+      ? 'Traceability valid with compiled xUnit discovery'
+      : githubEvidence
+        ? `Traceability and ADR 0006 GitHub evidence valid (${parseAdr0006Evidence(adr0006).status})`
+        : 'Traceability structure valid; compiled xUnit discovery pending'}: `
       + `${manifest.decisions.length} decisions `
       + `(${decisionStatuses['implemented-local']?.length ?? 0} implemented-local, `
       + `${decisionStatuses.partial?.length ?? 0} partial, ${decisionStatuses.planned?.length ?? 0} planned); `

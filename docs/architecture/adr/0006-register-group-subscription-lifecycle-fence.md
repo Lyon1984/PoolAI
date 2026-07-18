@@ -11,8 +11,9 @@
 PoolAI normally integrates bounded contexts through `*.Abstractions`, published
 facts, or events. Two database-level exception families were described in the
 architecture baseline: quota admission and the Group activation guard. Repository
-audit found two places where the signed executable database behavior was narrower
-and more complete than that prose:
+audit found two places where the executable database behavior—one in the signed
+baseline and one in the unsigned M1-E4 candidate—was narrower and more complete
+than that prose:
 
 1. the signed quota contract also makes `poolai_quota_settle`,
    `poolai_quota_mark_dispatched`, and `poolai_quota_adjust_usage` lock only the
@@ -199,6 +200,101 @@ would turn three enumerated protocols into an unbounded architecture bypass.
 - While this ADR remains `Proposed`, its candidate registry cannot be used to
   claim M1-E4 architecture sign-off or release readiness.
 
+## Migration and rollback impact
+
+- This ADR does not rewrite signed `0002_quota_functions.sql`; Family A registers
+  its existing route/provider locks as an architecture contract without changing
+  the migration bytes or checksum.
+- Accepting this ADR approves only the three-family architecture registry. It does
+  not approve, execute, or authorize merging unsigned
+  `0007_group_subscription_m1_e4.sql`, its release-manifest entry, or the M1-E4
+  pull request.
+- If migration 0007 is later separately approved and executed, its bytes and
+  checksum become immutable under the normal migration rules. Any correction must
+  use a new forward migration rather than rewriting 0007.
+- Expanding or shrinking the accepted registry, changing a function/table/field,
+  or changing a lock direction requires a new ADR and an atomic contract/test
+  update. It cannot be rolled back by restoring the former two-family prose.
+
+## Acceptance evidence gate
+
+Before this ADR may change to `Accepted`, all governance metadata and external
+facts below must pass the fail-closed repository validator.
+
+- The Proposed Decider remains exactly
+  `PoolAI architecture owner (\`@Lyon1984\`) — pending explicit approval`.
+  The Accepted Decider is exactly
+  `PoolAI architecture owner (\`@Lyon1984\`)`; approximate, duplicated, or
+  additional Decider values are invalid.
+- Accepted metadata contains exactly one permanent Issue #44 comment link, one
+  non-zero lowercase 40-character approved candidate SHA, and distinct
+  `quality`/`security` Actions run links. The complete system plan may mention
+  ADR 0006 on exactly two lines: the canonical section 6.2 scope bullet and one
+  standalone normalized status bullet. No other section may assert a status or
+  approval. When Accepted, the status bullet links the same comment target. The
+  Proposed bullet is exactly
+  `- ADR 0006 治理状态：**Proposed**（待 \`@Lyon1984\` 明确批准；不是 M1-E4 architecture sign-off 或 release-ready 证据）。`;
+  the Accepted form replaces it with exactly
+  `- ADR 0006 治理状态：**Accepted**（[Issue #44 永久批准评论](COMMENT_URL)）。`,
+  where `COMMENT_URL` is the same exact target as the ADR metadata link.
+  `docs/project-memory/current-state.md` contains the same unique canonical
+  Proposed/Accepted status bullet and uses the same `COMMENT_URL` when Accepted;
+  its other ADR 0006 references remain status-neutral.
+- The comment is read through the GitHub API and must have the exact Issue #44
+  `issue_url`, exact metadata `html_url`, and author login `Lyon1984`. Its body
+  must equal the canonical UTF-8 template below after replacing each placeholder
+  exactly once; no leading/trailing text or alternate Markdown label is allowed.
+- Both Actions runs and both workflow definitions are read through the GitHub
+  API. The workflows must be active and bind their exact IDs, names, and paths
+  `.github/workflows/quality-gate.yml` and
+  `.github/workflows/security-evidence.yml`. Each run must be a `pull_request`
+  event, belong to `Lyon1984/PoolAI`, have `head_repository.full_name` equal to
+  `Lyon1984/PoolAI`, bind the corresponding workflow ID/URL/path, have the exact
+  name `quality-gate` or `security-evidence`, be `completed` with `success`, use
+  the approved candidate as `head_sha`, and have the exact metadata `html_url`.
+- On a pull request, the approved candidate must be an ancestor of
+  `ADR0006_SIGNING_HEAD`. The candidate-to-signing-head diff contains exactly
+  this ADR, `docs/系统重构方案-v1.0.md`, and
+  `docs/project-memory/current-state.md`; `open-items.md` is not allowed. The
+  candidate versions are exactly Proposed. Normalization replaces only each
+  already-validated unique canonical system-plan/current-state status line with
+  one fixed placeholder; it does not filter arbitrary matching prefixes. After
+  ignoring only this ADR's governance metadata and those two status placeholders,
+  all three files must be byte-identical to the signing head. This makes approval
+  a governance-only follow-up to the tested candidate.
+- The quality workflow invokes GitHub evidence through one exact, unconditional
+  step immediately after Node setup and before dependency installation. The step
+  cannot add `if`, `continue-on-error`, a custom shell, duplicate keys, or trailing
+  properties; the verify job cannot add a job-level condition/continue-on-error,
+  and workflow/job `defaults` cannot replace the fail-closed shell behavior.
+- A `push` to `main` may skip ancestry and signing-only-diff checks so squash
+  merges remain valid, but it never skips GitHub comment, author, body, candidate,
+  workflow-name, run-result, run-head, URL, or repository verification.
+
+The canonical comment body is the text between these markers, without an extra
+leading or trailing newline:
+
+<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_BEGIN -->
+```text
+APPROVED: ADR 0006 — Freeze the cross-context database read/lock allowlist
+
+I, @Lyon1984, approve exactly these three exception families:
+- Family A: GroupQuota canonical admission and route-identity validation, including only the registered Account/Channel id + provider locks on settle, mark-dispatched, and adjust-usage.
+- Family B: the registered Group activation guard.
+- Family C: the registered bidirectional Group–Subscription lifecycle fence.
+
+I approve only the stated cross-context SELECT/row locks, the global Quota → Group → Template/Subscription lock order, post-wait PostgreSQL clock checks, and short transactions.
+
+Excluded: every additional function, table, field, consumer, or lock direction; cross-context DML or trigger-side mutation; dynamic or generic SQL; shared DbContext, Repository, or Unit of Work; and HTTP, SMTP, Redis, SSE, backoff, or other external waits. This comment does not approve database migration 0007, its manifest/checksum or remote execution, PR merge, Issue closure, M1-E4 completion, RC/GA, deployment, or production release.
+
+Approved candidate head: `<APPROVED_CANDIDATE_SHA>`
+Approved quality-gate run: <APPROVED_QUALITY_RUN_URL>
+Approved security-evidence run: <APPROVED_SECURITY_RUN_URL>
+```
+<!-- ADR0006_APPROVAL_COMMENT_TEMPLATE_END -->
+
+A URL-shaped value without this complete readback is not approval evidence.
+
 ## Security impact
 
 - The allowlist contains no password, TOTP secret, API-key digest, credential
@@ -217,6 +313,9 @@ This proposal is complete only when these assets agree:
 - `docs/architecture/design-pattern-baseline.md`;
 - `docs/开发执行规格-v1.0.md`;
 - `docs/database/README.md`;
+- `docs/系统重构方案-v1.0.md`;
+- `eng/policies/validate-traceability.mjs` to keep the system-plan summary linked
+  to all three registered families;
 - Architecture Tests for the three exact families, functions, tables, fields,
   read-only boundary, lock order, post-wait database clock, and dynamic-SQL ban;
 - PostgreSQL integration tests for reserve/revoke order, provider identity,
