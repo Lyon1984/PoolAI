@@ -356,6 +356,20 @@ const withSystemPlanFixture = (sectionBody) => [
   '### 6.3 Fixture',
   'Fixture tail.',
 ].join('\n')
+const withAdr0006MemoryFixtureStatus = (source, statusLine) => {
+  const sourceLines = source.split('\n')
+  const statusLineIndexes = sourceLines
+    .map((line, index) => [line.endsWith('\r') ? line.slice(0, -1) : line, index])
+    .filter(([line]) => line.startsWith(adr0006MemoryStatusPrefix))
+    .map(([, index]) => index)
+  if (statusLineIndexes.length !== 1) {
+    return null
+  }
+  const statusLineIndex = statusLineIndexes[0]
+  const carriageReturn = sourceLines[statusLineIndex].endsWith('\r') ? '\r' : ''
+  sourceLines[statusLineIndex] = `${statusLine}${carriageReturn}`
+  return sourceLines.join('\n')
+}
 const adr0006GovernanceFixtures = {
   acceptedUrl: 'https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5012345678',
   candidateHead: '0123456789abcdef0123456789abcdef01234567',
@@ -383,11 +397,60 @@ adr0006GovernanceFixtures.acceptedPlan =
     adr0006PlanScopeBullet,
     adr0006AcceptedPlanStatus(adr0006GovernanceFixtures.acceptedUrl),
   ].join('\n'))
-adr0006GovernanceFixtures.proposedMemory = currentState
-adr0006GovernanceFixtures.acceptedMemory = currentState.replace(
+adr0006GovernanceFixtures.proposedMemory = withAdr0006MemoryFixtureStatus(
+  currentState,
   adr0006ProposedMemoryStatus,
+) ?? ''
+adr0006GovernanceFixtures.acceptedMemory = withAdr0006MemoryFixtureStatus(
+  currentState,
   adr0006AcceptedMemoryStatus(adr0006GovernanceFixtures.acceptedUrl),
-)
+) ?? ''
+
+for (const fixtureSeed of [
+  adr0006GovernanceFixtures.proposedMemory,
+  adr0006GovernanceFixtures.acceptedMemory,
+]) {
+  if (withAdr0006MemoryFixtureStatus(fixtureSeed, adr0006ProposedMemoryStatus)
+        !== adr0006GovernanceFixtures.proposedMemory
+      || withAdr0006MemoryFixtureStatus(
+        fixtureSeed,
+        adr0006AcceptedMemoryStatus(adr0006GovernanceFixtures.acceptedUrl),
+      ) !== adr0006GovernanceFixtures.acceptedMemory) {
+    fail('ADR 0006 current-state self-test fixtures must be independent of the repository governance state.')
+  }
+}
+for (const [label, fixtureSeed] of [
+  [
+    'a missing status slot',
+    adr0006GovernanceFixtures.proposedMemory.replace(adr0006ProposedMemoryStatus, ''),
+  ],
+  [
+    'a duplicate status slot',
+    `${adr0006GovernanceFixtures.proposedMemory}\n${adr0006MemoryStatusPrefix}forged`,
+  ],
+]) {
+  if (withAdr0006MemoryFixtureStatus(fixtureSeed, adr0006ProposedMemoryStatus) !== null) {
+    fail(`ADR 0006 current-state fixture self-test accepted ${label}.`)
+  }
+}
+
+const adr0006ReviewedMemoryFixtureLines = adr0006GovernanceFixtures.proposedMemory.split('\n')
+const adr0006ReviewedMemoryReferenceIndexes = adr0006ReviewedMemoryFixtureLines
+  .map((line, index) => [line.endsWith('\r') ? line.slice(0, -1) : line, index])
+  .filter(([line]) => hasAdr0006Reference(line) && !line.startsWith(adr0006MemoryStatusPrefix))
+  .map(([, index]) => index)
+if (adr0006ReviewedMemoryReferenceIndexes.length !== 4) {
+  fail('ADR 0006 current-state digest-drift self-test requires exactly four reviewed non-status reference lines.')
+}
+for (const referenceIndex of adr0006ReviewedMemoryReferenceIndexes) {
+  const driftedLines = [...adr0006ReviewedMemoryFixtureLines]
+  const carriageReturn = driftedLines[referenceIndex].endsWith('\r') ? '\r' : ''
+  const reviewedLine = carriageReturn ? driftedLines[referenceIndex].slice(0, -1) : driftedLines[referenceIndex]
+  driftedLines[referenceIndex] = `${reviewedLine} [digest-drift]${carriageReturn}`
+  if (validateAdr0006CurrentState(driftedLines.join('\n'), 'Proposed').length === 0) {
+    fail(`ADR 0006 current-state digest-drift self-test accepted reviewed reference ${referenceIndex}.`)
+  }
+}
 
 for (const [label, adrSource, planSection] of [
   ['Proposed', adr0006GovernanceFixtures.proposedAdr, adr0006GovernanceFixtures.proposedPlan],
