@@ -1,10 +1,12 @@
 # ADR 0006: Freeze the cross-context database read/lock allowlist
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-17
-- Decider: PoolAI architecture owner (`@Lyon1984`) — pending explicit approval
+- Decider: PoolAI architecture owner (`@Lyon1984`)
 - Relates to: M1-E4 Issue #13 and sign-off control Issue #44
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue #44 approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5011030600)
+- Approved candidate head: `2ef8368f3a8df8286a64d7e4bb90286e3859d71a`
+- Approved CI: [quality](https://github.com/Lyon1984/PoolAI/actions/runs/29641793884), [security](https://github.com/Lyon1984/PoolAI/actions/runs/29641793882)
 
 ## Context
 
