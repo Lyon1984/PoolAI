@@ -66,9 +66,7 @@ const sorted = (values) => [...values].sort()
 const sameValues = (left, right) => JSON.stringify(sorted(left)) === JSON.stringify(sorted(right))
 const duplicates = (values) => [...new Set(values.filter((value, index) => values.indexOf(value) !== index))]
 const semanticMarkdownText = (source) => source
-  .replaceAll(/<!--[\s\S]*?-->/gu, '')
   .replaceAll(/\]\([^\r\n)]*\)/gu, ']')
-  .replaceAll(/<\/?[A-Za-z][^>\r\n]*>/gu, '')
   .replaceAll(/&#(?:x([0-9a-f]+)|([0-9]+));/giu, (_match, hex, decimal) => {
     const value = Number.parseInt(hex ?? decimal, hex ? 16 : 10)
     return Number.isSafeInteger(value) && value >= 0 && value <= 0x10ffff
@@ -80,6 +78,7 @@ const semanticMarkdownText = (source) => source
   .replaceAll(/[\*_`~\[\]]/gu, '')
   .normalize('NFKC')
   .replaceAll(/[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, '')
+const forbiddenAdr0006GovernanceHtmlPattern = /<(?:\/?[A-Za-z]|[!?])/u
 const adr0006ReferenceSource =
   String.raw`(?<![\p{L}\p{N}])ADR[^\p{L}\p{N}\r\n]{0,16}0006(?![\p{L}\p{N}])`
 const adr0006ReferencePattern = new RegExp(adr0006ReferenceSource, 'iu')
@@ -200,8 +199,8 @@ const extractSystemPlanSection62 = (source) => {
 const validateAdr0006Governance = (adrSource, planSource) => {
   const governanceFailures = []
   const reject = (message) => governanceFailures.push(message)
-  if (planSource.includes('<!--')) {
-    reject('The system plan must not contain HTML comments because they can join hidden ADR status text across lines.')
+  if (forbiddenAdr0006GovernanceHtmlPattern.test(planSource)) {
+    reject('The system plan must not contain HTML comments or tags because they can hide ADR status text.')
   }
   const statusValues = adrMetadataValues(adrSource, 'Status')
   const deciderValues = adrMetadataValues(adrSource, 'Decider')
@@ -337,14 +336,14 @@ const validateAdr0006CurrentState = (source, status, approvalUrl = null) => {
     : status === 'Accepted' && approvalUrl
       ? adr0006AcceptedMemoryStatus(approvalUrl)
       : null
-  if (source.includes('<!--')
+  if (forbiddenAdr0006GovernanceHtmlPattern.test(source)
       || statusLines.length !== 1
       || !expectedStatusLine
       || statusLines[0] !== expectedStatusLine
       || countAdr0006References(source) !== 5
       || referenceLines.length !== 5
       || !sameValues(nonStatusReferenceDigests, adr0006AllowedCurrentStateReferenceDigests)) {
-    memoryFailures.push('Project memory must contain one canonical ADR 0006 status bullet plus only the four reviewed non-status reference lines, with no HTML comments or hidden cross-line reference.')
+    memoryFailures.push('Project memory must contain one canonical ADR 0006 status bullet plus only the four reviewed non-status reference lines, with no HTML markup or hidden cross-line reference.')
   }
   return memoryFailures
 }
@@ -434,6 +433,24 @@ for (const [label, source, status, approvalUrl] of [
   [
     'an HTML-emphasized out-of-band approval claim',
     `${adr0006GovernanceFixtures.proposedMemory}\nADR <strong>0006</strong> 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'an incomplete HTML-tag approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR <strong 0006 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a processing-instruction HTML approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR <?hidden 0006 已批准。`,
+    'Proposed',
+    null,
+  ],
+  [
+    'a CDATA HTML approval claim',
+    `${adr0006GovernanceFixtures.proposedMemory}\nADR <![CDATA[0006 已批准。`,
     'Proposed',
     null,
   ],
@@ -667,6 +684,11 @@ const invalidAdr0006GovernanceFixtures = [
     'a Proposed plan with an HTML-emphasized approval bypass sentence',
     adr0006GovernanceFixtures.proposedAdr,
     `${adr0006GovernanceFixtures.proposedPlan}\nADR <strong>0006</strong> 已批准。`,
+  ],
+  [
+    'a Proposed plan with an incomplete HTML-tag approval bypass sentence',
+    adr0006GovernanceFixtures.proposedAdr,
+    `${adr0006GovernanceFixtures.proposedPlan}\nADR <strong 0006 已批准。`,
   ],
   [
     'a Proposed plan with an unseparated approval bypass sentence',
@@ -1139,6 +1161,7 @@ if (validateAdr0006RunPayload(
 }
 for (const [label, payload] of [
   ['the wrong Issue', { ...validCommentPayloadFixture, issue_url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/45' }],
+  ['a different comment API URL', { ...validCommentPayloadFixture, url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/5012345679' }],
   ['a spoofed comment URL', { ...validCommentPayloadFixture, html_url: `${acceptedEvidenceFixture.approvalUrl}/forged` }],
   ['a different author', { ...validCommentPayloadFixture, user: { login: 'lyon1984' } }],
   ['a body suffix', { ...validCommentPayloadFixture, body: `${validCommentPayloadFixture.body}\nAPPROVED` }],
@@ -1375,7 +1398,56 @@ const validateAdr0006PrSigningTransition = (evidence, signingHead) => {
   return transitionFailures
 }
 
-const githubApiGet = async (url, token) => {
+const adr0006GithubApiResources = Object.freeze({
+  issueComments: Object.freeze({
+    url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/44/comments?per_page=100',
+    collectionProperty: null,
+  }),
+  qualityRuns: Object.freeze({
+    url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/quality-gate.yml/runs?event=pull_request&per_page=100',
+    collectionProperty: 'workflow_runs',
+  }),
+  securityRuns: Object.freeze({
+    url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/security-evidence.yml/runs?event=pull_request&per_page=100',
+    collectionProperty: 'workflow_runs',
+  }),
+  qualityWorkflow: Object.freeze({
+    url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/quality-gate.yml',
+  }),
+  securityWorkflow: Object.freeze({
+    url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/security-evidence.yml',
+  }),
+})
+const adr0006GithubApiPageSize = 100
+const adr0006GithubApiMaxPages = 100
+
+const selectUniqueGithubEvidencePayload = (collection, expectedHtmlUrl, label) => {
+  if (!Array.isArray(collection)) {
+    throw new Error(`${label} GitHub API collection is not an array.`)
+  }
+  const matches = collection.filter((payload) => payload?.html_url === expectedHtmlUrl)
+  if (matches.length !== 1) {
+    throw new Error(`${label} GitHub API collection must contain exactly one declared evidence URL.`)
+  }
+  return matches[0]
+}
+
+const registeredAdr0006GithubApiResource = (resourceName) => {
+  const resource = adr0006GithubApiResources[resourceName]
+  if (!resource || typeof resource.url !== 'string') {
+    throw new Error('ADR 0006 GitHub API request used an unregistered fixed resource.')
+  }
+  return resource
+}
+
+const githubApiRequest = async (resourceName, token, page = null) => {
+  const resource = registeredAdr0006GithubApiResource(resourceName)
+  const isCollection = Object.hasOwn(resource, 'collectionProperty')
+  if ((isCollection && (!Number.isSafeInteger(page) || page < 1 || page > adr0006GithubApiMaxPages))
+      || (!isCollection && page !== null)) {
+    throw new Error('ADR 0006 GitHub API request used an invalid internal page number.')
+  }
+  const url = isCollection ? `${resource.url}&page=${page}` : resource.url
   const response = await fetch(url, {
     headers: {
       Accept: 'application/vnd.github+json',
@@ -1390,6 +1462,141 @@ const githubApiGet = async (url, token) => {
     throw new Error(`GitHub API returned HTTP ${response.status} for ${url}`)
   }
   return response.json()
+}
+
+const collectRegisteredGithubApiCollection = async (resourceName, loadPage) => {
+  const resource = registeredAdr0006GithubApiResource(resourceName)
+  if (!Object.hasOwn(resource, 'collectionProperty')) {
+    throw new Error(`${resourceName} is not a registered GitHub API collection.`)
+  }
+  const collected = []
+  for (let page = 1; page <= adr0006GithubApiMaxPages; page += 1) {
+    const payload = await loadPage(page)
+    const pageItems = resource.collectionProperty === null
+      ? payload
+      : payload?.[resource.collectionProperty]
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`${resourceName} GitHub API page is not the registered collection shape.`)
+    }
+    collected.push(...pageItems)
+    if (pageItems.length < adr0006GithubApiPageSize) {
+      return collected
+    }
+  }
+  throw new Error(`${resourceName} GitHub API collection exceeded the fail-closed page limit.`)
+}
+
+const githubApiGet = async (resourceName, token) => {
+  const resource = registeredAdr0006GithubApiResource(resourceName)
+  return Object.hasOwn(resource, 'collectionProperty')
+    ? collectRegisteredGithubApiCollection(
+      resourceName,
+      (page) => githubApiRequest(resourceName, token, page),
+    )
+    : githubApiRequest(resourceName, token)
+}
+
+const unrelatedGithubPayloadFixture = { html_url: 'https://github.com/Lyon1984/PoolAI/other' }
+if (selectUniqueGithubEvidencePayload(
+  [unrelatedGithubPayloadFixture, validCommentPayloadFixture],
+  acceptedEvidenceFixture.approvalUrl,
+  'self-test comment',
+) !== validCommentPayloadFixture) {
+  fail('ADR 0006 GitHub-evidence self-test failed to select the one exact declared payload URL.')
+}
+for (const [label, collection] of [
+  ['a non-array API collection', { workflow_runs: [] }],
+  ['a missing declared payload', [unrelatedGithubPayloadFixture]],
+  ['duplicate declared payloads', [validCommentPayloadFixture, { ...validCommentPayloadFixture }]],
+]) {
+  let rejected = false
+  try {
+    selectUniqueGithubEvidencePayload(
+      collection,
+      acceptedEvidenceFixture.approvalUrl,
+      'self-test comment',
+    )
+  } catch {
+    rejected = true
+  }
+  if (!rejected) {
+    fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
+  }
+}
+
+const fullUnrelatedRunPageFixture = Array.from(
+  { length: adr0006GithubApiPageSize },
+  (_value, index) => ({ html_url: `https://github.com/Lyon1984/PoolAI/actions/runs/${6000000000 + index}` }),
+)
+const twoPageRunCollectionFixture = await collectRegisteredGithubApiCollection(
+  'qualityRuns',
+  async (page) => ({
+    workflow_runs: page === 1 ? fullUnrelatedRunPageFixture : [validQualityRunPayloadFixture],
+  }),
+)
+if (selectUniqueGithubEvidencePayload(
+  twoPageRunCollectionFixture,
+  acceptedEvidenceFixture.qualityCiUrl,
+  'self-test paginated run',
+) !== validQualityRunPayloadFixture) {
+  fail('ADR 0006 GitHub-evidence self-test failed to select evidence from the second API page.')
+}
+
+const expectGithubCollectionRejection = async (label, action) => {
+  let rejected = false
+  try {
+    await action()
+  } catch {
+    rejected = true
+  }
+  if (!rejected) {
+    fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
+  }
+}
+
+await expectGithubCollectionRejection('a comments page with a non-array payload', () =>
+  collectRegisteredGithubApiCollection('issueComments', async () => ({ comments: [] })))
+await expectGithubCollectionRejection('a runs page missing workflow_runs', () =>
+  collectRegisteredGithubApiCollection('qualityRuns', async () => ({})))
+await expectGithubCollectionRejection('a runs page with a non-array workflow_runs value', () =>
+  collectRegisteredGithubApiCollection('qualityRuns', async () => ({ workflow_runs: {} })))
+await expectGithubCollectionRejection('a full paginated collection without the declared run', async () => {
+  const collection = await collectRegisteredGithubApiCollection(
+    'qualityRuns',
+    async (page) => ({
+      workflow_runs: page === 1
+        ? fullUnrelatedRunPageFixture
+        : [unrelatedGithubPayloadFixture],
+    }),
+  )
+  selectUniqueGithubEvidencePayload(
+    collection,
+    acceptedEvidenceFixture.qualityCiUrl,
+    'self-test missing paginated run',
+  )
+})
+await expectGithubCollectionRejection('the same declared run duplicated across API pages', async () => {
+  const firstPage = [validQualityRunPayloadFixture, ...fullUnrelatedRunPageFixture.slice(1)]
+  const collection = await collectRegisteredGithubApiCollection(
+    'qualityRuns',
+    async (page) => ({
+      workflow_runs: page === 1 ? firstPage : [validQualityRunPayloadFixture],
+    }),
+  )
+  selectUniqueGithubEvidencePayload(
+    collection,
+    acceptedEvidenceFixture.qualityCiUrl,
+    'self-test duplicate paginated run',
+  )
+})
+let maxPageProbeCalls = 0
+await expectGithubCollectionRejection('a collection that fills the fail-closed page limit', () =>
+  collectRegisteredGithubApiCollection('qualityRuns', async () => {
+    maxPageProbeCalls += 1
+    return { workflow_runs: fullUnrelatedRunPageFixture }
+  }))
+if (maxPageProbeCalls !== adr0006GithubApiMaxPages) {
+  fail('ADR 0006 GitHub-evidence page-limit self-test did not exhaust exactly the registered maximum pages.')
 }
 
 const validateAdr0006GithubEvidence = async () => {
@@ -1425,32 +1632,29 @@ const validateAdr0006GithubEvidence = async () => {
     return evidenceFailures
   }
 
-  const commentId = evidence.approvalUrl.match(/#issuecomment-([1-9][0-9]*)$/u)[1]
-  const qualityRunId = evidence.qualityCiUrl.match(/\/actions\/runs\/([1-9][0-9]*)$/u)[1]
-  const securityRunId = evidence.securityCiUrl.match(/\/actions\/runs\/([1-9][0-9]*)$/u)[1]
   try {
-    const [comment, qualityRun, securityRun, qualityWorkflow, securityWorkflow] = await Promise.all([
-      githubApiGet(
-        `https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/${commentId}`,
-        token,
-      ),
-      githubApiGet(
-        `https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/${qualityRunId}`,
-        token,
-      ),
-      githubApiGet(
-        `https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/${securityRunId}`,
-        token,
-      ),
-      githubApiGet(
-        'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/quality-gate.yml',
-        token,
-      ),
-      githubApiGet(
-        'https://api.github.com/repos/Lyon1984/PoolAI/actions/workflows/security-evidence.yml',
-        token,
-      ),
+    const [comments, qualityRuns, securityRuns, qualityWorkflow, securityWorkflow] = await Promise.all([
+      githubApiGet('issueComments', token),
+      githubApiGet('qualityRuns', token),
+      githubApiGet('securityRuns', token),
+      githubApiGet('qualityWorkflow', token),
+      githubApiGet('securityWorkflow', token),
     ])
+    const comment = selectUniqueGithubEvidencePayload(
+      comments,
+      evidence.approvalUrl,
+      'ADR 0006 approval comment',
+    )
+    const qualityRun = selectUniqueGithubEvidencePayload(
+      qualityRuns,
+      evidence.qualityCiUrl,
+      'ADR 0006 quality-gate run',
+    )
+    const securityRun = selectUniqueGithubEvidencePayload(
+      securityRuns,
+      evidence.securityCiUrl,
+      'ADR 0006 security-evidence run',
+    )
     for (const payloadFailure of validateAdr0006CommentPayload(comment, evidence)) {
       reject(payloadFailure)
     }
