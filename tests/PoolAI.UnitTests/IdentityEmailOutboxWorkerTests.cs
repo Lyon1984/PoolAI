@@ -377,6 +377,7 @@ public sealed class IdentityEmailOutboxWorkerTests
             CreateOptions(
                 smtpHost: "localhost",
                 smtpPort: port,
+                smtpTimeout: TimeSpan.FromSeconds(5),
                 smtpSecurity: SmtpSecurityMode.ImplicitTls),
             (_, presented, _, _) => presented is not null
                 && string.Equals(
