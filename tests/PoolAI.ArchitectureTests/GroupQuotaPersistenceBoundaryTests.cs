@@ -38,6 +38,36 @@ public sealed class GroupQuotaPersistenceBoundaryTests
         Assert.Contains("v_group.version <> p_expected_version", groupMutation, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FutureQuotaManagementEntryPointsPreserveQuotaBeforeGroupLockOrder()
+    {
+        // Governing contracts: ADR 0006 and docs/database/README.md section 10.
+        // Archive already takes Quota -> Group, so future reset/adjust wrappers
+        // must keep the same order instead of recreating the retired inversion.
+        string databaseContract = File.ReadAllText(Path.Combine(
+            RepositoryRoot.Find(),
+            "docs",
+            "database",
+            "README.md"));
+        string migrationSevenContract = Slice(
+            databaseContract,
+            "0007 撤销 0003 曾授予",
+            "## 11. 最低数据库验收");
+
+        Assert.Contains(
+            "保持 Quota → Group 锁序",
+            migrationSevenContract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "保持 Group→Quota 锁序",
+            migrationSevenContract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "保持 Group → Quota 锁序",
+            migrationSevenContract,
+            StringComparison.Ordinal);
+    }
+
     private static string Slice(string source, string startMarker, string endMarker)
     {
         int start = source.IndexOf(startMarker, StringComparison.Ordinal);

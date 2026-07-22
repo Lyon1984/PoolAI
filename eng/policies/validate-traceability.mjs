@@ -25,6 +25,7 @@ const systemPlan = readFileSync(resolve(root, 'docs/系统重构方案-v1.0.md')
 const adr0006Path = 'docs/architecture/adr/0006-register-group-subscription-lifecycle-fence.md'
 const systemPlanPath = 'docs/系统重构方案-v1.0.md'
 const currentStatePath = 'docs/project-memory/current-state.md'
+const adr0006ProtectedSigningFiles = [adr0006Path, systemPlanPath, currentStatePath]
 const adr0006 = readFileSync(
   resolve(root, adr0006Path),
   'utf8',
@@ -148,6 +149,31 @@ const adr0006ApprovalTemplateBlock = [
   '```',
   adr0006ApprovalTemplateEnd,
 ].join('\n')
+const adr0006SigningLifecycleApprovalUrl =
+  'https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5046436932'
+const adr0006SigningLifecycleApprovalBody = [
+  '## ADR 0006 签署门禁生命周期解释：APPROVED',
+  '',
+  'ADR 0006 SIGNING-GATE LIFECYCLE CLARIFICATION: APPROVED',
+  'Signer: @Lyon1984',
+  'Approval control: Issue #44',
+  'Related ADR approval: https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5011030600',
+  'Reviewed Draft PR: #57',
+  'Approved candidate: `2ef8368f3a8df8286a64d7e4bb90286e3859d71a`',
+  'Historical signing transition: `bbfa45b6a1b3c75c4f2d988215a1511f8261838b`',
+  '',
+  'APPROVED：确认 ADR 0006 中“candidate-to-signing-head 只修改三份治理文件”的规则约束唯一的 Proposed → Accepted 签署 transition，不将 PR #57 永久冻结在该 transition 提交。',
+  '',
+  '1. 当前 PR 的 candidate 至事件 head 历史必须包含且仅包含一个非 merge 的 Proposed → Accepted transition；该 transition 必须继续满足 ADR 0006 原有三文件精确差异、metadata、normalization、评论及候选 CI 证据要求。',
+  '2. transition 之后允许提交非治理开发文件，但 ADR 0006、系统重构方案和 current-state 三份签署文件必须在每个后继提交、PR event head 及 GitHub synthetic checkout 中保持相同的 `100644 blob` 身份。',
+  '3. 未来以 Accepted ADR 为基线的 PR，ADR 文件必须在 base、event head 和 checkout 之间保持字节及 mode 完全一致；系统方案和 current-state 必须继续通过 canonical Accepted 状态与永久评论引用校验，但其他合法内容可以演进。',
+  '4. Accepted → Proposed 回滚、零个或多个签署 transition、merge transition、缺失或畸形状态、签署后治理文件漂移均必须 fail closed。',
+  '5. `push` 到 main 仍可按 ADR 0006 原规则跳过首次签署 ancestry 检查以支持 squash merge，但不得跳过 GitHub 评论、作者、正文、候选、CI、workflow、run head、URL 或仓库身份验证。',
+  '',
+  '本解释不修改或扩大 ADR 0006 的三类跨 Context allowlist，不批准 migration 0007、manifest/checksum、远程数据库执行、PR ready/merge、Issue 关闭、M1-E4/M1 完成、部署、RC、GA 或生产发布。',
+  '',
+  '执行说明：本评论由 Codex 在取得 @Lyon1984 对上述完整文本的明确确认后，通过其已认证的 GitHub 账号代为发布。',
+].join('\n') + '\n'
 
 const adrMetadataValues = (source, label) => {
   const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
@@ -883,7 +909,7 @@ const expectedQualityGatePermissions = new Map([
   ['issues', 'read'],
 ])
 const expectedQualityGateWorkflowSha256 =
-  '7d4fad5bcc221a858d15ea11a08e228594a4a4ca9dbc0d8360ac4bae95d90e50'
+  'b904848e7218befde8a08a517a76c05151b87d3f475bdd8df5c68de709604988'
 const expectedNodeSetupStep = [
   '      - name: Set up Node.js',
   '        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0',
@@ -896,6 +922,8 @@ const expectedGithubEvidenceStep = [
   '        env:',
   '          GITHUB_TOKEN: ${{ github.token }}',
   '          ADR0006_EVENT_NAME: ${{ github.event_name }}',
+  "          ADR0006_BASE_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}",
+  '          ADR0006_CHECKOUT_HEAD: ${{ github.sha }}',
   "          ADR0006_SIGNING_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
   '        run: node eng/policies/validate-traceability.mjs --github-evidence',
 ].join('\n')
@@ -1109,6 +1137,31 @@ const validateAdr0006CommentPayload = (payload, evidence) => {
   return payloadFailures
 }
 
+// ADR 0006's original signing-head rule still governs the historical
+// Proposed-to-Accepted transition. This independently approved comment records
+// how later event/checkout heads preserve that transition without freezing
+// unrelated development files forever.
+const validateAdr0006SigningLifecycleCommentPayload = (payload) => {
+  const payloadFailures = []
+  const expectedIssueUrl = 'https://api.github.com/repos/Lyon1984/PoolAI/issues/44'
+  const expectedCommentApiUrl =
+    'https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/5046436932'
+  if (payload?.issue_url !== expectedIssueUrl) {
+    payloadFailures.push('ADR 0006 signing-lifecycle comment must belong to Issue #44 exactly.')
+  }
+  if (payload?.html_url !== adr0006SigningLifecycleApprovalUrl
+      || payload?.url !== expectedCommentApiUrl) {
+    payloadFailures.push('ADR 0006 signing-lifecycle comment must match its permanent URL exactly.')
+  }
+  if (payload?.user?.login !== 'Lyon1984') {
+    payloadFailures.push('ADR 0006 signing-lifecycle comment must be authored by GitHub user Lyon1984.')
+  }
+  if (payload?.body !== adr0006SigningLifecycleApprovalBody) {
+    payloadFailures.push('ADR 0006 signing-lifecycle comment body must equal the approved text exactly.')
+  }
+  return payloadFailures
+}
+
 const validateAdr0006WorkflowPayload = (payload, expectedName, expectedPath) => {
   const payloadFailures = []
   const workflowId = payload?.id
@@ -1180,6 +1233,13 @@ const validCommentPayloadFixture = {
   user: { login: 'Lyon1984' },
   body: buildAdr0006ApprovalBody(acceptedEvidenceFixture),
 }
+const validSigningLifecycleCommentPayloadFixture = {
+  url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/comments/5046436932',
+  issue_url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/44',
+  html_url: adr0006SigningLifecycleApprovalUrl,
+  user: { login: 'Lyon1984' },
+  body: adr0006SigningLifecycleApprovalBody,
+}
 const validQualityRunPayloadFixture = {
   url: 'https://api.github.com/repos/Lyon1984/PoolAI/actions/runs/5012345678',
   html_url: acceptedEvidenceFixture.qualityCiUrl,
@@ -1204,6 +1264,11 @@ const validQualityWorkflowPayloadFixture = {
 }
 if (validateAdr0006CommentPayload(validCommentPayloadFixture, acceptedEvidenceFixture).length > 0) {
   fail('ADR 0006 GitHub-evidence self-test rejected a valid Issue #44 approval comment.')
+}
+if (validateAdr0006SigningLifecycleCommentPayload(
+  validSigningLifecycleCommentPayloadFixture,
+).length > 0) {
+  fail('ADR 0006 GitHub-evidence self-test rejected the valid signing-lifecycle comment.')
 }
 if (validateAdr0006WorkflowPayload(
   validQualityWorkflowPayloadFixture,
@@ -1233,6 +1298,16 @@ for (const [label, payload] of [
     fail(`ADR 0006 GitHub-evidence self-test accepted ${label}.`)
   }
 }
+for (const [label, payload] of [
+  ['the wrong Issue', { ...validSigningLifecycleCommentPayloadFixture, issue_url: 'https://api.github.com/repos/Lyon1984/PoolAI/issues/45' }],
+  ['a different URL', { ...validSigningLifecycleCommentPayloadFixture, html_url: `${adr0006SigningLifecycleApprovalUrl}/forged` }],
+  ['a different author', { ...validSigningLifecycleCommentPayloadFixture, user: { login: 'lyon1984' } }],
+  ['a body suffix', { ...validSigningLifecycleCommentPayloadFixture, body: `${adr0006SigningLifecycleApprovalBody}APPROVED` }],
+]) {
+  if (validateAdr0006SigningLifecycleCommentPayload(payload).length === 0) {
+    fail(`ADR 0006 signing-lifecycle self-test accepted ${label}.`)
+  }
+}
 
 const runReadOnlyGit = (argumentsList, encoding = 'utf8') => spawnSync(
   'git',
@@ -1254,6 +1329,51 @@ const readGitBlob = (commit, path) => {
   }
   return { source: result.stdout, error: null }
 }
+
+const readGitTreeEntry = (commit, path) => {
+  const result = runReadOnlyGit(['ls-tree', '-z', commit, '--', path], null)
+  if (result.status !== 0) {
+    const diagnostic = [result.stderr, result.stdout]
+      .find((buffer) => buffer.length > 0)
+      ?? Buffer.from('no output')
+    return {
+      entry: null,
+      error: diagnostic.toString('utf8').trim(),
+      missing: false,
+    }
+  }
+  const source = result.stdout.toString('utf8')
+  if (source.length === 0) {
+    return { entry: null, error: null, missing: true }
+  }
+  const match = source.match(/^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40})\t([^\0]+)\0$/u)
+  if (!match || match[4] !== path) {
+    return {
+      entry: null,
+      error: 'the path does not resolve to exactly one canonical Git tree entry',
+      missing: false,
+    }
+  }
+  return {
+    entry: {
+      mode: match[1],
+      type: match[2],
+      object: match[3],
+    },
+    error: null,
+    missing: false,
+  }
+}
+
+const readAdr0006GovernanceSnapshot = (commit) => ({
+  adr: readGitBlob(commit, adr0006Path),
+  plan: readGitBlob(commit, systemPlanPath),
+  memory: readGitBlob(commit, currentStatePath),
+  entries: new Map(adr0006ProtectedSigningFiles.map((path) => [
+    path,
+    readGitTreeEntry(commit, path),
+  ])),
+})
 
 const normalizeAdr0006GovernanceMetadata = (source) => {
   const ignoredLabels = [
@@ -1331,7 +1451,140 @@ if (normalizeAdr0006MemoryStatus(
   fail('ADR 0006 current-state normalization self-test accepted duplicate canonical status lines.')
 }
 
-const validateAdr0006PrSigningTransition = (evidence, signingHead) => {
+const validateAdr0006GovernanceSnapshot = (
+  snapshot,
+  label,
+  expectedStatus,
+  expectedEvidence = null,
+) => {
+  const snapshotFailures = []
+  const reject = (message) => snapshotFailures.push(message)
+  for (const [fileLabel, blob] of [
+    ['ADR', snapshot.adr],
+    ['system plan', snapshot.plan],
+    ['current state', snapshot.memory],
+  ]) {
+    if (blob.error) {
+      reject(`ADR 0006 ${label} ${fileLabel} could not be read from Git: ${blob.error}`)
+    }
+  }
+  for (const [path, treeResult] of snapshot.entries) {
+    if (treeResult.missing) {
+      reject(`ADR 0006 ${label} is missing ${path}.`)
+    } else if (treeResult.error) {
+      reject(`ADR 0006 ${label} tree entry for ${path} is invalid: ${treeResult.error}`)
+    } else if (treeResult.entry.mode !== '100644' || treeResult.entry.type !== 'blob') {
+      reject(`ADR 0006 ${label} must keep ${path} as a regular 100644 blob.`)
+    }
+  }
+  if (snapshotFailures.length > 0) {
+    return snapshotFailures
+  }
+
+  for (const governanceFailure of validateAdr0006Governance(
+    snapshot.adr.source,
+    snapshot.plan.source,
+  )) {
+    reject(`ADR 0006 ${label} governance is invalid: ${governanceFailure}`)
+  }
+  const snapshotEvidence = parseAdr0006Evidence(snapshot.adr.source)
+  if (snapshotEvidence.status !== expectedStatus) {
+    reject(`ADR 0006 ${label} must contain the exact ${expectedStatus} ADR state.`)
+  }
+  if (expectedEvidence
+      && JSON.stringify(snapshotEvidence) !== JSON.stringify(expectedEvidence)) {
+    reject(`ADR 0006 ${label} metadata must equal the checked ADR metadata exactly.`)
+  }
+  for (const memoryFailure of validateAdr0006CurrentState(
+    snapshot.memory.source,
+    expectedStatus,
+    expectedStatus === 'Accepted' ? snapshotEvidence.approvalUrl : undefined,
+  )) {
+    reject(`ADR 0006 ${label} current state is invalid: ${memoryFailure}`)
+  }
+  return snapshotFailures
+}
+
+const sameGitTreeEntry = (left, right) => left
+  && right
+  && left.mode === right.mode
+  && left.type === right.type
+  && left.object === right.object
+
+const exactAdr0006Status = (snapshot, expectedStatus) => !snapshot.adr.error
+  && adrMetadataValues(snapshot.adr.source, 'Status').length === 1
+  && adrMetadataLikeCount(snapshot.adr.source, 'Status') === 1
+  && parseAdr0006Evidence(snapshot.adr.source).status === expectedStatus
+
+const adr0006SnapshotStatus = (snapshot, allowAbsent = false) => {
+  if (allowAbsent && snapshot.entries.get(adr0006Path)?.missing) {
+    return 'Absent'
+  }
+  if (exactAdr0006Status(snapshot, 'Proposed')) {
+    return 'Proposed'
+  }
+  if (exactAdr0006Status(snapshot, 'Accepted')) {
+    return 'Accepted'
+  }
+  return null
+}
+
+const selectAdr0006RefPolicy = (baseStatus, headStatus, eventName) => {
+  if (!['pull_request', 'push'].includes(eventName)) {
+    return 'invalid'
+  }
+  if (headStatus === 'Proposed') {
+    return ['Absent', 'Proposed'].includes(baseStatus) ? 'unsigned' : 'invalid'
+  }
+  if (headStatus !== 'Accepted') {
+    return 'invalid'
+  }
+  if (baseStatus === 'Accepted') {
+    return 'accepted-base'
+  }
+  if (!['Absent', 'Proposed'].includes(baseStatus)) {
+    return 'invalid'
+  }
+  return eventName === 'pull_request' ? 'signing-transition' : 'accepted-push'
+}
+
+for (const [label, baseStatus, headStatus, eventName, expectedPolicy] of [
+  ['missing base with Proposed head', 'Absent', 'Proposed', 'pull_request', 'unsigned'],
+  ['Proposed base with Proposed head', 'Proposed', 'Proposed', 'pull_request', 'unsigned'],
+  ['missing base with Accepted PR head', 'Absent', 'Accepted', 'pull_request', 'signing-transition'],
+  ['Proposed base with Accepted PR head', 'Proposed', 'Accepted', 'pull_request', 'signing-transition'],
+  ['Accepted base with Accepted PR head', 'Accepted', 'Accepted', 'pull_request', 'accepted-base'],
+  ['missing base with Accepted push head', 'Absent', 'Accepted', 'push', 'accepted-push'],
+  ['Accepted base with Accepted push head', 'Accepted', 'Accepted', 'push', 'accepted-base'],
+  ['Accepted-to-Proposed rollback', 'Accepted', 'Proposed', 'pull_request', 'invalid'],
+  ['invalid base state', null, 'Accepted', 'pull_request', 'invalid'],
+  ['invalid head state', 'Proposed', null, 'pull_request', 'invalid'],
+  ['invalid event', 'Proposed', 'Accepted', 'workflow_dispatch', 'invalid'],
+]) {
+  if (selectAdr0006RefPolicy(baseStatus, headStatus, eventName) !== expectedPolicy) {
+    fail(`ADR 0006 ref-policy self-test rejected ${label}.`)
+  }
+}
+
+const treeEntryFixture = {
+  mode: '100644',
+  type: 'blob',
+  object: '0123456789abcdef0123456789abcdef01234567',
+}
+if (!sameGitTreeEntry(treeEntryFixture, { ...treeEntryFixture })) {
+  fail('ADR 0006 protected-tree self-test rejected identical blob and mode identity.')
+}
+for (const [label, mutation] of [
+  ['a mode change', { mode: '120000' }],
+  ['a type change', { type: 'commit' }],
+  ['a blob change', { object: '1123456789abcdef0123456789abcdef01234567' }],
+]) {
+  if (sameGitTreeEntry(treeEntryFixture, { ...treeEntryFixture, ...mutation })) {
+    fail(`ADR 0006 protected-tree self-test accepted ${label}.`)
+  }
+}
+
+const validateAdr0006ExactSigningTransition = (evidence, signingHead) => {
   const transitionFailures = []
   const reject = (message) => transitionFailures.push(message)
   const candidateHead = evidence.candidateHead
@@ -1383,6 +1636,21 @@ const validateAdr0006PrSigningTransition = (evidence, signingHead) => {
   ]) {
     if (blob.error) {
       reject(`ADR 0006 ${label} could not be read from Git: ${blob.error}`)
+    }
+  }
+  for (const [label, commit] of [
+    ['candidate', candidateHead],
+    ['signed-head', signingHead],
+  ]) {
+    for (const path of [adr0006Path, systemPlanPath, currentStatePath]) {
+      const treeResult = readGitTreeEntry(commit, path)
+      if (treeResult.missing) {
+        reject(`ADR 0006 ${label} is missing ${path}.`)
+      } else if (treeResult.error) {
+        reject(`ADR 0006 ${label} tree entry for ${path} is invalid: ${treeResult.error}`)
+      } else if (treeResult.entry.mode !== '100644' || treeResult.entry.type !== 'blob') {
+        reject(`ADR 0006 ${label} must keep ${path} as a regular 100644 blob.`)
+      }
     }
   }
   if (transitionFailures.length > 0) {
@@ -1459,6 +1727,293 @@ const validateAdr0006PrSigningTransition = (evidence, signingHead) => {
     reject('ADR 0006 candidate and signing head current-state files differ outside the canonical status bullet.')
   }
   return transitionFailures
+}
+
+const selectUniqueAdr0006SigningTransition = (candidates, validateCandidate) => {
+  const validCandidates = candidates.filter(
+    (candidate) => validateCandidate(candidate).length === 0,
+  )
+  return validCandidates.length === 1 ? validCandidates[0] : null
+}
+
+if (selectUniqueAdr0006SigningTransition(
+  ['candidate-a', 'candidate-b'],
+  (candidate) => candidate === 'candidate-b' ? [] : ['invalid'],
+) !== 'candidate-b') {
+  fail('ADR 0006 transition-selection self-test rejected one unique valid signing commit.')
+}
+for (const [label, validator] of [
+  ['no valid signing commit', () => ['invalid']],
+  ['multiple valid signing commits', () => []],
+]) {
+  if (selectUniqueAdr0006SigningTransition(
+    ['candidate-a', 'candidate-b'],
+    validator,
+  ) !== null) {
+    fail(`ADR 0006 transition-selection self-test accepted ${label}.`)
+  }
+}
+
+const validateAdr0006UnsignedRefState = (
+  baseHead,
+  signingHead,
+  checkoutHead,
+  eventName,
+) => {
+  const stateFailures = []
+  const reject = (message) => stateFailures.push(message)
+  for (const [label, commit] of [
+    ['ADR0006_BASE_HEAD', baseHead],
+    ['ADR0006_SIGNING_HEAD', signingHead],
+    ['ADR0006_CHECKOUT_HEAD', checkoutHead],
+  ]) {
+    const verifiedCommit = runReadOnlyGit(['rev-parse', '--verify', `${commit}^{commit}`])
+    if (verifiedCommit.status !== 0 || verifiedCommit.stdout.trim() !== commit) {
+      reject(`${label} must resolve to its exact 40-character commit.`)
+    }
+  }
+  if (stateFailures.length > 0) {
+    return stateFailures
+  }
+
+  const baseSnapshot = readAdr0006GovernanceSnapshot(baseHead)
+  const headSnapshot = readAdr0006GovernanceSnapshot(signingHead)
+  const checkoutSnapshot = readAdr0006GovernanceSnapshot(checkoutHead)
+  const baseStatus = adr0006SnapshotStatus(baseSnapshot, true)
+  const headStatus = adr0006SnapshotStatus(headSnapshot)
+  const checkoutStatus = adr0006SnapshotStatus(checkoutSnapshot)
+  if (selectAdr0006RefPolicy(baseStatus, headStatus, eventName) !== 'unsigned'
+      || checkoutStatus !== 'Proposed') {
+    reject('ADR 0006 unsigned state requires an absent/Proposed base and exact Proposed event and checkout heads.')
+    return stateFailures
+  }
+  if (baseStatus === 'Proposed') {
+    for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+      baseSnapshot,
+      'base',
+      'Proposed',
+    )) {
+      reject(snapshotFailure)
+    }
+  }
+  for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+    headSnapshot,
+    'head',
+    'Proposed',
+  )) {
+    reject(snapshotFailure)
+  }
+  for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+    checkoutSnapshot,
+    'checkout',
+    'Proposed',
+  )) {
+    reject(snapshotFailure)
+  }
+  return stateFailures
+}
+
+const validateAdr0006AcceptedRefHistory = (
+  evidence,
+  baseHead,
+  signingHead,
+  checkoutHead,
+  eventName,
+) => {
+  const historyFailures = []
+  const reject = (message) => historyFailures.push(message)
+  const verifiedBaseHead = runReadOnlyGit(['rev-parse', '--verify', `${baseHead}^{commit}`])
+  const verifiedSigningHead = runReadOnlyGit(['rev-parse', '--verify', `${signingHead}^{commit}`])
+  const verifiedCheckoutHead = runReadOnlyGit(['rev-parse', '--verify', `${checkoutHead}^{commit}`])
+  if (verifiedBaseHead.status !== 0 || verifiedBaseHead.stdout.trim() !== baseHead) {
+    reject('ADR0006_BASE_HEAD must resolve to the exact 40-character event-base commit.')
+  }
+  if (verifiedSigningHead.status !== 0 || verifiedSigningHead.stdout.trim() !== signingHead) {
+    reject('ADR0006_SIGNING_HEAD must resolve to the exact 40-character event-head commit.')
+  }
+  if (verifiedCheckoutHead.status !== 0 || verifiedCheckoutHead.stdout.trim() !== checkoutHead) {
+    reject('ADR0006_CHECKOUT_HEAD must resolve to the exact 40-character checkout commit.')
+  }
+  if (eventName === 'push' && checkoutHead !== signingHead) {
+    reject('A push must use the same exact ADR0006_CHECKOUT_HEAD and ADR0006_SIGNING_HEAD.')
+  }
+  if (historyFailures.length > 0) {
+    return historyFailures
+  }
+
+  const baseSnapshot = readAdr0006GovernanceSnapshot(baseHead)
+  const signedSnapshot = readAdr0006GovernanceSnapshot(signingHead)
+  const checkoutSnapshot = readAdr0006GovernanceSnapshot(checkoutHead)
+  for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+    signedSnapshot,
+    'head',
+    'Accepted',
+    evidence,
+  )) {
+    reject(snapshotFailure)
+  }
+  for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+    checkoutSnapshot,
+    'checkout',
+    'Accepted',
+    evidence,
+  )) {
+    reject(snapshotFailure)
+  }
+  if (historyFailures.length > 0) {
+    return historyFailures
+  }
+
+  const baseStatus = adr0006SnapshotStatus(baseSnapshot, true)
+  const headStatus = adr0006SnapshotStatus(signedSnapshot)
+  const historyPolicy = selectAdr0006RefPolicy(baseStatus, headStatus, eventName)
+  if (!['accepted-base', 'signing-transition', 'accepted-push'].includes(historyPolicy)) {
+    reject('ADR 0006 Accepted state has no valid fail-closed base/head history policy.')
+    return historyFailures
+  }
+
+  if (historyPolicy === 'accepted-base') {
+    for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+      baseSnapshot,
+      'base',
+      'Accepted',
+      evidence,
+    )) {
+      reject(snapshotFailure)
+    }
+    const baseAdrEntry = baseSnapshot.entries.get(adr0006Path)?.entry
+    const signedAdrEntry = signedSnapshot.entries.get(adr0006Path)?.entry
+    const checkoutAdrEntry = checkoutSnapshot.entries.get(adr0006Path)?.entry
+    if (!sameGitTreeEntry(baseAdrEntry, signedAdrEntry)
+        || !sameGitTreeEntry(baseAdrEntry, checkoutAdrEntry)
+        || baseSnapshot.adr.source !== signedSnapshot.adr.source
+        || baseSnapshot.adr.source !== checkoutSnapshot.adr.source) {
+      reject('An Accepted ADR 0006 must remain byte- and mode-identical across base, event head, and checkout.')
+    }
+    return historyFailures
+  }
+  if (baseStatus === 'Proposed') {
+    for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+      baseSnapshot,
+      'base',
+      'Proposed',
+    )) {
+      reject(snapshotFailure)
+    }
+  }
+  if (historyFailures.length > 0 || historyPolicy === 'accepted-push') {
+    return historyFailures
+  }
+
+  const candidateHead = evidence.candidateHead
+  const verifiedCandidateHead = runReadOnlyGit(
+    ['rev-parse', '--verify', `${candidateHead}^{commit}`],
+  )
+  if (verifiedCandidateHead.status !== 0
+      || verifiedCandidateHead.stdout.trim() !== candidateHead) {
+    reject('ADR 0006 Approved candidate head must resolve to the exact declared commit.')
+    return historyFailures
+  }
+  const candidateAncestor = runReadOnlyGit(
+    ['merge-base', '--is-ancestor', candidateHead, signingHead],
+  )
+  if (candidateAncestor.status !== 0) {
+    reject('ADR 0006 Approved candidate head must be an ancestor of ADR0006_SIGNING_HEAD.')
+    return historyFailures
+  }
+
+  const commitList = runReadOnlyGit([
+    'rev-list',
+    '--reverse',
+    '--ancestry-path',
+    `${candidateHead}..${signingHead}`,
+  ])
+  if (commitList.status !== 0) {
+    reject(`ADR 0006 signing history could not be read: ${(commitList.stderr || commitList.stdout).trim()}`)
+    return historyFailures
+  }
+  const candidates = commitList.stdout.split(/\r?\n/u).filter(Boolean)
+  const transitionEdges = []
+  for (const candidate of candidates) {
+    const candidateSnapshot = readAdr0006GovernanceSnapshot(candidate)
+    if (!exactAdr0006Status(candidateSnapshot, 'Accepted')) {
+      continue
+    }
+    const parentsResult = runReadOnlyGit(['rev-list', '--parents', '-n', '1', candidate])
+    if (parentsResult.status !== 0) {
+      reject('ADR 0006 signing-transition parents could not be read.')
+      return historyFailures
+    }
+    const commits = parentsResult.stdout.trim().split(/\s+/u)
+    if (commits[0] !== candidate || commits.length < 2) {
+      reject('ADR 0006 signing-transition ancestry is malformed.')
+      return historyFailures
+    }
+    const parentSnapshots = commits.slice(1).map(readAdr0006GovernanceSnapshot)
+    if (parentSnapshots.some((snapshot) => exactAdr0006Status(snapshot, 'Proposed'))) {
+      transitionEdges.push({ candidate, parentCommits: commits.slice(1), parentSnapshots })
+    }
+  }
+  if (transitionEdges.length !== 1) {
+    reject('ADR 0006 candidate..event-head history must contain exactly one Proposed-to-Accepted transition edge.')
+    return historyFailures
+  }
+  const [{ candidate: signingTransition, parentCommits, parentSnapshots }] = transitionEdges
+  if (parentCommits.length !== 1) {
+    reject('ADR 0006 signing transition must be one non-merge commit.')
+    return historyFailures
+  }
+  for (const snapshotFailure of validateAdr0006GovernanceSnapshot(
+    parentSnapshots[0],
+    'signing-transition parent',
+    'Proposed',
+  )) {
+    reject(snapshotFailure)
+  }
+  for (const transitionFailure of validateAdr0006ExactSigningTransition(
+    evidence,
+    signingTransition,
+  )) {
+    reject(transitionFailure)
+  }
+  if (historyFailures.length > 0) {
+    return historyFailures
+  }
+
+  const transitionSnapshot = readAdr0006GovernanceSnapshot(signingTransition)
+  const descendantList = runReadOnlyGit([
+    'rev-list',
+    '--ancestry-path',
+    `${signingTransition}..${signingHead}`,
+  ])
+  if (descendantList.status !== 0) {
+    reject('ADR 0006 post-signing descendants could not be read.')
+    return historyFailures
+  }
+  const descendantSnapshots = descendantList.stdout
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .map((commit) => [commit, readAdr0006GovernanceSnapshot(commit)])
+  for (const path of adr0006ProtectedSigningFiles) {
+    const transitionEntry = transitionSnapshot.entries.get(path)
+    const signedEntry = signedSnapshot.entries.get(path)
+    const checkoutEntry = checkoutSnapshot.entries.get(path)
+    if (transitionEntry?.error
+        || signedEntry?.error
+        || checkoutEntry?.error
+        || !sameGitTreeEntry(transitionEntry?.entry, signedEntry?.entry)
+        || !sameGitTreeEntry(transitionEntry?.entry, checkoutEntry?.entry)) {
+      reject(`ADR 0006 post-signing bytes or mode changed at the event or checkout head for ${path}.`)
+    }
+    for (const [commit, descendantSnapshot] of descendantSnapshots) {
+      const descendantEntry = descendantSnapshot.entries.get(path)
+      if (descendantEntry?.error
+          || !sameGitTreeEntry(transitionEntry?.entry, descendantEntry?.entry)) {
+        reject(`ADR 0006 post-signing commit ${commit} changed bytes or mode for ${path}.`)
+      }
+    }
+  }
+  return historyFailures
 }
 
 const adr0006GithubApiResources = Object.freeze({
@@ -1666,7 +2221,35 @@ const validateAdr0006GithubEvidence = async () => {
   const evidenceFailures = []
   const reject = (message) => evidenceFailures.push(message)
   const evidence = parseAdr0006Evidence(adr0006)
+  const eventName = process.env.ADR0006_EVENT_NAME
+  const baseHead = process.env.ADR0006_BASE_HEAD
+  const checkoutHead = process.env.ADR0006_CHECKOUT_HEAD
+  const signingHead = process.env.ADR0006_SIGNING_HEAD
+  if (!['pull_request', 'push'].includes(eventName)) {
+    reject('ADR 0006 GitHub evidence requires ADR0006_EVENT_NAME=pull_request or push.')
+  }
+  if (!/^(?!0{40}$)[0-9a-f]{40}$/u.test(signingHead ?? '')) {
+    reject('ADR 0006 GitHub evidence requires one exact ADR0006_SIGNING_HEAD SHA.')
+  }
+  if (!/^(?!0{40}$)[0-9a-f]{40}$/u.test(baseHead ?? '')) {
+    reject('ADR 0006 GitHub evidence requires one exact ADR0006_BASE_HEAD SHA.')
+  }
+  if (!/^(?!0{40}$)[0-9a-f]{40}$/u.test(checkoutHead ?? '')) {
+    reject('ADR 0006 GitHub evidence requires one exact ADR0006_CHECKOUT_HEAD SHA.')
+  }
+  if (evidenceFailures.length > 0) {
+    return evidenceFailures
+  }
+
   if (evidence.status === 'Proposed') {
+    for (const stateFailure of validateAdr0006UnsignedRefState(
+      baseHead,
+      signingHead,
+      checkoutHead,
+      eventName,
+    )) {
+      reject(stateFailure)
+    }
     return evidenceFailures
   }
   if (evidence.status !== 'Accepted') {
@@ -1675,21 +2258,17 @@ const validateAdr0006GithubEvidence = async () => {
   }
 
   const token = process.env.GITHUB_TOKEN
-  const eventName = process.env.ADR0006_EVENT_NAME
-  const signingHead = process.env.ADR0006_SIGNING_HEAD
   if (typeof token !== 'string' || token.trim().length === 0) {
     reject('Accepted ADR 0006 GitHub evidence requires a non-empty GITHUB_TOKEN.')
   }
-  if (!['pull_request', 'push'].includes(eventName)) {
-    reject('Accepted ADR 0006 GitHub evidence requires ADR0006_EVENT_NAME=pull_request or push.')
-  }
-  if (!/^(?!0{40}$)[0-9a-f]{40}$/u.test(signingHead ?? '')) {
-    reject('Accepted ADR 0006 GitHub evidence requires one exact ADR0006_SIGNING_HEAD SHA.')
-  }
-  if (eventName === 'pull_request' && /^(?!0{40}$)[0-9a-f]{40}$/u.test(signingHead ?? '')) {
-    for (const transitionFailure of validateAdr0006PrSigningTransition(evidence, signingHead)) {
-      reject(transitionFailure)
-    }
+  for (const transitionFailure of validateAdr0006AcceptedRefHistory(
+    evidence,
+    baseHead,
+    signingHead,
+    checkoutHead,
+    eventName,
+  )) {
+    reject(transitionFailure)
   }
   if (evidenceFailures.length > 0) {
     return evidenceFailures
@@ -1708,6 +2287,11 @@ const validateAdr0006GithubEvidence = async () => {
       evidence.approvalUrl,
       'ADR 0006 approval comment',
     )
+    const signingLifecycleComment = selectUniqueGithubEvidencePayload(
+      comments,
+      adr0006SigningLifecycleApprovalUrl,
+      'ADR 0006 signing-lifecycle clarification comment',
+    )
     const qualityRun = selectUniqueGithubEvidencePayload(
       qualityRuns,
       evidence.qualityCiUrl,
@@ -1719,6 +2303,11 @@ const validateAdr0006GithubEvidence = async () => {
       'ADR 0006 security-evidence run',
     )
     for (const payloadFailure of validateAdr0006CommentPayload(comment, evidence)) {
+      reject(payloadFailure)
+    }
+    for (const payloadFailure of validateAdr0006SigningLifecycleCommentPayload(
+      signingLifecycleComment,
+    )) {
       reject(payloadFailure)
     }
     for (const payloadFailure of validateAdr0006WorkflowPayload(

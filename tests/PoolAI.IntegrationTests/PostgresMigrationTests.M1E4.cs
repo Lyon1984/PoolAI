@@ -801,6 +801,59 @@ public sealed partial class PostgresMigrationTests
             cancellationToken).ConfigureAwait(false);
         AssertM1E4Mutation(revoked, "updated", true, 4);
 
+        NpgsqlTransaction unknownRegrantAssignerTransaction = await connection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using (unknownRegrantAssignerTransaction.ConfigureAwait(false))
+        {
+            M1E4Mutation unknownRegrantAssigner = await ExecuteM1E4MutationAsync(
+                connection,
+                unknownRegrantAssignerTransaction,
+                """
+                SELECT disposition, was_changed, before_state::text, current_version
+                FROM public.poolai_subscription_update(
+                    '01900000-0000-7000-8000-000000000730', 4,
+                    true, clock_timestamp() + interval '1 day',
+                    true, clock_timestamp() + interval '2 days',
+                    'active', true,
+                    '01900000-0000-7000-8000-0000000007fe', 'unknown regrant assigner');
+                """,
+                cancellationToken).ConfigureAwait(false);
+            AssertM1E4Mutation(unknownRegrantAssigner, "conflict", false, 4);
+            AssertM1E4BeforeState(unknownRegrantAssigner, "status", "revoked");
+
+            using NpgsqlCommand transactionRemainsUsable = connection.CreateCommand();
+            transactionRemainsUsable.Transaction = unknownRegrantAssignerTransaction;
+            transactionRemainsUsable.CommandText = "SELECT 1;";
+            Assert.Equal(
+                1,
+                Assert.IsType<int>(await transactionRemainsUsable
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
+            await unknownRegrantAssignerTransaction
+                .CommitAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        using (NpgsqlCommand unchangedAfterUnknownRegrant = connection.CreateCommand())
+        {
+            unchangedAfterUnknownRegrant.CommandText = """
+                SELECT status, version, assigned_by
+                FROM public.subscriptions
+                WHERE id = '01900000-0000-7000-8000-000000000730';
+                """;
+            using NpgsqlDataReader reader = await unchangedAfterUnknownRegrant
+                .ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+            Assert.Equal("revoked", reader.GetString(0));
+            Assert.Equal(4L, reader.GetInt64(1));
+            Assert.Equal(
+                new Guid("01900000-0000-7000-8000-000000000700"),
+                reader.GetGuid(2));
+            Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        }
+
         M1E4Mutation operatorRegrant = await ExecuteM1E4MutationAsync(
             connection,
             null,

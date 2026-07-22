@@ -1007,15 +1007,22 @@ BEGIN
         RETURN;
     END IF;
 
-    UPDATE public.subscriptions AS target
-    SET status = v_status,
-        starts_at = v_starts_at,
-        expires_at = v_expires_at,
-        assigned_by = v_assigned_by,
-        change_reason = p_reason,
-        version = v_subscription.version + 1,
-        updated_at = v_now
-    WHERE target.id = p_subscription_id;
+    BEGIN
+        UPDATE public.subscriptions AS target
+        SET status = v_status,
+            starts_at = v_starts_at,
+            expires_at = v_expires_at,
+            assigned_by = v_assigned_by,
+            change_reason = p_reason,
+            version = v_subscription.version + 1,
+            updated_at = v_now
+        WHERE target.id = p_subscription_id;
+    EXCEPTION
+        WHEN foreign_key_violation THEN
+            RETURN QUERY SELECT
+                'conflict'::text, false, v_before_state, v_subscription.version;
+            RETURN;
+    END;
 
     RETURN QUERY SELECT
         'updated'::text, true, v_before_state, v_subscription.version + 1;

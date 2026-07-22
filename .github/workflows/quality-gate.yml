@@ -52,6 +52,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ADR0006_EVENT_NAME: ${{ github.event_name }}
+          ADR0006_BASE_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          ADR0006_CHECKOUT_HEAD: ${{ github.sha }}
           ADR0006_SIGNING_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: node eng/policies/validate-traceability.mjs --github-evidence
 
