@@ -2,10 +2,12 @@
 
 import { parseErrorCatalog } from './lib/catalog.mjs'
 import { runCompatibilitySelfTests } from './lib/compatibility-self-tests.mjs'
+import { runCompatibilityWindowSelfTests } from './lib/compatibility-window-self-tests.mjs'
 import {
   validateCompatibilityResetDecisions,
   validateContractsAgainstGitBase,
 } from './lib/compatibility.mjs'
+import { validateCompatibilityWindowDecisions } from './lib/compatibility-windows.mjs'
 import { ContractFailure, loadContractSources } from './lib/context.mjs'
 import { validateFixtures } from './lib/fixtures.mjs'
 import { generateContracts } from './lib/generator.mjs'
@@ -31,12 +33,16 @@ if (!supportedCommands.has(command)) {
     const catalog = parseErrorCatalog(sources.errorCatalogSource)
     const openApiResult = validateOpenApi(sources.openApi, catalog)
     const resetState = validateCompatibilityResetDecisions(sources.compatibilityResetSource)
+    const windowState = validateCompatibilityWindowDecisions(sources.compatibilityWindowSource)
     process.stdout.write(
       `OpenAPI valid: ${openApiResult.operations} operations, ${openApiResult.compiledSchemas} AJV-compiled component schemas, ${openApiResult.references} local refs.\n`,
     )
     process.stdout.write(`Error catalog valid: ${catalog.entries.length} stable codes.\n`)
     process.stdout.write(
       `Compatibility reset registry valid: ${resetState.registry.resets.length} accepted exact transition.\n`,
+    )
+    process.stdout.write(
+      `Compatibility window registry valid: ${windowState.registry.windows.length} strict transition candidate.\n`,
     )
 
     if (command === 'compatibility') {
@@ -47,6 +53,7 @@ if (!supportedCommands.has(command)) {
       const compatibilityResult = await validateContractsAgainstGitBase({
         baseRef,
         compatibilityResetSource: sources.compatibilityResetSource,
+        compatibilityWindowSource: sources.compatibilityWindowSource,
         headErrorCatalogSource: sources.errorCatalogSource,
         headOpenApi: sources.openApi,
         headOpenApiSource: sources.openApiSource,
@@ -59,12 +66,18 @@ if (!supportedCommands.has(command)) {
           `Exact compatibility reset applied: ${compatibilityResult.resetId}; ${compatibilityResult.waivedFailures} registered breaking diagnostics consumed.\n`,
         )
       }
+      if (compatibilityResult.windowId !== undefined) {
+        process.stdout.write(
+          `Exact compatibility window applied: ${compatibilityResult.windowId}; ${compatibilityResult.waivedFailures} registered breaking diagnostics consumed.\n`,
+        )
+      }
     }
 
     if (command === 'test' || command === 'all') {
       const fixtureResult = await validateFixtures(openApiResult.validateSchema, catalog)
       const sqlResult = await validateSqlErrorMap(catalog.codes)
       const compatibilitySelfTestResult = runCompatibilitySelfTests(sources)
+      const compatibilityWindowSelfTestResult = runCompatibilityWindowSelfTests(sources)
       const selfTestResult = await runSelfTests({
         ...sources,
         catalog,
@@ -81,6 +94,9 @@ if (!supportedCommands.has(command)) {
       )
       process.stdout.write(
         `Compatibility self-tests passed: ${compatibilitySelfTestResult.additiveCases} additive cases, ${compatibilitySelfTestResult.breakingCases} breaking cases, ${compatibilitySelfTestResult.resetCases} exact-reset cases.\n`,
+      )
+      process.stdout.write(
+        `Compatibility-window self-tests passed: ${compatibilityWindowSelfTestResult.cases} strict cases.\n`,
       )
     }
 

@@ -5,7 +5,7 @@ using PoolAI.Modules.Identity.Application.Ports;
 
 namespace PoolAI.Modules.Identity.Infrastructure.Persistence;
 
-internal sealed class PostgresIdentitySessionReader
+internal sealed class PostgresIdentitySessionReader : IUserStatusReader
 {
     private readonly NpgsqlDataSource _dataSource;
 
@@ -27,6 +27,62 @@ internal sealed class PostgresIdentitySessionReader
             "u.id = $1",
             userId.Value,
             cancellationToken);
+
+    public async ValueTask<Result<UserStatusSnapshot>> GetCurrentAsync(
+        EntityId userId,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlConnection connection = await _dataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable connectionLease = connection.ConfigureAwait(false);
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT user_account.id,
+                   user_account.status,
+                   role.code,
+                   user_account.token_version,
+                   user_account.version,
+                   clock_timestamp()
+            FROM public.users AS user_account
+            JOIN public.user_roles AS user_role
+              ON user_role.user_id = user_account.id
+            JOIN public.roles AS role
+              ON role.id = user_role.role_id
+            WHERE user_account.id = $1
+              AND user_account.deleted_at IS NULL;
+            """;
+        command.Parameters.AddWithValue(userId.Value);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return Result.Failure<UserStatusSnapshot>(
+                "resource_not_found",
+                "The current user does not exist.");
+        }
+
+        UserStatusSnapshot snapshot = new(
+            new EntityId(reader.GetGuid(0)),
+            reader.GetString(1) switch
+            {
+                "active" => UserLifecycle.Active,
+                "disabled" => UserLifecycle.Disabled,
+                _ => throw new InvalidOperationException("Identity user has an unknown lifecycle."),
+            },
+            ParseRole(reader.GetString(2)),
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            reader.GetFieldValue<DateTimeOffset>(5));
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "Canonical user status returned multiple role assignments.");
+        }
+
+        return Result.Success(snapshot);
+    }
 
     internal async ValueTask<UserStatusSnapshot?> ReadCanonicalAuthorizationAsync(
         EntityId userId,

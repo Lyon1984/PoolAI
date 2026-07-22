@@ -30,6 +30,10 @@ export const contractPaths = Object.freeze({
     repoRoot,
     'docs/contracts/compatibility-resets-v1.json',
   ),
+  compatibilityWindows: path.join(
+    repoRoot,
+    'docs/contracts/compatibility-windows-v1.json',
+  ),
   errorCatalog: path.join(repoRoot, 'docs/contracts/error-catalog.md'),
   fixtures: path.join(repoRoot, 'docs/contracts/fixtures'),
   database: path.join(repoRoot, 'docs/database'),
@@ -65,10 +69,16 @@ export function invariant(condition, message) {
 }
 
 export async function loadContractSources() {
-  const [openApiSource, errorCatalogSource, compatibilityResetSource] = await Promise.all([
+  const [
+    openApiSource,
+    errorCatalogSource,
+    compatibilityResetSource,
+    compatibilityWindowSource,
+  ] = await Promise.all([
     readFile(contractPaths.openApi, 'utf8'),
     readFile(contractPaths.errorCatalog, 'utf8'),
     readFile(contractPaths.compatibilityResets, 'utf8'),
+    readFile(contractPaths.compatibilityWindows, 'utf8'),
   ])
 
   const document = YAML.parseDocument(openApiSource, {
@@ -86,6 +96,7 @@ export async function loadContractSources() {
     openApiSource,
     errorCatalogSource,
     compatibilityResetSource,
+    compatibilityWindowSource,
   }
 }
 

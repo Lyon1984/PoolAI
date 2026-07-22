@@ -7,10 +7,29 @@ namespace PoolAI.Application.Orchestration;
 
 public sealed class GroupActivationOrchestrator(
     IUserStatusReader userStatusReader,
-    IGroupStatusReader groupStatusReader,
     IGroupSupplyReadiness supplyReadiness,
-    IGroupActivationCommand activationCommand)
+    IGroupActivationCommand activationCommand,
+    IGroupActivationIdempotencyPreflight idempotencyPreflight) : IGroupActivationOrchestrator
 {
+    public ValueTask<Result<GroupActivationResult>> ActivateAsync(
+        GroupActivationOrchestrationCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        return ActivateAsync(
+            new GroupActivationRequest(
+                command.Actor,
+                command.GroupId,
+                command.ExpectedGroupVersion,
+                command.IdempotencyKey,
+                command.Reason,
+                command.MetadataPatch,
+                command.RequestId,
+                command.IpAddress,
+                command.UserAgent),
+            cancellationToken);
+    }
+
     public async ValueTask<Result<GroupActivationResult>> ActivateAsync(
         GroupActivationRequest request,
         CancellationToken cancellationToken)
@@ -19,55 +38,70 @@ public sealed class GroupActivationOrchestrator(
         Result<Unit> requestValidation = ValidateRequest(request);
         if (requestValidation.IsFailure)
         {
-            return Result.Failure<GroupActivationResult>(
-                requestValidation.Error.Code,
-                requestValidation.Error.Description);
+            return ForwardFailure<GroupActivationResult>(requestValidation.Error);
         }
 
         Result<Unit> authorization = await AuthorizeActorAsync(request, cancellationToken)
             .ConfigureAwait(false);
         if (authorization.IsFailure)
         {
-            return Result.Failure<GroupActivationResult>(
-                authorization.Error.Code,
-                authorization.Error.Description);
+            return ForwardFailure<GroupActivationResult>(authorization.Error);
         }
 
-        Result<Unit> groupValidation = await ValidateGroupAsync(request, cancellationToken)
-            .ConfigureAwait(false);
-        if (groupValidation.IsFailure)
+        Result<GroupActivationResult?> preflight = await TryReplayAsync(
+            request,
+            cancellationToken).ConfigureAwait(false);
+        if (preflight.IsFailure)
         {
-            return Result.Failure<GroupActivationResult>(
-                groupValidation.Error.Code,
-                groupValidation.Error.Description);
+            return ForwardFailure<GroupActivationResult>(preflight.Error);
         }
 
-        Result<SupplyReadinessSnapshot> readinessResult = await ObserveReadySupplyAsync(
+        if (preflight.Value is GroupActivationResult replay)
+        {
+            return Result.Success(replay);
+        }
+
+        Result<SupplyReadinessEvidence?> evidence = await ObserveSupplyAsync(
             request.GroupId,
-            cancellationToken)
-            .ConfigureAwait(false);
-        if (readinessResult.IsFailure)
+            cancellationToken).ConfigureAwait(false);
+        if (evidence.IsFailure)
         {
-            return Result.Failure<GroupActivationResult>(
-                readinessResult.Error.Code,
-                readinessResult.Error.Description);
+            return ForwardFailure<GroupActivationResult>(evidence.Error);
         }
 
-        SupplyReadinessSnapshot readiness = readinessResult.Value;
-        ActivateGroupCommand command = new(
+        return await activationCommand
+            .ActivateAsync(CreateActivationCommand(request, evidence.Value), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static ActivateGroupCommand CreateActivationCommand(
+        GroupActivationRequest request,
+        SupplyReadinessEvidence? evidence) => new(
             request.Actor,
             request.GroupId,
             request.ExpectedGroupVersion,
             request.IdempotencyKey,
             request.Reason,
-            new SupplyReadinessEvidence(
-                readiness.OpaqueToken,
-                readiness.ObservedAt));
+            evidence,
+            request.MetadataPatch,
+            request.RequestId,
+            request.IpAddress,
+            request.UserAgent);
 
-        return await activationCommand
-            .ActivateAsync(command, cancellationToken)
-            .ConfigureAwait(false);
-    }
+    private ValueTask<Result<GroupActivationResult?>> TryReplayAsync(
+        GroupActivationRequest request,
+        CancellationToken cancellationToken) => idempotencyPreflight.TryReplayAsync(
+            new GroupActivationOrchestrationCommand(
+                request.Actor,
+                request.GroupId,
+                request.ExpectedGroupVersion,
+                request.IdempotencyKey,
+                request.Reason,
+                request.MetadataPatch,
+                request.RequestId,
+                request.IpAddress,
+                request.UserAgent),
+            cancellationToken);
 
     private static Result<Unit> ValidateRequest(GroupActivationRequest request)
     {
@@ -83,6 +117,18 @@ public sealed class GroupActivationOrchestrator(
             return Result.Failure<Unit>(
                 "idempotency_key_required",
                 "Group activation requires an idempotency key.");
+        }
+
+        if (request.MetadataPatch is GroupMetadataPatch metadata
+            && (metadata.HasName
+                && (string.IsNullOrWhiteSpace(metadata.Name)
+                    || metadata.Name.Length > 100)
+                || metadata.HasDescription
+                && metadata.Description is { Length: > 1000 }))
+        {
+            return Result.Failure<Unit>(
+                "validation_failed",
+                "The Group metadata patch is invalid.");
         }
 
         return string.IsNullOrWhiteSpace(request.Reason)
@@ -114,34 +160,7 @@ public sealed class GroupActivationOrchestrator(
                 "The current actor is not authorized to activate a Group.");
     }
 
-    private async ValueTask<Result<Unit>> ValidateGroupAsync(
-        GroupActivationRequest request,
-        CancellationToken cancellationToken)
-    {
-        Result<GroupSnapshot> result = await groupStatusReader
-            .GetAsync(request.GroupId, cancellationToken)
-            .ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return Result.Failure<Unit>(result.Error.Code, result.Error.Description);
-        }
-
-        GroupSnapshot group = result.Value;
-        if (group.Version != request.ExpectedGroupVersion)
-        {
-            return Result.Failure<Unit>(
-                "version_conflict",
-                "The Group version changed before activation.");
-        }
-
-        return group.Lifecycle == GroupLifecycle.Disabled && group.HasCurrentQuotaPeriod
-            ? Result.Success(Unit.Value)
-            : Result.Failure<Unit>(
-                "group_activation_not_ready",
-                "Only a disabled Group with a current quota period can be activated.");
-    }
-
-    private async ValueTask<Result<SupplyReadinessSnapshot>> ObserveReadySupplyAsync(
+    private async ValueTask<Result<SupplyReadinessEvidence?>> ObserveSupplyAsync(
         EntityId groupId,
         CancellationToken cancellationToken)
     {
@@ -150,14 +169,25 @@ public sealed class GroupActivationOrchestrator(
             .ConfigureAwait(false);
         if (result.IsFailure)
         {
-            return result;
+            return string.Equals(
+                result.Error.Code,
+                "group_activation_not_ready",
+                StringComparison.Ordinal)
+                ? Result.Success<SupplyReadinessEvidence?>(null)
+                : ForwardFailure<SupplyReadinessEvidence?>(result.Error);
         }
 
         SupplyReadinessSnapshot readiness = result.Value;
-        return readiness.IsReady && !string.IsNullOrWhiteSpace(readiness.OpaqueToken)
-            ? result
-            : Result.Failure<SupplyReadinessSnapshot>(
-                "group_activation_not_ready",
-                "The current Supply Configuration is not ready for activation.");
+        return Result.Success<SupplyReadinessEvidence?>(
+            readiness.IsReady && !string.IsNullOrWhiteSpace(readiness.OpaqueToken)
+                ? new SupplyReadinessEvidence(readiness.OpaqueToken, readiness.ObservedAt)
+                : null);
     }
+
+    private static Result<T> ForwardFailure<T>(ResultError error) => Result.Failure<T>(
+        error.Code,
+        error.Description,
+        error.RetryAfterSeconds,
+        error.ETag,
+        error.Presentation);
 }

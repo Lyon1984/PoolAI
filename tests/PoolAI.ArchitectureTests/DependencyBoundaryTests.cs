@@ -30,6 +30,7 @@ public sealed partial class DependencyBoundaryTests
         "PoolAI.Modules.GroupQuota",
         "PoolAI.Modules.Identity",
         "PoolAI.Modules.Operations",
+        "PoolAI.Modules.SubscriptionAccess",
         "PoolAI.Modules.Usage",
     ];
 

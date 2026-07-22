@@ -493,6 +493,10 @@ public sealed class PostgresWorkerFencingTests
         await InsertEmailFixtureAsApiAsync(environment, seed, cancellationToken)
             .ConfigureAwait(true);
 
+        await SetPendingDueAsync(
+            environment.AdministratorDataSource,
+            seed.FirstEmailId,
+            cancellationToken).ConfigureAwait(true);
         await DeferPendingEmailAsync(
             environment.AdministratorDataSource,
             seed.SecondEmailId,
@@ -709,7 +713,7 @@ public sealed class PostgresWorkerFencingTests
         CancellationToken cancellationToken) =>
         UpdateEmailClockAsync(
             dataSource,
-            "UPDATE public.email_outbox SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE id = $1 AND status = 'pending';",
+            "UPDATE public.email_outbox SET next_attempt_at = clock_timestamp() - interval '1 minute' WHERE id = $1 AND status = 'pending';",
             emailId,
             cancellationToken);
 

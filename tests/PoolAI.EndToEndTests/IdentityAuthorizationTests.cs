@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -11,6 +12,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using PoolAI.Application.Orchestration;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Identity.Abstractions;
 using PoolAI.Modules.Identity.Application;
@@ -191,6 +193,70 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         }
     }
 
+    [Fact]
+    public async Task MyGroupPoolsReturnsTheOrchestratedCanonicalProjection()
+    {
+        await using GroupPoolApiFactory factory = new();
+        Guid subjectId = Guid.CreateVersion7();
+        using HttpClient client = AuthenticatedClient(
+            factory,
+            "user",
+            tokenVersion: 1,
+            subjectId: subjectId);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/me/group-pools",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.True(response.Headers.Contains("X-Request-Id"));
+        using JsonDocument document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        JsonElement item = Assert.Single(
+            document.RootElement.GetProperty("data").EnumerateArray().ToArray());
+        Assert.Equal(GroupPoolUseCase.GroupId.Value, item.GetProperty("group_id").GetGuid());
+        Assert.Equal("Shared research", item.GetProperty("group_name").GetString());
+        Assert.Equal("internal", item.GetProperty("plan_name").GetString());
+        Assert.Equal("exhausted", item.GetProperty("quota_status").GetString());
+        Assert.Equal("100", item.GetProperty("total_tokens").GetString());
+        Assert.Equal("75", item.GetProperty("consumed_tokens").GetString());
+        Assert.Equal("25", item.GetProperty("reserved_tokens").GetString());
+        Assert.Equal("0", item.GetProperty("remaining_tokens").GetString());
+        Assert.Equal(new EntityId(subjectId), factory.UseCase.ObservedUserId);
+    }
+
+    [Fact]
+    public async Task MyGroupPoolsFailsClosedWhenTheProjectionDependencyIsUnavailable()
+    {
+        await using GroupPoolApiFactory factory = new();
+        factory.UseCase.Failure = Result.Failure<IReadOnlyList<UserGroupPoolView>>(
+            "dependency_unavailable",
+            "synthetic projection failure",
+            retryAfterSeconds: 1);
+        using HttpClient client = AuthenticatedClient(factory, "user", tokenVersion: 1);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/me/group-pools",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(1), response.Headers.RetryAfter?.Delta);
+        await AssertProblemAsync(response, "dependency_unavailable", expectedRetryable: true);
+    }
+
+    [Fact]
+    public async Task UserTemplateCatalogRouteIsNotExposed()
+    {
+        using HttpClient client = AuthenticatedClient("user", tokenVersion: 1);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            "/api/v1/me/subscription-templates",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     private static Dictionary<string, string[]> ImplementedControlPlaneRoles() =>
         new(StringComparer.Ordinal)
         {
@@ -200,11 +266,26 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
             ["beginMyTotpSetup"] = ["admin", "auditor", "operator", "user"],
             ["confirmMyTotpSetup"] = ["admin", "auditor", "operator", "user"],
             ["disableMyTotp"] = ["admin", "auditor", "operator", "user"],
+            ["listMySubscriptions"] = ["admin", "auditor", "operator", "user"],
+            ["listMyGroupPools"] = ["admin", "auditor", "operator", "user"],
             ["adminListUsers"] = ["admin", "auditor", "operator"],
             ["adminGetUser"] = ["admin", "auditor", "operator"],
             ["adminCreateUser"] = ["admin"],
             ["adminUpdateUser"] = ["admin"],
             ["adminRequestUserPasswordReset"] = ["admin"],
+            ["adminListGroups"] = ["admin", "auditor", "operator"],
+            ["adminGetGroup"] = ["admin", "auditor", "operator"],
+            ["adminCreateGroup"] = ["admin"],
+            ["adminUpdateGroup"] = ["admin"],
+            ["adminListSubscriptionTemplates"] = ["admin", "auditor", "operator"],
+            ["adminGetSubscriptionTemplate"] = ["admin", "auditor", "operator"],
+            ["adminCreateSubscriptionTemplate"] = ["admin", "operator"],
+            ["adminUpdateSubscriptionTemplate"] = ["admin", "operator"],
+            ["adminRetireSubscriptionTemplate"] = ["admin", "operator"],
+            ["adminListSubscriptions"] = ["admin", "auditor", "operator"],
+            ["adminGetSubscription"] = ["admin", "auditor", "operator"],
+            ["adminAssignSubscription"] = ["admin", "operator"],
+            ["adminUpdateSubscription"] = ["admin", "operator"],
         };
 
     private static string[] AnonymousIdentityOperations() =>
@@ -603,6 +684,27 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
         await AssertProblemAsync(response, "invalid_request", "/limit");
     }
 
+    [Theory]
+    [InlineData("/api/v1/admin/groups?limit=not-a-number", "/limit")]
+    [InlineData("/api/v1/admin/subscription-templates?limit=not-a-number", "/limit")]
+    [InlineData("/api/v1/admin/subscriptions?limit=not-a-number", "/limit")]
+    [InlineData("/api/v1/admin/subscriptions?user_id=not-a-uuid", "/user_id")]
+    [InlineData(
+        "/api/v1/admin/subscriptions?group_id=00000000-0000-0000-0000-000000000000",
+        "/group_id")]
+    public async Task M1E4AdminListsRejectMalformedQueryAsContractBadRequest(
+        string path,
+        string errorPointer)
+    {
+        using HttpClient client = AuthenticatedClient("admin", tokenVersion: 1);
+        using HttpResponseMessage response = await client.GetAsync(
+            path,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await AssertProblemAsync(response, "invalid_request", errorPointer);
+    }
+
     [Fact]
     public async Task VersionConflictReturnsCurrentEntityTag()
     {
@@ -907,7 +1009,8 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
     private static HttpClient AuthenticatedClient(
         PoolAiApiFactory factory,
         string? role,
-        long? tokenVersion)
+        long? tokenVersion,
+        Guid? subjectId = null)
     {
         factory.AccessSessionValidator.CanonicalRole = role switch
         {
@@ -926,7 +1029,8 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
                 "PoolAI.Web",
                 role,
                 tokenVersion,
-                TimeProvider.System.GetUtcNow().AddMinutes(5)));
+                TimeProvider.System.GetUtcNow().AddMinutes(5),
+                subjectId));
         return client;
     }
 
@@ -1081,6 +1185,58 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
                 services.AddSingleton<IListUsersUseCase>(readUseCases);
                 services.AddSingleton<IGetUserUseCase>(readUseCases);
             });
+        }
+    }
+
+    private sealed class GroupPoolApiFactory : PoolAiApiFactory
+    {
+        internal GroupPoolUseCase UseCase { get; } = new();
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IListUserGroupPoolsUseCase>();
+                services.AddSingleton<IListUserGroupPoolsUseCase>(UseCase);
+            });
+        }
+    }
+
+    private sealed class GroupPoolUseCase : IListUserGroupPoolsUseCase
+    {
+        internal static readonly EntityId GroupId = new(Guid.Parse(
+            "40000000-0000-0000-0000-000000000001"));
+        private static readonly DateTimeOffset Timestamp = DateTimeOffset.Parse(
+            "2026-07-17T08:00:00Z",
+            CultureInfo.InvariantCulture);
+
+        internal EntityId ObservedUserId { get; private set; }
+
+        internal Result<IReadOnlyList<UserGroupPoolView>>? Failure { get; set; }
+
+        public ValueTask<Result<IReadOnlyList<UserGroupPoolView>>> ExecuteAsync(
+            ListUserGroupPoolsQuery query,
+            CancellationToken cancellationToken)
+        {
+            ObservedUserId = query.UserId;
+            Result<IReadOnlyList<UserGroupPoolView>> result = Failure ?? Result.Success<
+                IReadOnlyList<UserGroupPoolView>>(
+                [
+                    new UserGroupPoolView(
+                        GroupId,
+                        "Shared research",
+                        new EntityId(Guid.Parse("50000000-0000-0000-0000-000000000001")),
+                        "internal",
+                        Timestamp.AddDays(30),
+                        "exhausted",
+                        new BigInteger(100),
+                        new BigInteger(75),
+                        new BigInteger(25),
+                        BigInteger.Zero,
+                        Timestamp),
+                ]);
+            return ValueTask.FromResult(result);
         }
     }
 

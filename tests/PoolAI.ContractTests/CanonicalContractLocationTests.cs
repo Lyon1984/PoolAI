@@ -16,6 +16,24 @@ public sealed class CanonicalContractLocationTests
     }
 
     [Fact]
+    public void CompatibilityGovernanceRegistriesExistOnlyInTheDocumentedContractArea()
+    {
+        string root = FindRepositoryRoot();
+        string[] fileNames = ["compatibility-resets-v1.json", "compatibility-windows-v1.json"];
+
+        foreach (string fileName in fileNames)
+        {
+            string registry = Path.Combine(root, "docs", "contracts", fileName);
+            Assert.True(File.Exists(registry), $"Missing authoritative contract registry: {registry}");
+            using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(registry));
+            Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+            Assert.Empty(Directory.GetFiles(Path.Combine(root, "src"), fileName, SearchOption.AllDirectories));
+            Assert.Empty(Directory.GetFiles(Path.Combine(root, "tests"), fileName, SearchOption.AllDirectories));
+        }
+    }
+
+    [Fact]
     public void ReleaseManifestExistsOnlyInTheDocumentedContractArea()
     {
         string root = FindRepositoryRoot();

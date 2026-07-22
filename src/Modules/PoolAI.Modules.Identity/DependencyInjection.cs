@@ -43,6 +43,8 @@ public static class DependencyInjection
             IdentityServiceFactory.CreateRepository);
         services.AddSingleton<IIdentitySessionRepository>(
             IdentityServiceFactory.CreateSessionRepository);
+        services.AddSingleton<IUserStatusReader>(
+            IdentityServiceFactory.CreateUserStatusReader);
         services.AddSingleton<IVersionedPasswordHasher, VersionedPasswordHasher>();
         services.AddSingleton<IPasswordResetTokenHasher>(static serviceProvider =>
             new PasswordResetTokenHasher(

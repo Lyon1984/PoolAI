@@ -6,6 +6,13 @@ import { promisify, TextDecoder } from 'node:util'
 
 import { withReadOnlyRepositoryFile } from '../../../eng/policies/repository-file.mjs'
 import { ContractFailure, invariant, repoRoot, sha256, stableJson, YAML } from './context.mjs'
+import {
+  requireAcceptedCompatibilityWindow,
+  resolveCompatibilityWindow,
+  validateCompatibilityWindowAdrHistory,
+  validateCompatibilityWindowDecisions,
+  validateCompatibilityWindowHistory,
+} from './compatibility-windows.mjs'
 
 const execFileAsync = promisify(execFile)
 const HTTP_METHODS = new Set(['delete', 'get', 'head', 'options', 'patch', 'post', 'put', 'trace'])
@@ -19,6 +26,7 @@ const DOCUMENTATION_KEYS = new Set([
   'summary',
 ])
 const COMPATIBILITY_RESET_RELATIVE_PATH = 'docs/contracts/compatibility-resets-v1.json'
+const COMPATIBILITY_WINDOW_RELATIVE_PATH = 'docs/contracts/compatibility-windows-v1.json'
 const EXACT_RESET_APPROVAL_ISSUE = 'https://github.com/Lyon1984/PoolAI/issues/44'
 const EXACT_RESET_ID = 'm1-e1-pre-release-mailbox-and-list-query'
 const RESET_REGISTRY_KEYS = ['resets', 'schemaVersion']
@@ -1368,20 +1376,25 @@ export function validateContractCompatibility({
   headErrorCatalogSource,
   headOpenApi,
   headSseFixtures = new Map(),
+  failureAllowanceLabel = 'Compatibility reset',
 }) {
   const failures = []
   invariant(baseOpenApi && typeof baseOpenApi === 'object', 'Base OpenAPI document is required.')
   invariant(headOpenApi && typeof headOpenApi === 'object', 'Head OpenAPI document is required.')
   invariant(typeof baseErrorCatalogSource === 'string', 'Base error catalog source is required.')
   invariant(typeof headErrorCatalogSource === 'string', 'Head error catalog source is required.')
-  invariant(Array.isArray(allowedFailures), 'Compatibility reset allowed failures must be an array.')
+  invariant(Array.isArray(allowedFailures), 'Compatibility allowed failures must be an array.')
   invariant(
     allowedFailures.every((failure) => typeof failure === 'string'),
-    'Compatibility reset allowed failures must contain only strings.',
+    'Compatibility allowed failures must contain only strings.',
   )
   invariant(
     new Set(allowedFailures).size === allowedFailures.length,
-    'Compatibility reset allowed failures must not contain duplicates.',
+    'Compatibility allowed failures must not contain duplicates.',
+  )
+  invariant(
+    typeof failureAllowanceLabel === 'string' && failureAllowanceLabel.length > 0,
+    'Compatibility failure allowance label is required.',
   )
 
   if (baseOpenApi.openapi !== headOpenApi.openapi) {
@@ -1415,7 +1428,7 @@ export function validateContractCompatibility({
         ...unused.map((failure) => `- registered but absent: ${failure}`),
       ]
       throw new ContractFailure(
-        `Compatibility reset mismatch: expected exactly ${expected.length} breaking diagnostics, received ${actual.length}.\n${details.join('\n')}`,
+        `${failureAllowanceLabel} mismatch: expected exactly ${expected.length} breaking diagnostics, received ${actual.length}.\n${details.join('\n')}`,
       )
     }
   } else if (failures.length > 0) {
@@ -1586,6 +1599,7 @@ async function loadSseFixturesAgainstGitBase(baseRef) {
 export async function validateContractsAgainstGitBase({
   baseRef,
   compatibilityResetSource,
+  compatibilityWindowSource,
   headErrorCatalogSource,
   headOpenApi,
   headOpenApiSource,
@@ -1597,15 +1611,18 @@ export async function validateContractsAgainstGitBase({
   const normalizedBaseRef = baseRef.toLowerCase()
   invariant(typeof headOpenApiSource === 'string', 'Head OpenAPI source is required.')
   const resetState = validateCompatibilityResetDecisions(compatibilityResetSource)
+  const windowState = validateCompatibilityWindowDecisions(compatibilityWindowSource)
   const [
     baseOpenApiSource,
     baseErrorCatalogSource,
     baseResetRegistrySource,
+    baseWindowRegistrySource,
     sseFixtures,
   ] = await Promise.all([
     readBaseBlob(normalizedBaseRef, 'docs/contracts/openapi-v1.yaml'),
     readBaseBlob(normalizedBaseRef, 'docs/contracts/error-catalog.md'),
     readOptionalBaseBlob(normalizedBaseRef, COMPATIBILITY_RESET_RELATIVE_PATH),
+    readOptionalBaseBlob(normalizedBaseRef, COMPATIBILITY_WINDOW_RELATIVE_PATH),
     loadSseFixturesAgainstGitBase(normalizedBaseRef),
   ])
   const resetHistory = validateCompatibilityResetHistory({
@@ -1627,6 +1644,26 @@ export async function validateContractsAgainstGitBase({
       headAdrSources: resetState.adrSources,
     })
   }
+  const windowHistory = validateCompatibilityWindowHistory({
+    baseRegistrySource: baseWindowRegistrySource,
+    headRegistrySource: compatibilityWindowSource,
+  })
+  if (windowHistory.baseRegistry !== undefined) {
+    const baseAdrSources = new Map(
+      await Promise.all(
+        windowHistory.baseRegistry.windows.map(async (window) => [
+          window.id,
+          await readBaseBlobBytes(normalizedBaseRef, window.adr),
+        ]),
+      ),
+    )
+    validateCompatibilityWindowAdrHistory({
+      baseAdrSources,
+      baseRegistry: windowHistory.baseRegistry,
+      headAdrSources: windowState.adrSources,
+      headRegistry: windowHistory.headRegistry,
+    })
+  }
   const parsedHeadOpenApi = validateHeadOpenApiSource({ headOpenApi, headOpenApiSource })
   const reset = resolveCompatibilityReset({
     baseOpenApiSource,
@@ -1634,18 +1671,36 @@ export async function validateContractsAgainstGitBase({
     headOpenApiSource,
     registrySource: compatibilityResetSource,
   })
+  const window = resolveCompatibilityWindow({
+    baseOpenApiSource,
+    baseRef: normalizedBaseRef,
+    headOpenApiSource,
+    registrySource: compatibilityWindowSource,
+  })
+  invariant(
+    reset === undefined || window === undefined,
+    'A compatibility reset and compatibility window must not target the same Git base.',
+  )
+  const failureAllowance = reset?.allowedFailures ?? window?.allowedFailures ?? []
   const result = validateContractCompatibility({
-    allowedFailures: reset?.allowedFailures,
+    allowedFailures: failureAllowance,
     baseErrorCatalogSource,
     baseOpenApi: parseOpenApiSource(baseOpenApiSource, 'Base'),
     baseSseFixtures: sseFixtures.baseSseFixtures,
     headErrorCatalogSource,
     headOpenApi: parsedHeadOpenApi,
     headSseFixtures: sseFixtures.headSseFixtures,
+    failureAllowanceLabel: window === undefined
+      ? 'Compatibility reset'
+      : `Compatibility window ${window.id}`,
   })
+  if (window !== undefined) {
+    requireAcceptedCompatibilityWindow(window)
+  }
   return {
     ...result,
     baseRef: normalizedBaseRef,
     resetId: reset?.id,
+    windowId: window?.id,
   }
 }

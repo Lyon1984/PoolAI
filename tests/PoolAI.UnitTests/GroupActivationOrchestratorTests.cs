@@ -18,64 +18,54 @@ public sealed class GroupActivationOrchestratorTests
         TimeSpan.Zero);
 
     [Fact]
-    public async Task ActivationCallsPortsInOrderAndForwardsOpaqueEvidence()
+    public async Task ActivationProbesReplayBeforeSupplyAndForwardsOpaqueEvidence()
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
         EntityId groupId = EntityId.New();
-        FakeUserStatusReader users = new(calls, Result.Success(
-            new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 7, 3, ObservedAt)));
-        FakeGroupStatusReader groups = new(calls, Result.Success(
-            new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt)));
-        FakeSupplyReadiness readiness = new(calls, Result.Success(
-            new SupplyReadinessSnapshot(groupId, true, "v1.opaque-evidence", 29, ObservedAt)));
         FakeActivationCommand activation = new(calls, Result.Success(
             new GroupActivationResult(groupId, GroupLifecycle.Active, 12)));
-        GroupActivationOrchestrator orchestrator = new(users, groups, readiness, activation);
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            activation: activation);
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
-            new GroupActivationRequest(
-                new ActorContext(actorId, 7),
-                groupId,
-                11,
-                "018f-idempotency",
-                "Supply configuration verified"),
+            ValidRequest(actorId, groupId),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(GroupLifecycle.Active, result.Value.Lifecycle);
-        Assert.Equal(["identity", "group", "supply", "activate"], calls);
+        Assert.Equal(["identity", "idempotency", "supply", "activate"], calls);
         ActivateGroupCommand command = Assert.IsType<ActivateGroupCommand>(activation.LastCommand);
-        Assert.Equal("v1.opaque-evidence", command.SupplyEvidence.OpaqueToken);
-        Assert.Equal(ObservedAt, command.SupplyEvidence.ObservedAt);
+        SupplyReadinessEvidence evidence = Assert.IsType<SupplyReadinessEvidence>(
+            command.SupplyEvidence);
+        Assert.Equal("v1.opaque-evidence", evidence.OpaqueToken);
+        Assert.Equal(ObservedAt, evidence.ObservedAt);
         Assert.Equal(11, command.ExpectedVersion);
     }
 
     [Fact]
-    public async Task StaleActorTokenStopsBeforeGroupOrSupplyReads()
+    public async Task StaleActorTokenStopsBeforeIdempotencyAndSupply()
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
         EntityId groupId = EntityId.New();
         GroupActivationOrchestrator orchestrator = new(
             new FakeUserStatusReader(calls, Result.Success(
-                new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 8, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Failure<SupplyReadinessSnapshot>(
-                "unexpected",
-                "This port must not be called.")),
-            new FakeActivationCommand(calls, Result.Failure<GroupActivationResult>(
-                "unexpected",
-                "This port must not be called.")));
+                new UserStatusSnapshot(
+                    actorId,
+                    UserLifecycle.Active,
+                    SystemRole.Admin,
+                    8,
+                    3,
+                    ObservedAt))),
+            UnexpectedSupply(calls),
+            UnexpectedActivation(calls),
+            ProceedingPreflight(calls));
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
-            new GroupActivationRequest(
-                new ActorContext(actorId, 7),
-                groupId,
-                11,
-                "018f-idempotency",
-                "Supply configuration verified"),
+            ValidRequest(actorId, groupId),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsFailure);
@@ -84,36 +74,30 @@ public sealed class GroupActivationOrchestratorTests
     }
 
     [Fact]
-    public async Task SupplyNotReadyDoesNotCallGroupMutation()
+    public async Task SupplyNotReadyFlowsThroughFinalTransactionalCommand()
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
         EntityId groupId = EntityId.New();
         FakeActivationCommand activation = new(calls, Result.Failure<GroupActivationResult>(
-            "unexpected",
-            "This port must not be called."));
-        GroupActivationOrchestrator orchestrator = new(
-            new FakeUserStatusReader(calls, Result.Success(
-                new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 7, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Success(
+            "group_activation_not_ready",
+            "The Group does not satisfy its activation preconditions."));
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            supply: new FakeSupplyReadiness(calls, Result.Success(
                 new SupplyReadinessSnapshot(groupId, false, string.Empty, 29, ObservedAt))),
-            activation);
+            activation: activation);
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
-            new GroupActivationRequest(
-                new ActorContext(actorId, 7),
-                groupId,
-                11,
-                "018f-idempotency",
-                "Supply configuration verified"),
+            ValidRequest(actorId, groupId),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsFailure);
         Assert.Equal("group_activation_not_ready", result.Error.Code);
-        Assert.Equal(["identity", "group", "supply"], calls);
-        Assert.Null(activation.LastCommand);
+        Assert.Equal(["identity", "idempotency", "supply", "activate"], calls);
+        Assert.Null(Assert.IsType<ActivateGroupCommand>(activation.LastCommand).SupplyEvidence);
     }
 
     [Theory]
@@ -128,7 +112,10 @@ public sealed class GroupActivationOrchestratorTests
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
-        GroupActivationOrchestrator orchestrator = CreateOrchestrator(calls, actorId, EntityId.New());
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            EntityId.New());
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
             new GroupActivationRequest(
@@ -157,12 +144,9 @@ public sealed class GroupActivationOrchestratorTests
         GroupActivationOrchestrator orchestrator = new(
             new FakeUserStatusReader(calls, Result.Success(
                 new UserStatusSnapshot(actorId, lifecycle, role, 7, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Success(
-                new SupplyReadinessSnapshot(groupId, true, "v1.opaque-evidence", 29, ObservedAt))),
-            new FakeActivationCommand(calls, Result.Success(
-                new GroupActivationResult(groupId, GroupLifecycle.Active, 12))));
+            UnexpectedSupply(calls),
+            UnexpectedActivation(calls),
+            ProceedingPreflight(calls));
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
             ValidRequest(actorId, groupId),
@@ -174,117 +158,71 @@ public sealed class GroupActivationOrchestratorTests
     }
 
     [Theory]
-    [InlineData(12, GroupLifecycle.Disabled, true, "version_conflict")]
-    [InlineData(11, GroupLifecycle.Active, true, "group_activation_not_ready")]
-    [InlineData(11, GroupLifecycle.Disabled, false, "group_activation_not_ready")]
-    public async Task ActivationRequiresMatchingDisabledGroupWithCurrentPeriod(
-        long actualVersion,
-        GroupLifecycle lifecycle,
-        bool hasCurrentPeriod,
-        string expectedError)
+    [InlineData("resource_not_found")]
+    [InlineData("version_conflict")]
+    [InlineData("group_activation_not_ready")]
+    public async Task FinalCommandOwnsAndReturnsGroupPreconditionFailures(string errorCode)
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
         EntityId groupId = EntityId.New();
-        GroupActivationOrchestrator orchestrator = new(
-            new FakeUserStatusReader(calls, Result.Success(
-                new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 7, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, lifecycle, actualVersion, hasCurrentPeriod, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Success(
-                new SupplyReadinessSnapshot(groupId, true, "v1.opaque-evidence", 29, ObservedAt))),
-            new FakeActivationCommand(calls, Result.Success(
-                new GroupActivationResult(groupId, GroupLifecycle.Active, 12))));
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            activation: new FakeActivationCommand(
+                calls,
+                Result.Failure<GroupActivationResult>(errorCode, "Final command rejected activation.")));
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
             ValidRequest(actorId, groupId),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsFailure);
-        Assert.Equal(expectedError, result.Error.Code);
-        Assert.Equal(["identity", "group"], calls);
-    }
-
-    [Theory]
-    [InlineData("identity", "identity_unavailable")]
-    [InlineData("group", "group_unavailable")]
-    [InlineData("supply", "supply_unavailable")]
-    public async Task PortFailureIsPropagatedAndStopsLaterEffects(
-        string failingPort,
-        string expectedError)
-    {
-        List<string> calls = [];
-        EntityId actorId = EntityId.New();
-        EntityId groupId = EntityId.New();
-        Result<UserStatusSnapshot> userResult = string.Equals(
-            failingPort,
-            "identity",
-            StringComparison.Ordinal)
-            ? Result.Failure<UserStatusSnapshot>(expectedError, "Identity read failed.")
-            : Result.Success(new UserStatusSnapshot(
-                actorId,
-                UserLifecycle.Active,
-                SystemRole.Admin,
-                7,
-                3,
-                ObservedAt));
-        Result<GroupSnapshot> groupResult = string.Equals(
-            failingPort,
-            "group",
-            StringComparison.Ordinal)
-            ? Result.Failure<GroupSnapshot>(expectedError, "Group read failed.")
-            : Result.Success(new GroupSnapshot(
-                groupId,
-                GroupLifecycle.Disabled,
-                11,
-                true,
-                ObservedAt));
-        Result<SupplyReadinessSnapshot> supplyResult = string.Equals(
-            failingPort,
-            "supply",
-            StringComparison.Ordinal)
-            ? Result.Failure<SupplyReadinessSnapshot>(expectedError, "Supply read failed.")
-            : Result.Success(new SupplyReadinessSnapshot(
-                groupId,
-                true,
-                "v1.opaque-evidence",
-                29,
-                ObservedAt));
-        GroupActivationOrchestrator orchestrator = new(
-            new FakeUserStatusReader(calls, userResult),
-            new FakeGroupStatusReader(calls, groupResult),
-            new FakeSupplyReadiness(calls, supplyResult),
-            new FakeActivationCommand(calls, Result.Failure<GroupActivationResult>(
-                "unexpected",
-                "Mutation must not be called.")));
-
-        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
-            ValidRequest(actorId, groupId),
-            TestContext.Current.CancellationToken);
-
-        Assert.True(result.IsFailure);
-        Assert.Equal(expectedError, result.Error.Code);
-        Assert.Equal(failingPort, calls[^1]);
-        Assert.DoesNotContain("activate", calls);
+        Assert.Equal(errorCode, result.Error.Code);
+        Assert.Equal(["identity", "idempotency", "supply", "activate"], calls);
     }
 
     [Fact]
-    public async Task ReadyFlagWithoutEvidenceDoesNotAuthorizeMutation()
+    public async Task TransientSupplyFailureDoesNotStartFinalCommand()
+    {
+        List<string> calls = [];
+        EntityId actorId = EntityId.New();
+        EntityId groupId = EntityId.New();
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            supply: new FakeSupplyReadiness(calls, Result.Failure<SupplyReadinessSnapshot>(
+                "dependency_unavailable",
+                "Supply read failed.")),
+            activation: UnexpectedActivation(calls));
+
+        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
+            ValidRequest(actorId, groupId),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("dependency_unavailable", result.Error.Code);
+        Assert.Equal(["identity", "idempotency", "supply"], calls);
+    }
+
+    [Fact]
+    public async Task ReadyFlagWithoutEvidenceBecomesTransactionalNotReadyDecision()
     {
         List<string> calls = [];
         EntityId actorId = EntityId.New();
         EntityId groupId = EntityId.New();
         FakeActivationCommand activation = new(calls, Result.Failure<GroupActivationResult>(
-            "unexpected",
-            "Mutation must not be called."));
-        GroupActivationOrchestrator orchestrator = new(
-            new FakeUserStatusReader(calls, Result.Success(
-                new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 7, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Success(
+            "group_activation_not_ready",
+            "Supply evidence is absent."));
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            supply: new FakeSupplyReadiness(calls, Result.Success(
                 new SupplyReadinessSnapshot(groupId, true, " ", 29, ObservedAt))),
-            activation);
+            activation: activation);
 
         Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
             ValidRequest(actorId, groupId),
@@ -292,7 +230,65 @@ public sealed class GroupActivationOrchestratorTests
 
         Assert.True(result.IsFailure);
         Assert.Equal("group_activation_not_ready", result.Error.Code);
-        Assert.Null(activation.LastCommand);
+        Assert.Null(Assert.IsType<ActivateGroupCommand>(activation.LastCommand).SupplyEvidence);
+    }
+
+    [Fact]
+    public async Task CompletedReplayStopsBeforeSupplyAndFinalCommand()
+    {
+        List<string> calls = [];
+        EntityId actorId = EntityId.New();
+        EntityId groupId = EntityId.New();
+        GroupActivationResult replay = new(
+            groupId,
+            GroupLifecycle.Active,
+            12,
+            new GroupResourceSnapshot(
+                groupId,
+                "Shared Pool",
+                null,
+                GroupLifecycle.Active,
+                12,
+                ObservedAt,
+                ObservedAt));
+        GroupActivationOrchestrator orchestrator = new(
+            ActiveAdmin(calls, actorId),
+            UnexpectedSupply(calls),
+            UnexpectedActivation(calls),
+            new FakeActivationPreflight(Result.Success<GroupActivationResult?>(replay), calls));
+
+        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
+            ValidRequest(actorId, groupId),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(replay, result.Value);
+        Assert.Equal(["identity", "idempotency"], calls);
+    }
+
+    [Theory]
+    [InlineData("group_activation_not_ready")]
+    [InlineData("idempotency_conflict")]
+    public async Task PreflightTerminalFailureStopsBeforeSupplyAndFinalCommand(string errorCode)
+    {
+        List<string> calls = [];
+        EntityId actorId = EntityId.New();
+        EntityId groupId = EntityId.New();
+        GroupActivationOrchestrator orchestrator = new(
+            ActiveAdmin(calls, actorId),
+            UnexpectedSupply(calls),
+            UnexpectedActivation(calls),
+            new FakeActivationPreflight(
+                Result.Failure<GroupActivationResult?>(errorCode, "Stored terminal result."),
+                calls));
+
+        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
+            ValidRequest(actorId, groupId),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(errorCode, result.Error.Code);
+        Assert.Equal(["identity", "idempotency"], calls);
     }
 
     private static GroupActivationRequest ValidRequest(EntityId actorId, EntityId groupId) => new(
@@ -305,15 +301,43 @@ public sealed class GroupActivationOrchestratorTests
     private static GroupActivationOrchestrator CreateOrchestrator(
         ICollection<string> calls,
         EntityId actorId,
-        EntityId groupId) => new(
-            new FakeUserStatusReader(calls, Result.Success(
-                new UserStatusSnapshot(actorId, UserLifecycle.Active, SystemRole.Admin, 7, 3, ObservedAt))),
-            new FakeGroupStatusReader(calls, Result.Success(
-                new GroupSnapshot(groupId, GroupLifecycle.Disabled, 11, true, ObservedAt))),
-            new FakeSupplyReadiness(calls, Result.Success(
+        EntityId groupId,
+        IGroupSupplyReadiness? supply = null,
+        IGroupActivationCommand? activation = null) => new(
+            ActiveAdmin(calls, actorId),
+            supply ?? new FakeSupplyReadiness(calls, Result.Success(
                 new SupplyReadinessSnapshot(groupId, true, "v1.opaque-evidence", 29, ObservedAt))),
-            new FakeActivationCommand(calls, Result.Success(
-                new GroupActivationResult(groupId, GroupLifecycle.Active, 12))));
+            activation ?? new FakeActivationCommand(calls, Result.Success(
+                new GroupActivationResult(groupId, GroupLifecycle.Active, 12))),
+            ProceedingPreflight(calls));
+
+    private static FakeUserStatusReader ActiveAdmin(
+        ICollection<string> calls,
+        EntityId actorId) =>
+        new FakeUserStatusReader(calls, Result.Success(
+            new UserStatusSnapshot(
+                actorId,
+                UserLifecycle.Active,
+                SystemRole.Admin,
+                7,
+                3,
+                ObservedAt)));
+
+    private static FakeActivationPreflight ProceedingPreflight(
+        ICollection<string> calls) => new FakeActivationPreflight(
+            Result.Success<GroupActivationResult?>(null),
+            calls);
+
+    private static FakeSupplyReadiness UnexpectedSupply(ICollection<string> calls) =>
+        new FakeSupplyReadiness(calls, Result.Failure<SupplyReadinessSnapshot>(
+            "unexpected",
+            "Supply must not be observed."));
+
+    private static FakeActivationCommand UnexpectedActivation(ICollection<string> calls) => new(
+        calls,
+        Result.Failure<GroupActivationResult>(
+            "unexpected",
+            "The final activation command must not run."));
 
     private sealed class FakeUserStatusReader(
         ICollection<string> calls,
@@ -324,19 +348,6 @@ public sealed class GroupActivationOrchestratorTests
             CancellationToken cancellationToken)
         {
             calls.Add("identity");
-            return ValueTask.FromResult(result);
-        }
-    }
-
-    private sealed class FakeGroupStatusReader(
-        ICollection<string> calls,
-        Result<GroupSnapshot> result) : IGroupStatusReader
-    {
-        public ValueTask<Result<GroupSnapshot>> GetAsync(
-            EntityId groupId,
-            CancellationToken cancellationToken)
-        {
-            calls.Add("group");
             return ValueTask.FromResult(result);
         }
     }
@@ -366,6 +377,19 @@ public sealed class GroupActivationOrchestratorTests
         {
             calls.Add("activate");
             LastCommand = command;
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class FakeActivationPreflight(
+        Result<GroupActivationResult?> result,
+        ICollection<string> calls) : IGroupActivationIdempotencyPreflight
+    {
+        public ValueTask<Result<GroupActivationResult?>> TryReplayAsync(
+            GroupActivationOrchestrationCommand command,
+            CancellationToken cancellationToken)
+        {
+            calls.Add("idempotency");
             return ValueTask.FromResult(result);
         }
     }

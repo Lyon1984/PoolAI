@@ -1,2 +1,5 @@
 minimumReleaseAgeExclude:
   - '@vitejs/plugin-vue@6.0.8'
+
+overrides:
+  'fast-uri@': 3.1.4
