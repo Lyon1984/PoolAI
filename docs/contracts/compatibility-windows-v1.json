@@ -16,6 +16,53 @@
         "#/paths/~1api~1v1~1admin~1subscription-templates/get/responses/400: new response status was added to an existing operation",
         "#/paths/~1api~1v1~1admin~1subscriptions/get/responses/400: new response status was added to an existing operation"
       ]
+    },
+    {
+      "id": "m1-e5-api-key-validation-contract",
+      "status": "proposed",
+      "scope": "openapi-v1-compatibility-window",
+      "baseRef": "afa8519573e6965ff5611b479b1e09b00971dde3",
+      "baseOpenApiSha256": "43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada",
+      "headOpenApiSha256": "14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c",
+      "adr": "docs/architecture/adr/0007-freeze-api-key-lifecycle-and-validation-contract.md",
+      "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
+      "approvalEvidence": null,
+      "allowedFailures": [
+        "#/components/schemas/AdminUserApiKeyCreateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
+        "#/components/schemas/AdminUserApiKeyUpdateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
+        "#/components/schemas/ApiKey/properties/allowed_cidrs/items/maxLength: maxLength tightened from <none> to 64",
+        "#/components/schemas/ApiKey/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9a-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
+        "#/components/schemas/ApiKey/properties/allowed_cidrs/maxItems: maxItems tightened from <none> to 50",
+        "#/components/schemas/ApiKey/properties/allowed_cidrs/uniqueItems: uniqueItems tightened from false to true",
+        "#/components/schemas/ApiKey/properties/prefix/pattern: pattern changed from <none> to ^sk-[A-Za-z0-9_-]{10,21}$",
+        "#/components/schemas/ApiKey/required: property allowed_cidrs became required",
+        "#/components/schemas/ApiKeyCreateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
+        "#/components/schemas/ApiKeyCreated/properties/secret/minLength: minLength tightened from 32 to 48",
+        "#/components/schemas/ApiKeyCreated/properties/secret/pattern: pattern changed from <none> to ^sk-[A-Za-z0-9_-]{44,55}[AEIMQUYcgkosw048]$",
+        "#/components/schemas/ApiKeyUpdateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys/post/responses/201/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys/post/responses/201/headers/location: reference changed from #/components/headers/Location to #/components/headers/ApiKeyLocation",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/responses/204/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/responses/400: new response status was added to an existing operation",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/responses/412/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/responses/412: reference changed from #/components/responses/PreconditionFailed to #/components/responses/ApiKeyPreconditionFailed",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/get/responses/200/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/patch/responses/200/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/patch/responses/412/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/patch/responses/412: reference changed from #/components/responses/PreconditionFailed to #/components/responses/ApiKeyPreconditionFailed",
+        "#/paths/~1api~1v1~1me~1api-keys/get/responses/400: new response status was added to an existing operation",
+        "#/paths/~1api~1v1~1me~1api-keys/post/responses/201/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys/post/responses/201/headers/location: reference changed from #/components/headers/Location to #/components/headers/ApiKeyLocation",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/responses/204/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/responses/400: new response status was added to an existing operation",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/responses/412/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/responses/412: reference changed from #/components/responses/PreconditionFailed to #/components/responses/ApiKeyPreconditionFailed",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/get/responses/200/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/200/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/403: new response status was added to an existing operation",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/412/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/412: reference changed from #/components/responses/PreconditionFailed to #/components/responses/ApiKeyPreconditionFailed"
+      ]
     }
   ]
 }

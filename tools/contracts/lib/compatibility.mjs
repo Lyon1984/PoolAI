@@ -558,6 +558,17 @@ function comparePatternAndFormat(baseSchema, headSchema, pointer, failures, dire
   }
 }
 
+function compareUniqueItems(baseSchema, headSchema, pointer, failures, direction) {
+  const baseValue = baseSchema.uniqueItems === true
+  const headValue = headSchema.uniqueItems === true
+  if (direction !== 'response' && !baseValue && headValue) {
+    addFailure(failures, `${pointer}/uniqueItems`, 'uniqueItems tightened from false to true')
+  }
+  if (direction !== 'request' && baseValue && !headValue) {
+    addFailure(failures, `${pointer}/uniqueItems`, 'uniqueItems response guarantee was removed')
+  }
+}
+
 function compareRequired(baseSchema, headSchema, pointer, failures, direction) {
   const baseRequired = new Set(baseSchema.required ?? [])
   const headRequired = new Set(headSchema.required ?? [])
@@ -858,6 +869,7 @@ function compareSchema(baseSchema, headSchema, pointer, failures, direction = 'r
   compareConst(baseSchema, headSchema, pointer, failures, direction)
   compareBounds(baseSchema, headSchema, pointer, failures, direction)
   comparePatternAndFormat(baseSchema, headSchema, pointer, failures, direction)
+  compareUniqueItems(baseSchema, headSchema, pointer, failures, direction)
   compareRequired(baseSchema, headSchema, pointer, failures, direction)
   compareProperties(baseSchema, headSchema, pointer, failures, direction)
   compareAdditionalProperties(baseSchema, headSchema, pointer, failures, direction)

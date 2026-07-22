@@ -246,6 +246,14 @@ export function runCompatibilitySelfTests({
   tightenedConstraint.components.schemas.AggregateTokenCount.maxLength = 77
   breaking(tightenedConstraint, 'maxLength tightened', errorCatalogSource)
 
+  const uniqueItemsConstraint = structuredClone(openApi)
+  uniqueItemsConstraint.components.schemas.ApiKeyCreateRequest.properties.allowed_cidrs.uniqueItems = true
+  breaking(uniqueItemsConstraint, 'uniqueItems tightened', errorCatalogSource)
+
+  const uniqueItemsResponseRemoval = structuredClone(openApi)
+  delete uniqueItemsResponseRemoval.components.schemas.ApiKey.properties.allowed_cidrs.uniqueItems
+  breaking(uniqueItemsResponseRemoval, 'uniqueItems response guarantee was removed', errorCatalogSource)
+
   const requiredProperty = structuredClone(openApi)
   requiredProperty.components.schemas.ControlPlaneProblem.properties.compatibility_note = {
     type: 'string',

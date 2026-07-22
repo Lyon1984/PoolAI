@@ -809,6 +809,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKeyPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '429':
@@ -824,7 +826,7 @@ paths:
       x-required-roles: [user, auditor, operator, admin]
       description: |
         用户必须对目标 Group 有 active Subscription。`group_id` 创建后不可变；需要换组时
-        必须撤销旧 Key 并创建新 Key。Key 明文只在本响应返回一次。
+        必须撤销旧 Key 并创建新 Key。Key 明文只在首次成功响应和同一幂等请求的安全重放响应中返回。
       security:
         - UserJwt: []
       parameters:
@@ -848,10 +850,11 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             Location:
-              $ref: '#/components/headers/Location'
+              $ref: '#/components/headers/ApiKeyLocation'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
             Cache-Control:
+              required: true
               schema:
                 type: string
                 const: no-store
@@ -894,7 +897,7 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
           content:
             application/json:
               schema:
@@ -940,7 +943,7 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
           content:
             application/json:
               schema:
@@ -949,12 +952,14 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
         '412':
-          $ref: '#/components/responses/PreconditionFailed'
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
         '428':
           $ref: '#/components/responses/PreconditionRequired'
         '429':
@@ -982,7 +987,9 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -990,7 +997,76 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
         '412':
-          $ref: '#/components/responses/PreconditionFailed'
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/api-keys/{apiKeyId}/rotate:
+    post:
+      tags: [Me]
+      operationId: rotateMyApiKey
+      summary: 原子轮换本人的 API Key
+      description: |
+        以同一事务创建继承原 Key name、group_id、expires_at 与 allowed_cidrs 的新 active Key，
+        并永久撤销原 Key。原 Key 的 group_id 不会改变；If-Match 绑定原 Key，成功响应的
+        Location 与 ETag 描述新 Key。新 secret 只在本响应和同一幂等请求的安全重放响应中返回。
+      x-required-roles: [user, auditor, operator, admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/ApiKeyId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyRotateRequest'
+      responses:
+        '201':
+          description: 新 API Key 已创建且原 Key 已撤销；相同幂等请求重放相同响应
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Location:
+              $ref: '#/components/headers/ApiKeyLocation'
+            ETag:
+              $ref: '#/components/headers/ApiKeyETag'
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                const: no-store
+              description: 固定为 `no-store`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '428':
           $ref: '#/components/responses/PreconditionRequired'
         '429':
@@ -1395,10 +1471,11 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             Location:
-              $ref: '#/components/headers/Location'
+              $ref: '#/components/headers/ApiKeyLocation'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
             Cache-Control:
+              required: true
               schema:
                 type: string
                 const: no-store
@@ -1451,7 +1528,7 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
           content:
             application/json:
               schema:
@@ -1494,7 +1571,7 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
           content:
             application/json:
               schema:
@@ -1510,7 +1587,7 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
         '412':
-          $ref: '#/components/responses/PreconditionFailed'
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '415':
@@ -1546,7 +1623,9 @@ paths:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
             ETag:
-              $ref: '#/components/headers/ETag'
+              $ref: '#/components/headers/ApiKeyETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1556,7 +1635,77 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
         '412':
-          $ref: '#/components/responses/PreconditionFailed'
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/admin/users/{userId}/api-keys/{apiKeyId}/rotate:
+    post:
+      tags: [AdminUsers]
+      operationId: adminRotateUserApiKey
+      summary: 管理员原子轮换目标用户的 API Key
+      description: |
+        以同一事务创建继承原 Key name、group_id、expires_at 与 allowed_cidrs 的新 active Key，
+        并永久撤销原 Key。代理轮换必须记录 reason；If-Match 绑定原 Key，成功响应的 Location
+        与 ETag 描述新 Key。新 secret 只在本响应和同一幂等请求的安全重放响应中返回。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/ApiKeyId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyRotateRequest'
+      responses:
+        '201':
+          description: 新 API Key 已创建且原 Key 已撤销；相同幂等请求重放相同响应
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Location:
+              $ref: '#/components/headers/ApiKeyLocation'
+            ETag:
+              $ref: '#/components/headers/ApiKeyETag'
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                const: no-store
+              description: 固定为 `no-store`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/ApiKeyPreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
         '428':
           $ref: '#/components/responses/PreconditionRequired'
         '429':
@@ -3311,6 +3460,17 @@ components:
       schema:
         type: string
         pattern: '^"v[1-9][0-9]*"$'
+    ApiKeyLocation:
+      required: true
+      description: 新 API Key 的绝对或同源相对 URI
+      schema:
+        type: string
+    ApiKeyETag:
+      required: true
+      description: 当前响应所指 API Key 的正整数 version 生成的强 ETag，例如 `"v7"`
+      schema:
+        type: string
+        pattern: '^"v[1-9][0-9]*"$'
     RetryAfter:
       description: 可重试前至少等待的秒数；`group_quota_reserved` 和 `gateway_overloaded` 固定为 1，二者 HTTP 状态均为 429
       schema:
@@ -3611,6 +3771,28 @@ components:
                 status: 412
                 detail: 资源已被其他操作更新，请读取最新状态后重试。
                 instance: /api/v1/admin/subscriptions/0190f8be-4ed7-7ab1-98c1-93a9e31e1710
+                code: version_conflict
+                request_id: 0190f8bf-a040-7444-a2ca-c4bc32e48b47
+                retryable: true
+    ApiKeyPreconditionFailed:
+      description: API Key If-Match 与当前 version 不一致；强 ETag 必返
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        ETag:
+          $ref: '#/components/headers/ApiKeyETag'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ControlPlaneProblem'
+          examples:
+            versionConflict:
+              value:
+                type: https://poolai.example/problems/version-conflict
+                title: Resource version conflict
+                status: 412
+                detail: API Key 已被其他操作更新，请读取最新状态后重试。
+                instance: /api/v1/me/api-keys/0190f8be-4ed7-7ab1-98c1-93a9e31e1710
                 code: version_conflict
                 request_id: 0190f8bf-a040-7444-a2ca-c4bc32e48b47
                 retryable: true
@@ -5676,7 +5858,7 @@ components:
     ApiKey:
       type: object
       additionalProperties: false
-      required: [id, name, prefix, group_id, status, effective_status, version, created_at]
+      required: [id, name, prefix, group_id, status, effective_status, version, allowed_cidrs, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -5684,7 +5866,8 @@ components:
           type: string
         prefix:
           type: string
-          description: 仅用于识别，例如 sk-pool-…Q7M2
+          pattern: '^sk-[A-Za-z0-9_-]{10,21}$'
+          description: 仅用于识别；由配置 prefix 与 payload 前 8 字符组成，总长 13..24，例如 `sk-pool-AbCdEf12`
         group_id:
           $ref: '#/components/schemas/Uuid'
         status:
@@ -5703,8 +5886,14 @@ components:
             - type: 'null'
         allowed_cidrs:
           type: array
+          maxItems: 50
+          uniqueItems: true
+          description: 规范化、去重并按 ordinal 排序的 CIDR；空数组表示不限制来源地址
           items:
             type: string
+            maxLength: 64
+            pattern: '^[0-9a-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+            description: 规范化的 IPv4 或 IPv6 network/prefix
         created_at:
           $ref: '#/components/schemas/Timestamp'
         last_used_at:
@@ -5723,15 +5912,19 @@ components:
         group_id:
           $ref: '#/components/schemas/Uuid'
         expires_at:
+          description: 省略或 null 均表示无固定到期日；非 null 必须晚于 PostgreSQL time
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         allowed_cidrs:
           type: array
           maxItems: 50
+          description: 省略或空数组表示不限制来源地址；服务端规范化、去重并按 ordinal 排序
           items:
             type: string
             maxLength: 64
+            pattern: '^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+            description: IPv4 或 IPv6 CIDR；拒绝 zone identifier、IPv4-mapped IPv6、无效地址或前缀
     AdminUserApiKeyCreateRequest:
       type: object
       additionalProperties: false
@@ -5744,15 +5937,19 @@ components:
         group_id:
           $ref: '#/components/schemas/Uuid'
         expires_at:
+          description: 省略或 null 均表示无固定到期日；非 null 必须晚于 PostgreSQL time
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         allowed_cidrs:
           type: array
           maxItems: 50
+          description: 省略或空数组表示不限制来源地址；服务端规范化、去重并按 ordinal 排序
           items:
             type: string
             maxLength: 64
+            pattern: '^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+            description: IPv4 或 IPv6 CIDR；拒绝 zone identifier、IPv4-mapped IPv6、无效地址或前缀
         reason:
           type: string
           minLength: 1
@@ -5768,9 +5965,21 @@ components:
           $ref: '#/components/schemas/ApiKey'
         secret:
           type: string
-          minLength: 32
+          minLength: 48
+          pattern: '^sk-[A-Za-z0-9_-]{44,55}[AEIMQUYcgkosw048]$'
           readOnly: true
-          description: 只在创建响应和同一幂等请求的安全重放响应中返回
+          description: 配置 prefix 加 32-byte CSPRNG 的 43 字符无填充 base64url；只在创建/轮换响应和同一幂等请求的安全重放响应中返回
+    ApiKeyRotateRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '.*\S.*'
+          description: 本人或管理员轮换凭据的强制审计理由
     ApiKeyUpdateRequest:
       type: object
       additionalProperties: false
@@ -5784,15 +5993,19 @@ components:
           type: string
           enum: [active, disabled]
         expires_at:
+          description: 省略表示保持原值；null 清除固定到期日；从 expired 恢复 effective active 会触发 Subscription gate
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         allowed_cidrs:
           type: array
           maxItems: 50
+          description: 省略表示保持原值，显式空数组表示清除来源限制；非空值由服务端规范化、去重并按 ordinal 排序
           items:
             type: string
             maxLength: 64
+            pattern: '^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+            description: IPv4 或 IPv6 CIDR；拒绝 zone identifier、IPv4-mapped IPv6、无效地址或前缀
     AdminUserApiKeyUpdateRequest:
       type: object
       additionalProperties: false
@@ -5812,15 +6025,19 @@ components:
           type: string
           enum: [active, disabled]
         expires_at:
+          description: 省略表示保持原值；null 清除固定到期日；从 expired 恢复 effective active 会触发 Subscription gate
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         allowed_cidrs:
           type: array
           maxItems: 50
+          description: 省略表示保持原值，显式空数组表示清除来源限制；非空值由服务端规范化、去重并按 ordinal 排序
           items:
             type: string
             maxLength: 64
+            pattern: '^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$'
+            description: IPv4 或 IPv6 CIDR；拒绝 zone identifier、IPv4-mapped IPv6、无效地址或前缀
         reason:
           type: string
           minLength: 1

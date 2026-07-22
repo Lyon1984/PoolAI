@@ -61,7 +61,8 @@ Release 1 明确不引入：
 
 | 上游/提供方 | 下游/使用方 | 关系与集成方式 | 禁止方式 |
 |---|---|---|---|
-| Identity | SubscriptionAccess、Gateway、控制面 Orchestrator | 同步 Open Host Service；只返回最小身份/Key Snapshot | 共享 User/ApiKey Entity 或查询 Identity DbContext |
+| Identity | SubscriptionAccess、Gateway、控制面 Orchestrator | 同步 Open Host Service；向 Orchestrator 暴露最小不可变 Key owner/Group/lifecycle/version Snapshot 与 Identity-owned command port | 共享 User/ApiKey Entity、查询 Identity DbContext，或由调用方提交 Key mutation |
+| SubscriptionAccess | 控制面 Orchestrator | canonical effective-access point-in-time read port；只返回目标 User/Group 的最小授权结果与观察时间 | Orchestrator 写/锁 Subscription 表、SubscriptionAccess 提交 Identity mutation，或把点时结果当跨 Context commit-time 保证 |
 | GroupQuota | SubscriptionAccess、Gateway、Usage | 同步 Group/Quota 端口；结算事实通过版本化 outbox 事件异步发布 | Usage 修改 quota，或查询方以聚合结果决定准入 |
 | Supply | Routing、Gateway、Group Activation Orchestrator | 同步 Supply Configuration/Readiness/候选端口 | 共享 Account credential Entity、由调用方写 `group_supply_configurations` 或 `group_accounts` |
 | Routing | Gateway | 同步策略/lease 端口；返回有生命周期的 lease handle | Gateway 直接写 Redis key 或复制 Lua |
@@ -148,7 +149,7 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 | Context | Aggregate Root | 主要内部事实/对象 | 必须由 Root/原子命令保护的不变量 |
 |---|---|---|---|
 | Identity | User | status、role、password/TOTP、`token_version` | 状态/角色安全变更与 token_version、审计一致 |
-| Identity | ApiKey | HMAC/prefix、固定 Group、status/effective expiry | 明文只回显一次；Group 不可原地更换；revoked 终态 |
+| Identity | ApiKey | HMAC/prefix、固定 Group、status/effective expiry | 一个命令只生成一份逻辑凭据；完整密钥只在首次成功响应及同一绑定幂等请求的安全重放中返回；Group 不可原地更换；revoked 终态 |
 | Identity | RefreshFamily | refresh token generations、revocation | 单次轮换；重放撤销 family |
 | Identity | PasswordResetRequest | one-time token 状态与 email outbox reference | token 单次消费；token 与 email outbox 同事务创建 |
 | SubscriptionAccess | SubscriptionTemplate | 名称、Group、默认有效期 | 无价格/配额；退役规则一致 |
