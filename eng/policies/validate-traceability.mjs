@@ -119,11 +119,53 @@ const adr0006MemoryStatusPrefix = adr0006PlanStatusPrefix
 const adr0006ProposedMemoryStatus = adr0006ProposedPlanStatus
 const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
 const adr0006AllowedCurrentStateReferenceDigests = new Set([
-  'ec871fd618754aaac9c15851d9e88ff2d53a74c37660ac0804fc4f69d9308614',
-  'e980fc221a4df4abf74abdb694efa81ff0dd750cef0d2a53e518cadeb2ad5039',
-  'b6f23587ec2ed0bf00afac63922de7412777b586756e0ac94180af484a3f4e79',
-  '08c0188c5cec0b7000e71ba426146c6c1cfa29abfaf1fbea55dbe0b5ec056194',
+  'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
+  'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
+  '446bfca9e6bd847341176d6cb530f507bbbefd20d07c03a6f6c5facefc417d15',
+  'ce0fa59682a2b4b72933e75ca06cbc56ece3a9ce51db03ac4cf9b5fe0ef3f5d7',
 ])
+// Accepted bases may predate a reviewed current-state refresh. Historical
+// digests remain valid only for the exact Git blob that originally carried
+// them; they never widen validation of the event head or checkout.
+const adr0006HistoricalBaseReferenceDigestsByMemoryBlob = new Map([
+  [
+    '4b6b4064961498f8b876c19c630e07d4db4170e1',
+    new Set([
+      'ec871fd618754aaac9c15851d9e88ff2d53a74c37660ac0804fc4f69d9308614',
+      'e980fc221a4df4abf74abdb694efa81ff0dd750cef0d2a53e518cadeb2ad5039',
+      'b6f23587ec2ed0bf00afac63922de7412777b586756e0ac94180af484a3f4e79',
+      '08c0188c5cec0b7000e71ba426146c6c1cfa29abfaf1fbea55dbe0b5ec056194',
+    ]),
+  ],
+])
+const selectAdr0006CurrentStateReferenceDigests = (
+  memoryBlob,
+  allowHistoricalBase,
+) => allowHistoricalBase
+  ? adr0006HistoricalBaseReferenceDigestsByMemoryBlob.get(memoryBlob)
+    ?? adr0006AllowedCurrentStateReferenceDigests
+  : adr0006AllowedCurrentStateReferenceDigests
+
+if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 1) {
+  fail('ADR 0006 historical current-state policy must register exactly one reviewed base blob.')
+}
+for (const [memoryBlob, digests] of adr0006HistoricalBaseReferenceDigestsByMemoryBlob) {
+  if (!/^[0-9a-f]{40}$/u.test(memoryBlob)
+      || digests.size !== 4
+      || [...digests].some((digest) => !/^[0-9a-f]{64}$/u.test(digest))
+      || sameValues(digests, adr0006AllowedCurrentStateReferenceDigests)) {
+    fail('ADR 0006 historical current-state policy contains an invalid blob or digest set.')
+  }
+  if (selectAdr0006CurrentStateReferenceDigests(memoryBlob, true) !== digests
+      || selectAdr0006CurrentStateReferenceDigests(memoryBlob, false)
+        !== adr0006AllowedCurrentStateReferenceDigests) {
+    fail('ADR 0006 historical current-state digests escaped their exact base-only blob binding.')
+  }
+}
+if (selectAdr0006CurrentStateReferenceDigests('0'.repeat(40), true)
+    !== adr0006AllowedCurrentStateReferenceDigests) {
+  fail('ADR 0006 historical current-state policy accepted an unknown base blob.')
+}
 const adr0006ApprovalTemplate = [
   'APPROVED: ADR 0006 — Freeze the cross-context database read/lock allowlist',
   '',
@@ -349,7 +391,12 @@ const validateAdr0006Governance = (adrSource, planSource) => {
   return governanceFailures
 }
 
-const validateAdr0006CurrentState = (source, status, approvalUrl = null) => {
+const validateAdr0006CurrentState = (
+  source,
+  status,
+  approvalUrl = null,
+  allowedReferenceDigests = adr0006AllowedCurrentStateReferenceDigests,
+) => {
   const memoryFailures = []
   const lines = source.split(/\r?\n/u)
   const statusLines = lines.filter((line) => line.startsWith(adr0006MemoryStatusPrefix))
@@ -368,7 +415,7 @@ const validateAdr0006CurrentState = (source, status, approvalUrl = null) => {
       || statusLines[0] !== expectedStatusLine
       || countAdr0006References(source) !== 5
       || referenceLines.length !== 5
-      || !sameValues(nonStatusReferenceDigests, adr0006AllowedCurrentStateReferenceDigests)) {
+      || !sameValues(nonStatusReferenceDigests, allowedReferenceDigests)) {
     memoryFailures.push('Project memory must contain one canonical ADR 0006 status bullet plus only the four reviewed non-status reference lines, with no HTML markup or hidden cross-line reference.')
   }
   return memoryFailures
@@ -467,6 +514,25 @@ const adr0006ReviewedMemoryReferenceIndexes = adr0006ReviewedMemoryFixtureLines
   .map(([, index]) => index)
 if (adr0006ReviewedMemoryReferenceIndexes.length !== 4) {
   fail('ADR 0006 current-state digest-drift self-test requires exactly four reviewed non-status reference lines.')
+}
+const adr0006HistoricalMemoryReferenceDigests =
+  adr0006HistoricalBaseReferenceDigestsByMemoryBlob.values().next().value ?? new Set()
+const adr0006MixedGenerationReferenceDigests = new Set([
+  ...[...adr0006AllowedCurrentStateReferenceDigests].slice(0, 2),
+  ...[...adr0006HistoricalMemoryReferenceDigests].slice(0, 2),
+])
+for (const [label, digests] of [
+  ['historical base digests on the current memory', adr0006HistoricalMemoryReferenceDigests],
+  ['mixed current and historical digests', adr0006MixedGenerationReferenceDigests],
+]) {
+  if (validateAdr0006CurrentState(
+    adr0006GovernanceFixtures.proposedMemory,
+    'Proposed',
+    null,
+    digests,
+  ).length === 0) {
+    fail(`ADR 0006 current-state digest self-test accepted ${label}.`)
+  }
 }
 for (const referenceIndex of adr0006ReviewedMemoryReferenceIndexes) {
   const driftedLines = [...adr0006ReviewedMemoryFixtureLines]
@@ -1456,6 +1522,7 @@ const validateAdr0006GovernanceSnapshot = (
   label,
   expectedStatus,
   expectedEvidence = null,
+  allowHistoricalBaseMemory = false,
 ) => {
   const snapshotFailures = []
   const reject = (message) => snapshotFailures.push(message)
@@ -1499,6 +1566,10 @@ const validateAdr0006GovernanceSnapshot = (
     snapshot.memory.source,
     expectedStatus,
     expectedStatus === 'Accepted' ? snapshotEvidence.approvalUrl : undefined,
+    selectAdr0006CurrentStateReferenceDigests(
+      snapshot.entries.get(currentStatePath)?.entry?.object,
+      allowHistoricalBaseMemory,
+    ),
   )) {
     reject(`ADR 0006 ${label} current state is invalid: ${memoryFailure}`)
   }
@@ -1878,6 +1949,7 @@ const validateAdr0006AcceptedRefHistory = (
       'base',
       'Accepted',
       evidence,
+      true,
     )) {
       reject(snapshotFailure)
     }
