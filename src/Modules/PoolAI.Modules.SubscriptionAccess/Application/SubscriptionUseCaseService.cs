@@ -905,11 +905,11 @@ internal sealed class SubscriptionUseCaseService :
             userId,
             groupId,
             cancellationToken).ConfigureAwait(false);
-        if (value is null)
+        if (value is null || value.EffectiveStatus != SubscriptionEffectiveLifecycle.Active)
         {
             return Failure<SubscriptionAccessSnapshot>(
                 "subscription_required",
-                "No canonical Subscription exists for the requested Group.");
+                "No active canonical Subscription exists for the requested Group.");
         }
 
         return Result.Success(new SubscriptionAccessSnapshot(

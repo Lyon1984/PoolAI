@@ -99,7 +99,10 @@ internal sealed partial class PostgresSubscriptionRepository : ISubscriptionRepo
         FROM public.subscriptions AS subscription
         CROSS JOIN observed
         WHERE subscription.user_id = $1
-          AND subscription.group_id = $2;
+          AND subscription.group_id = $2
+          AND subscription.status = 'active'
+          AND subscription.starts_at <= observed.at
+          AND subscription.expires_at > observed.at;
         """;
 
     private static readonly string ListForUserSql = $"""

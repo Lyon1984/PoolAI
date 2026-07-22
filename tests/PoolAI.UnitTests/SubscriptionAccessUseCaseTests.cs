@@ -1237,15 +1237,37 @@ public sealed class SubscriptionAccessUseCaseTests
         Assert.Single(idempotency.Completions);
     }
 
+    [Fact]
+    public async Task EffectiveAccessMapsTheActiveLifecycleStatus()
+    {
+        SubscriptionRecord subscription = Subscription(version: 7) with
+        {
+            EffectiveStatus = SubscriptionEffectiveLifecycle.Active,
+        };
+        FakeSubscriptionRepository repository = new()
+        {
+            EffectiveAccessResult = subscription,
+        };
+        TestCommandEnvironment environment = new(repository);
+
+        Result<SubscriptionAccessSnapshot> result = await environment.Service.GetEffectiveAccessAsync(
+            subscription.UserId,
+            subscription.GroupId,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(SubscriptionEffectiveStatus.Active, result.Value.EffectiveStatus);
+        Assert.Equal(subscription.Id, result.Value.SubscriptionId);
+        Assert.Equal(subscription.ObservedAt, result.Value.ObservedAt);
+    }
+
     [Theory]
-    [InlineData(SubscriptionEffectiveLifecycle.Scheduled, SubscriptionEffectiveStatus.Scheduled)]
-    [InlineData(SubscriptionEffectiveLifecycle.Active, SubscriptionEffectiveStatus.Active)]
-    [InlineData(SubscriptionEffectiveLifecycle.Expired, SubscriptionEffectiveStatus.Expired)]
-    [InlineData(SubscriptionEffectiveLifecycle.Suspended, SubscriptionEffectiveStatus.Suspended)]
-    [InlineData(SubscriptionEffectiveLifecycle.Revoked, SubscriptionEffectiveStatus.Revoked)]
-    public async Task EffectiveAccessMapsEveryLifecycleStatus(
-        SubscriptionEffectiveLifecycle source,
-        SubscriptionEffectiveStatus expected)
+    [InlineData(SubscriptionEffectiveLifecycle.Scheduled)]
+    [InlineData(SubscriptionEffectiveLifecycle.Expired)]
+    [InlineData(SubscriptionEffectiveLifecycle.Suspended)]
+    [InlineData(SubscriptionEffectiveLifecycle.Revoked)]
+    public async Task EffectiveAccessRejectsEveryInactiveLifecycleStatus(
+        SubscriptionEffectiveLifecycle source)
     {
         SubscriptionRecord subscription = Subscription(version: 7) with
         {
@@ -1262,10 +1284,8 @@ public sealed class SubscriptionAccessUseCaseTests
             subscription.GroupId,
             TestContext.Current.CancellationToken);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(expected, result.Value.EffectiveStatus);
-        Assert.Equal(subscription.Id, result.Value.SubscriptionId);
-        Assert.Equal(subscription.ObservedAt, result.Value.ObservedAt);
+        Assert.True(result.IsFailure);
+        Assert.Equal("subscription_required", result.Error.Code);
     }
 
     [Fact]
