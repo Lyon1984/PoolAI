@@ -29,3 +29,13 @@ paths = [
   '''^docs/contracts/compatibility-windows-v1\.json$''',
 ]
 regexes = ['''^(d8887b322bebc575005a2b170be6a17cf002de94154c94cbfa8a729bf091f076|43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada)$''']
+
+[[allowlists]]
+description = "ADR 0007 public OpenAPI digests are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0007-freeze-api-key-lifecycle-and-validation-contract\.md$''',
+  '''^docs/contracts/compatibility-windows-v1\.json$''',
+]
+regexes = ['''^(43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada|14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c)$''']

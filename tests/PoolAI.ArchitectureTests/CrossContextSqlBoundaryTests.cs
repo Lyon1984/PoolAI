@@ -61,6 +61,11 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_bump_user_security_versions"] = Identity,
         ["poolai_bump_role_user_version"] = Identity,
         ["poolai_identity_update_user"] = Identity,
+        ["poolai_api_key_ip_acl_is_canonical"] = Identity,
+        ["poolai_api_key_create"] = Identity,
+        ["poolai_api_key_update"] = Identity,
+        ["poolai_api_key_revoke"] = Identity,
+        ["poolai_api_key_rotate"] = Identity,
         ["poolai_snapshot_subscription_template"] = SubscriptionAccess,
         ["poolai_subscription_template_create"] = SubscriptionAccess,
         ["poolai_subscription_template_update"] = SubscriptionAccess,
@@ -158,6 +163,8 @@ public sealed class CrossContextSqlBoundaryTests
 
     private static readonly string[] RegisteredFunctionCallBindings =
     [
+        "poolai_api_key_create->poolai_api_key_ip_acl_is_canonical",
+        "poolai_api_key_update->poolai_api_key_ip_acl_is_canonical",
         "poolai_emit_quota_event->poolai_business_error",
         "poolai_group_create->poolai_quota_initialize",
         "poolai_quota_adjust_total->poolai_business_error",
@@ -200,6 +207,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0005_identity_m1_e2.sql:$permission_audit$:623427a4c7007d454fb4010d29e46f463a32f6982dc968bc6d32c8cc90c6323d",
         "0006_identity_m1_e3.sql:$permission_audit$:e6ef176d5a1e31f3653a4f1360949586e638c8415eaad9615aca21ed8c298414",
         "0007_group_subscription_m1_e4.sql:$permission_audit$:92eec20f8aec97715ffdee2e4bb182d405558860e8f86d49abbf56eedd238641",
+        "0008_identity_api_keys_m1_e5.sql:$permission_audit$:e537d1ed39ebfeeb040b34e330e0e395a48a07fd55ccff41639a95cd7750d6ad",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -918,6 +926,26 @@ public sealed class CrossContextSqlBoundaryTests
             "from public.subscriptions as current_subscription",
             "for update",
             "v_now := clock_timestamp()");
+
+        Dictionary<string, string> apiKeys =
+            ReadFunctions("0008_identity_api_keys_m1_e5.sql");
+        AssertInOrder(
+            NormalizeSql(apiKeys["poolai_api_key_create"]),
+            "v_now := pg_catalog.clock_timestamp()",
+            "insert into public.api_keys");
+        foreach (string function in new[]
+                 {
+                     "poolai_api_key_update",
+                     "poolai_api_key_revoke",
+                     "poolai_api_key_rotate",
+                 })
+        {
+            AssertInOrder(
+                NormalizeSql(apiKeys[function]),
+                "from public.api_keys as current_key",
+                "for update",
+                "v_now := pg_catalog.clock_timestamp()");
+        }
     }
 
     private static Dictionary<string, string> ReadFunctions(string migration)

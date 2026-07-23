@@ -622,16 +622,21 @@ public sealed class PostgresQuotaCrashCompensationTests
         await InsertTemplateAndSubscriptionAsync(session, scenario, cancellationToken)
             .ConfigureAwait(false);
         using NpgsqlCommand apiKey = session.CreateCommand("""
-            INSERT INTO public.api_keys (
-                id, user_id, group_id, name, key_prefix, secret_hash, pepper_version
-            ) VALUES ($1, $2, $3, 'AC-039 key', $4, $5, 1);
+            SELECT disposition
+            FROM public.poolai_api_key_create(
+                $1, $2, $3, 'AC-039 key', $4, $5,
+                1::smallint, NULL, '[]'::jsonb);
             """);
         apiKey.Parameters.AddWithValue(scenario.ApiKeyId);
         apiKey.Parameters.AddWithValue(scenario.UserId);
         apiKey.Parameters.AddWithValue(scenario.GroupId);
         apiKey.Parameters.AddWithValue(scenario.KeyPrefix);
         apiKey.Parameters.AddWithValue(RandomNumberGenerator.GetBytes(32));
-        await AssertSingleRowAsync(apiKey, cancellationToken).ConfigureAwait(false);
+        Assert.Equal(
+            "created",
+            Assert.IsType<string>(await apiKey
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private static async ValueTask InsertTemplateAndSubscriptionAsync(

@@ -103,6 +103,7 @@ const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   'required',
   'then',
   'type',
+  'uniqueItems',
   'writeOnly',
 ])
 

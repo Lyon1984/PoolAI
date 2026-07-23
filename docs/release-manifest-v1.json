@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada"
+    "sha256": "14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 7,
-    "maximum_compatible_version": 7,
+    "minimum_compatible_version": 8,
+    "maximum_compatible_version": 8,
     "migrations": [
       {
         "version": 1,
@@ -52,6 +52,12 @@
         "name": "0007_group_subscription_m1_e4.sql",
         "source": "docs/database/0007_group_subscription_m1_e4.sql",
         "sha256": "d52ee244a437d095a20d7e1bf1ed67c48ff872145da50c78c61143847d2f9279"
+      },
+      {
+        "version": 8,
+        "name": "0008_identity_api_keys_m1_e5.sql",
+        "source": "docs/database/0008_identity_api_keys_m1_e5.sql",
+        "sha256": "5313c44a184497426c200654d41d411e6cc33a724c329f087d4c5d415e4b94ce"
       }
     ]
   },
