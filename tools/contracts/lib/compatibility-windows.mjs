@@ -165,8 +165,9 @@ export function parseCompatibilityWindowRegistry(source) {
           !failure.includes('\n') && !failure.includes('\r'),
         `${label}.allowedFailures[${failureIndex}] must be one exact OpenAPI diagnostic.`,
       )
+      const pointer = failure.slice(0, failure.indexOf(': '))
       invariant(
-        !failure.includes('*') && !failure.includes('?'),
+        !pointer.includes('*') && !pointer.includes('?'),
         `${label}.allowedFailures[${failureIndex}] must not contain wildcards.`,
       )
     }

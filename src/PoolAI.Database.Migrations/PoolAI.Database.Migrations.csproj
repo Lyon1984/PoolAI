@@ -13,5 +13,6 @@
     <EmbeddedResource Include="../../docs/database/0006_identity_m1_e3.sql" Link="Migrations/0006_identity_m1_e3.sql" />
     <EmbeddedResource Include="../../docs/database/0007_group_subscription_m1_e4.sql" Link="Migrations/0007_group_subscription_m1_e4.sql" />
     <EmbeddedResource Include="../../docs/database/0008_identity_api_keys_m1_e5.sql" Link="Migrations/0008_identity_api_keys_m1_e5.sql" />
+    <EmbeddedResource Include="../../docs/database/0009_identity_api_key_text_validation_m1_e5.sql" Link="Migrations/0009_identity_api_key_text_validation_m1_e5.sql" />
   </ItemGroup>
 </Project>

@@ -43,6 +43,26 @@ const STRICT_ADMIN_LIST_QUERY_OPERATIONS = new Set([
   'adminListSubscriptions',
 ])
 
+export const API_KEY_TEXT_PATTERN = String.raw`^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
+
+const API_KEY_NAME_INPUTS = [
+  ['AdminUserApiKeyCreateRequest', 'name'],
+  ['AdminUserApiKeyUpdateRequest', 'name'],
+  ['ApiKeyCreateRequest', 'name'],
+  ['ApiKeyUpdateRequest', 'name'],
+]
+
+const API_KEY_REASON_INPUTS = [
+  ['AdminUserApiKeyCreateRequest', 'reason'],
+  ['AdminUserApiKeyUpdateRequest', 'reason'],
+  ['ApiKeyRotateRequest', 'reason'],
+]
+
+const API_KEY_REVOKE_OPERATIONS = [
+  ['/api/v1/admin/users/{userId}/api-keys/{apiKeyId}', 'delete', 'adminRevokeUserApiKey'],
+  ['/api/v1/me/api-keys/{apiKeyId}', 'delete', 'revokeMyApiKey'],
+]
+
 const BODY_ERROR_RESPONSE_BINDINGS = {
   control: {
     '413': {
@@ -320,6 +340,75 @@ function validateBodyErrorComponents(openApi) {
         `${binding.responseComponent} must bind x-error-code ${binding.code}.`,
       )
     }
+  }
+}
+
+function validateApiKeyTextSchema(schema, maxLength, pointer) {
+  invariant(
+    schema?.type === 'string' &&
+      schema.minLength === 1 &&
+      schema.maxLength === maxLength &&
+      schema.pattern === API_KEY_TEXT_PATTERN,
+    `${pointer} must use the exact API Key Unicode scalar text contract (1..${maxLength}).`,
+  )
+}
+
+function validateApiKeyTextInputs(openApi) {
+  for (const [schemaName, propertyName] of API_KEY_NAME_INPUTS) {
+    validateApiKeyTextSchema(
+      openApi.components?.schemas?.[schemaName]?.properties?.[propertyName],
+      100,
+      `#/components/schemas/${schemaName}/properties/${propertyName}`,
+    )
+  }
+
+  for (const [schemaName, propertyName] of API_KEY_REASON_INPUTS) {
+    validateApiKeyTextSchema(
+      openApi.components?.schemas?.[schemaName]?.properties?.[propertyName],
+      500,
+      `#/components/schemas/${schemaName}/properties/${propertyName}`,
+    )
+  }
+
+  const sharedChangeReason = openApi.components?.parameters?.XChangeReason
+  invariant(
+    sharedChangeReason?.schema?.pattern === String.raw`.*\S.*`,
+    '#/components/parameters/XChangeReason must remain on its existing shared contract.',
+  )
+
+  const apiKeyChangeReason = openApi.components?.parameters?.ApiKeyChangeReason
+  invariant(
+    apiKeyChangeReason?.name === 'X-Change-Reason' &&
+      apiKeyChangeReason.in === 'header' &&
+      apiKeyChangeReason.required === true,
+    '#/components/parameters/ApiKeyChangeReason must be the required X-Change-Reason header.',
+  )
+  validateApiKeyTextSchema(
+    apiKeyChangeReason?.schema,
+    500,
+    '#/components/parameters/ApiKeyChangeReason/schema',
+  )
+
+  const expectedReference = '#/components/parameters/ApiKeyChangeReason'
+  for (const [route, method, operationId] of API_KEY_REVOKE_OPERATIONS) {
+    const operation = openApi.paths?.[route]?.[method]
+    invariant(
+      operation?.operationId === operationId,
+      `${method.toUpperCase()} ${route} must remain operation ${operationId}.`,
+    )
+    const references = (operation.parameters ?? [])
+      .map((parameter) => parameter?.$ref)
+      .filter((reference) => reference === expectedReference)
+    invariant(
+      references.length === 1,
+      `${operationId} must reference ${expectedReference} exactly once.`,
+    )
+    invariant(
+      !(operation.parameters ?? []).some(
+        (parameter) => parameter?.$ref === '#/components/parameters/XChangeReason',
+      ),
+      `${operationId} must not tighten the shared XChangeReason parameter.`,
+    )
   }
 }
 
@@ -832,6 +921,7 @@ export function validateOpenApi(openApi, catalog = null) {
   const references = validateReferences(openApi)
   const schemaNodes = validateSupportedSchemas(openApi)
   validateBodyErrorComponents(openApi)
+  validateApiKeyTextInputs(openApi)
   const operations = validateOperations(openApi)
   const validateSchema = createSchemaValidator(openApi)
   const examples = validateEmbeddedExamples(openApi, validateSchema, catalog)

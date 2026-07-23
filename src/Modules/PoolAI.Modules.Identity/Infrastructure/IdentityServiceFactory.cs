@@ -29,4 +29,12 @@ internal static class IdentityServiceFactory
         return new PostgresIdentitySessionReader(
             serviceProvider.GetRequiredService<NpgsqlDataSource>());
     }
+
+    internal static IApiKeyRepository CreateApiKeyRepository(
+        IServiceProvider serviceProvider)
+    {
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        return new PostgresApiKeyRepository(
+            serviceProvider.GetRequiredService<NpgsqlDataSource>());
+    }
 }

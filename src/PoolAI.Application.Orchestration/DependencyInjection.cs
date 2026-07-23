@@ -18,6 +18,7 @@ public static class DependencyInjection
         services.TryAddSingleton<IGroupActivationOrchestrator>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupActivationOrchestrator>());
         services.TryAddSingleton<IListUserGroupPoolsUseCase, UserGroupPoolQueryService>();
+        services.TryAddSingleton<IApiKeyCreateUseCase, ApiKeyCreateOrchestrator>();
         return services;
     }
 }

@@ -68,6 +68,7 @@ app.MapIdentityEndpoints();
 app.MapGroupQuotaEndpoints();
 app.MapSubscriptionAccessEndpoints();
 app.MapUserGroupPoolEndpoints();
+app.MapApiKeyEndpoints();
 app.MapHealthChecks(
     "/health/live",
     new HealthCheckOptions { Predicate = _ => false });

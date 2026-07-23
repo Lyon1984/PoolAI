@@ -2,7 +2,8 @@ namespace PoolAI.Modules.Identity.Abstractions;
 
 public interface IApiKeyIssuer
 {
-    ValueTask<Result<IssuedApiKey>> IssueAsync(
-        IssueApiKeyCommand command,
+    ValueTask<Result<ApiKeyCreatedOutcome>> CreateAsync(
+        CreateApiKeyCommand command,
+        ApiKeyAccessDecision accessDecision,
         CancellationToken cancellationToken);
 }

@@ -10,7 +10,7 @@ import {
   validateResponsesSse,
 } from './fixtures.mjs'
 import { generateCSharp, generateTypeScript, generateTypeScriptErrors } from './generator.mjs'
-import { validateOpenApi } from './openapi.mjs'
+import { API_KEY_TEXT_PATTERN, validateOpenApi } from './openapi.mjs'
 import { scanSqlP0001Codes, validateSqlErrorMapping } from './sql-errors.mjs'
 
 function expectFailure(action, expectedMessage) {
@@ -82,6 +82,125 @@ export async function runSelfTests({
   const unsupportedSchema = structuredClone(openApi)
   unsupportedSchema.components.schemas.Uuid.prefixItems = [{ type: 'string' }]
   negative(() => validateContract(unsupportedSchema), 'Unsupported schema keyword prefixItems')
+
+  const apiKeyNameInputs = [
+    ['AdminUserApiKeyCreateRequest', 'name'],
+    ['AdminUserApiKeyUpdateRequest', 'name'],
+    ['ApiKeyCreateRequest', 'name'],
+    ['ApiKeyUpdateRequest', 'name'],
+  ]
+  const apiKeyReasonInputs = [
+    ['AdminUserApiKeyCreateRequest', 'reason'],
+    ['AdminUserApiKeyUpdateRequest', 'reason'],
+    ['ApiKeyRotateRequest', 'reason'],
+  ]
+  const apiKeyTextInputs = [
+    ...apiKeyNameInputs.map(([schemaName, propertyName]) => ({
+      label: `#/components/schemas/${schemaName}/properties/${propertyName}`,
+      maxLength: 100,
+      schema: openApi.components.schemas[schemaName].properties[propertyName],
+    })),
+    ...apiKeyReasonInputs.map(([schemaName, propertyName]) => ({
+      label: `#/components/schemas/${schemaName}/properties/${propertyName}`,
+      maxLength: 500,
+      schema: openApi.components.schemas[schemaName].properties[propertyName],
+    })),
+    {
+      label: '#/components/parameters/ApiKeyChangeReason/schema',
+      maxLength: 500,
+      schema: openApi.components.parameters.ApiKeyChangeReason.schema,
+    },
+  ]
+  for (const input of apiKeyTextInputs) {
+    invariant(
+      input.schema.pattern === API_KEY_TEXT_PATTERN,
+      `${input.label} self-test is not bound to the exact API Key text pattern.`,
+    )
+    const preserved = '\u00A0 API Key 🔑 \u3000'
+    validateSchema.validateInline(input.schema, preserved, input.label)
+    invariant(
+      preserved === '\u00A0 API Key 🔑 \u3000',
+      `${input.label} validation must preserve legal leading/trailing whitespace.`,
+    )
+    negative(
+      () =>
+        validateSchema.validateInline(
+          input.schema,
+          '\u00A0\u1680\u2007\u202F\u205F\u3000',
+          input.label,
+        ),
+      `${input.label} validation failed`,
+    )
+  }
+
+  for (const input of [
+    apiKeyTextInputs.find((candidate) => candidate.maxLength === 100),
+    apiKeyTextInputs.find((candidate) => candidate.maxLength === 500),
+  ]) {
+    invariant(input, 'API Key text boundary self-test input is missing.')
+    const exactSupplementaryBoundary = '🔑'.repeat(input.maxLength)
+    validateSchema.validateInline(input.schema, exactSupplementaryBoundary, input.label)
+    for (const invalid of [
+      '',
+      '🔑'.repeat(input.maxLength + 1),
+      '\u0000API Key',
+      'API Key\u001F',
+      '\u007FAPI Key',
+      'API Key\u009F',
+      'API\u2028Key',
+      'API\u2029Key',
+      '\uD800API Key',
+      'API Key\uDFFF',
+    ]) {
+      negative(
+        () => validateSchema.validateInline(input.schema, invalid, input.label),
+        `${input.label} validation failed`,
+      )
+    }
+  }
+
+  const missingApiKeyNamePattern = structuredClone(openApi)
+  delete missingApiKeyNamePattern.components.schemas.AdminUserApiKeyCreateRequest.properties.name
+    .pattern
+  negative(
+    () => validateContract(missingApiKeyNamePattern),
+    '#/components/schemas/AdminUserApiKeyCreateRequest/properties/name must use the exact API Key Unicode scalar text contract',
+  )
+
+  const legacyApiKeyReasonPattern = structuredClone(openApi)
+  legacyApiKeyReasonPattern.components.schemas.ApiKeyRotateRequest.properties.reason.pattern =
+    String.raw`.*\S.*`
+  negative(
+    () => validateContract(legacyApiKeyReasonPattern),
+    '#/components/schemas/ApiKeyRotateRequest/properties/reason must use the exact API Key Unicode scalar text contract',
+  )
+
+  const tightenedSharedChangeReason = structuredClone(openApi)
+  tightenedSharedChangeReason.components.parameters.XChangeReason.schema.pattern =
+    API_KEY_TEXT_PATTERN
+  negative(
+    () => validateContract(tightenedSharedChangeReason),
+    '#/components/parameters/XChangeReason must remain on its existing shared contract',
+  )
+
+  const missingDedicatedApiKeyReason = structuredClone(openApi)
+  missingDedicatedApiKeyReason.components.parameters.ApiKeyChangeReason.required = false
+  negative(
+    () => validateContract(missingDedicatedApiKeyReason),
+    '#/components/parameters/ApiKeyChangeReason must be the required X-Change-Reason header',
+  )
+
+  const sharedApiKeyRevokeReason = structuredClone(openApi)
+  const revokeMyApiKey = findOperation(sharedApiKeyRevokeReason, 'revokeMyApiKey').operation
+  revokeMyApiKey.parameters = revokeMyApiKey.parameters.map((parameter) =>
+    parameter.$ref === '#/components/parameters/ApiKeyChangeReason'
+      ? { $ref: '#/components/parameters/XChangeReason' }
+      : parameter,
+  )
+  negative(
+    () => validateContract(sharedApiKeyRevokeReason),
+    'revokeMyApiKey must reference #/components/parameters/ApiKeyChangeReason exactly once',
+  )
 
   const unreferencedInvalidSchema = structuredClone(openApi)
   unreferencedInvalidSchema.components.schemas.UnreferencedInvalidSchema = {

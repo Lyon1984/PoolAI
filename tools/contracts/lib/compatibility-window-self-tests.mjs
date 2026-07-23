@@ -121,6 +121,12 @@ export function runCompatibilityWindowSelfTests({ compatibilityWindowSource }) {
     'must not contain wildcards',
   )
 
+  const exactRegexDiagnostic = structuredClone(proposedState.window)
+  exactRegexDiagnostic.allowedFailures = [
+    String.raw`#/components/schemas/Probe/pattern: pattern changed from .*\S.* to ^(?=[\s\S]*value).+$`,
+  ]
+  checked(() => parseCompatibilityWindowRegistry(registrySource(exactRegexDiagnostic)))
+
   const unknownKey = structuredClone(proposedState.window)
   unknownKey.ignoreUnregisteredFailures = false
   rejected(

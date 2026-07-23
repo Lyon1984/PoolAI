@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Mail;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 using StackExchange.Redis;
@@ -155,13 +156,25 @@ public static class PoolAiRuntimeConfigurationValidator
         ValidateTotpAndLogin(validation);
 
         string prefix = validation.String("ApiKeys:Prefix", "sk-pool-");
-        if (prefix.Length is < 5 or > 16 || prefix.Any(static character => character > 0x7f))
+        if (!Regex.IsMatch(
+                prefix,
+                "^sk-[A-Za-z0-9_-]{2,13}$",
+                RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(100)))
         {
             validation.Invalid("ApiKeys:Prefix");
         }
 
+        int currentApiKeyPepperVersion = validation.Range(
+            "ApiKeys:CurrentPepperVersion",
+            1,
+            1,
+            short.MaxValue);
         validation.Base64Secret("ApiKeys:CurrentPepper", 32);
-        validation.OptionalBase64Secret("ApiKeys:PreviousPepper", 32);
+        ValidateOptionalPepperPair(
+            validation,
+            "ApiKeys",
+            currentApiKeyPepperVersion);
         validation.Base64Secret("Idempotency:RequestHashPepper", 32);
     }
 

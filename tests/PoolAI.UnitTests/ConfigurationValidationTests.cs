@@ -32,6 +32,92 @@ public sealed class ConfigurationValidationTests
         Assert.Contains(key, exception.InvalidKeys);
     }
 
+    [Theory]
+    [InlineData("sk-a")]
+    [InlineData("sk-abcdefghijklmn")]
+    [InlineData("SK-pool-")]
+    [InlineData("sk-pool.")]
+    [InlineData("sk-pøøl-")]
+    public void InvalidApiKeyPrefixIsRejected(string prefix)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["ApiKeys:Prefix"] = prefix;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("ApiKeys:Prefix", exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("sk-aa")]
+    [InlineData("sk-pool-")]
+    [InlineData("sk-ABCDEFGHIJKLM")]
+    public void ValidApiKeyPrefixIsAccepted(string prefix)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["ApiKeys:Prefix"] = prefix;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production");
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("32768")]
+    [InlineData("not-a-version")]
+    public void InvalidCurrentApiKeyPepperVersionIsRejected(string version)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["ApiKeys:CurrentPepperVersion"] = version;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("ApiKeys:CurrentPepperVersion", exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void PreviousApiKeyPepperVersionAndSecretMustBeConfiguredTogether()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["ApiKeys:PreviousPepperVersion"] = "2";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("ApiKeys:PreviousPepperVersion", exception.InvalidKeys);
+        Assert.Contains("ApiKeys:PreviousPepper", exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void PreviousApiKeyPepperVersionMustDifferFromCurrent()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["ApiKeys:PreviousPepperVersion"] = "1";
+        values["ApiKeys:PreviousPepper"] =
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
+
+        Assert.Contains("ApiKeys:PreviousPepperVersion", exception.InvalidKeys);
+    }
+
     [Fact]
     public void ProductionWildcardCorsIsRejected()
     {
@@ -601,6 +687,7 @@ public sealed class ConfigurationValidationTests
             ["Auth:TOTP:RecoveryCodePepper"] = recoveryCodePepper,
             ["Auth:Login:IpFailuresPerMinute"] = "20",
             ["Auth:Login:RateLimitScopePepper"] = loginRateLimitPepper,
+            ["ApiKeys:CurrentPepperVersion"] = "1",
             ["ApiKeys:CurrentPepper"] = apiKeyPepper,
             ["Idempotency:RequestHashPepper"] = idempotencyPepper,
             ["Data:Postgres:ConnectionString"] =

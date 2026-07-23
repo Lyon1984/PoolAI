@@ -33,6 +33,7 @@ internal static class Base64Url
         byte[] decoded = Convert.FromBase64String(base64);
         if (!string.Equals(Encode(decoded), value, StringComparison.Ordinal))
         {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(decoded);
             throw new FormatException("The value is not canonical unpadded base64url.");
         }
 
