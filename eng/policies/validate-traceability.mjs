@@ -121,20 +121,20 @@ const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
 const adr0006AllowedCurrentStateReferenceDigests = new Set([
   'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
   'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
-  '21abf3a778a34398c8ad76e6c0574d044659f446d1b1e8750eae719b5c8df84f',
-  '78e93430ef185e99ccf1f53b8ba11968fc682d42280213a783ffa9ec3e76704b',
+  '80e00b3140607a10b90b1d81b6dc8aa72078f73cba6cb4a09630cbc43d662cc3',
+  'd6b22840cc7764d7d52bfc773b5a75df041c531720b6a6fefabc16015375d0c3',
 ])
 // Accepted bases may predate a reviewed current-state refresh. Historical
 // digests remain valid only for the exact Git blob that originally carried
 // them; they never widen validation of the event head or checkout.
 const adr0006HistoricalBaseReferenceDigestsByMemoryBlob = new Map([
   [
-    'fda527e20894738aaba7f5e8b7f96adae156e9b7',
+    'ea75759afb404bd9657cf617ea25e252468f131f',
     new Set([
       'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
       'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
-      '446bfca9e6bd847341176d6cb530f507bbbefd20d07c03a6f6c5facefc417d15',
-      'ce0fa59682a2b4b72933e75ca06cbc56ece3a9ce51db03ac4cf9b5fe0ef3f5d7',
+      '21abf3a778a34398c8ad76e6c0574d044659f446d1b1e8750eae719b5c8df84f',
+      '78e93430ef185e99ccf1f53b8ba11968fc682d42280213a783ffa9ec3e76704b',
     ]),
   ],
 ])
