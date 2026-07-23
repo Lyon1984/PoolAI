@@ -1,6 +1,6 @@
 # ADR 0008: Freeze the API Key Unicode scalar text contract
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-23
 - Decider: PoolAI public-contract, Identity, and database owner (`@Lyon1984`); this candidate does not take effect without the approval evidence below
 - Relates to: M1-E5 Issue #14, ADR 0007, and sign-off control Issue #44
@@ -9,7 +9,7 @@
 - Base OpenAPI SHA-256: `14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c`
 - Target OpenAPI SHA-256: `1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5055204931)
 - Allowed diagnostic: `#/components/schemas/AdminUserApiKeyCreateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
 - Allowed diagnostic: `#/components/schemas/AdminUserApiKeyCreateRequest/properties/reason/pattern: pattern changed from .*\S.* to ^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
 - Allowed diagnostic: `#/components/schemas/AdminUserApiKeyUpdateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
