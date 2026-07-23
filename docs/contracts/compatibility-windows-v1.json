@@ -19,14 +19,14 @@
     },
     {
       "id": "m1-e5-api-key-validation-contract",
-      "status": "proposed",
+      "status": "accepted",
       "scope": "openapi-v1-compatibility-window",
       "baseRef": "afa8519573e6965ff5611b479b1e09b00971dde3",
       "baseOpenApiSha256": "43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada",
       "headOpenApiSha256": "14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c",
       "adr": "docs/architecture/adr/0007-freeze-api-key-lifecycle-and-validation-contract.md",
       "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
-      "approvalEvidence": null,
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5053216021",
       "allowedFailures": [
         "#/components/schemas/AdminUserApiKeyCreateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
         "#/components/schemas/AdminUserApiKeyUpdateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",

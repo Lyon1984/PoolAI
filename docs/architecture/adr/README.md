@@ -20,7 +20,4 @@ Accepted decisions:
 - [`0004-keep-subscription-template-catalog-admin-only.md`](0004-keep-subscription-template-catalog-admin-only.md) — keep the Subscription Template catalog on the Admin control plane while exposing only assigned snapshots through User self-read projections.
 - [`0005-open-exact-v1-compatibility-window-for-admin-list-validation.md`](0005-open-exact-v1-compatibility-window-for-admin-list-validation.md) — authorize the exact base-, target-, and diagnostic-pinned M1-E4 OpenAPI v1 window for three Admin list validation responses.
 - [`0006-register-group-subscription-lifecycle-fence.md`](0006-register-group-subscription-lifecycle-fence.md) — freeze the three exact cross-context PostgreSQL read/row-lock exception families. Its permanent [architecture approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5011030600) and independently approved [signing-gate lifecycle clarification](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5046436932) remain distinct from migration 0007 approval.
-
-Proposed decisions:
-
-- [`0007-freeze-api-key-lifecycle-and-validation-contract.md`](0007-freeze-api-key-lifecycle-and-validation-contract.md) — define atomic same-Group API Key rotation, versioned pepper and canonical CIDR semantics, and request approval for the exact M1-E5 validation compatibility window.
+- [`0007-freeze-api-key-lifecycle-and-validation-contract.md`](0007-freeze-api-key-lifecycle-and-validation-contract.md) — freeze atomic same-Group API Key rotation, versioned pepper and canonical CIDR semantics, and authorize the exact M1-E5 validation compatibility window through the permanent [Issue #44 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5053216021).

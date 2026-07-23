@@ -1,6 +1,6 @@
 # ADR 0007: Freeze the API Key lifecycle and validation contract
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-23
 - Decider: PoolAI public-contract and security owner (`@Lyon1984`); the decision takes effect only with the approval evidence below
 - Relates to: M1-E5 Issue #14 and sign-off control Issue #44
@@ -9,7 +9,7 @@
 - Base OpenAPI SHA-256: `43b81083d47d5c228f49acd2bdbbc608df57a96df083e22cf64e2a59f65f0ada`
 - Target OpenAPI SHA-256: `14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5053216021)
 - Allowed diagnostic: `#/components/schemas/AdminUserApiKeyCreateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$`
 - Allowed diagnostic: `#/components/schemas/AdminUserApiKeyUpdateRequest/properties/allowed_cidrs/items/pattern: pattern changed from <none> to ^[0-9A-Fa-f:.]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$`
 - Allowed diagnostic: `#/components/schemas/ApiKey/properties/allowed_cidrs/items/maxLength: maxLength tightened from <none> to 64`
@@ -139,7 +139,7 @@ Rejected. ADR 0006 freezes the complete exception registry. The M1 control-plane
 - CIDR values have stable storage and response semantics without prematurely claiming Gateway enforcement.
 - Rotation reuses encrypted idempotency replay and exposes no read-back route for plaintext.
 - Generated C# and TypeScript contracts plus the release manifest carry the target OpenAPI digest.
-- While this ADR and registry entry remain Proposed, the exact compatibility command intentionally fails with `pending approval`; no waiver is active.
+- With this ADR and registry entry `Accepted`/`accepted`, the exact compatibility command consumes only the pinned thirty-four diagnostics; any base, target or diagnostic drift fails closed.
 
 ## Migration, window boundary, and rollback impact
 
@@ -157,7 +157,7 @@ Database implementation must use a new immutable forward migration `0008_identit
 
 ## Contract files updated and later implementation evidence
 
-This proposed contract candidate updates:
+This accepted contract decision updates:
 
 - `.gitleaks.toml` with an exact-path, exact-digest public-hash allowlist
 - `docs/README.md` and `docs/architecture/adr/README.md`
@@ -177,4 +177,4 @@ The subsequent M1-E5 implementation must add forward migration
 `0008_identity_api_keys_m1_e5.sql` plus API Key credential, CIDR, lifecycle,
 permission, PostgreSQL-clock, idempotency-secret replay, RBAC, audit and
 AC-006/007 evidence. Those runtime, migration and test artifacts are not present
-or approved merely because this ADR candidate exists.
+or approved merely because this ADR is accepted.
