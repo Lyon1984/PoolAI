@@ -121,8 +121,8 @@ const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
 const adr0006AllowedCurrentStateReferenceDigests = new Set([
   'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
   'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
-  '1c8e5033cb15964ea2891aa0ee88810d57333bb8f784649a1c07588d9da7009a',
-  'ec9fded9de936a98a42e8778d6139e6fcac6fa6c92492bc69d302aa5e424dff0',
+  '21abf3a778a34398c8ad76e6c0574d044659f446d1b1e8750eae719b5c8df84f',
+  '78e93430ef185e99ccf1f53b8ba11968fc682d42280213a783ffa9ec3e76704b',
 ])
 // Accepted bases may predate a reviewed current-state refresh. Historical
 // digests remain valid only for the exact Git blob that originally carried
