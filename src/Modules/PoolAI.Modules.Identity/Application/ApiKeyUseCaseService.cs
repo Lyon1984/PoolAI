@@ -11,10 +11,12 @@ using PoolAI.Modules.Operations.Abstractions;
 
 namespace PoolAI.Modules.Identity.Application;
 
-internal sealed class ApiKeyUseCaseService :
+internal sealed partial class ApiKeyUseCaseService :
     IApiKeyControlPlaneReader,
     IApiKeyCreateIdempotencyPreflight,
-    IApiKeyIssuer
+    IApiKeyIssuer,
+    IApiKeyMutationIdempotencyPreflight,
+    IApiKeyMutationOwner
 {
     private const string ResourceType = "api_key";
     private const string CacheControl = "no-store";
@@ -472,7 +474,8 @@ internal sealed class ApiKeyUseCaseService :
                 displayPrefix,
                 StringComparison.Ordinal)
             || apiKey.Status != ApiKeyPersistentStatus.Active
-            || apiKey.EffectiveStatus != ApiKeyEffectiveStatus.Active
+            || apiKey.EffectiveStatus is not (
+                ApiKeyEffectiveStatus.Active or ApiKeyEffectiveStatus.Expired)
             || apiKey.Version != 1
             || apiKey.LastUsedAt is not null
             || apiKey.CreatedAt == default
@@ -772,7 +775,8 @@ internal sealed class ApiKeyUseCaseService :
             || !string.Equals(value.Name, prepared.Name, StringComparison.Ordinal)
             || !string.Equals(value.Prefix, credential.DisplayPrefix, StringComparison.Ordinal)
             || value.Status != ApiKeyPersistentStatus.Active
-            || value.EffectiveStatus != ApiKeyEffectiveStatus.Active
+            || value.EffectiveStatus is not (
+                ApiKeyEffectiveStatus.Active or ApiKeyEffectiveStatus.Expired)
             || value.ExpiresAt != prepared.ExpiresAt
             || !value.AllowedCidrs.SequenceEqual(
                 prepared.AllowedCidrs,

@@ -165,18 +165,89 @@ internal static class ApiKeyHttp
         return true;
     }
 
-    internal static IResult? RequireJsonContentType(HttpContext context)
+    internal static bool TryGetExpectedVersion(
+        HttpContext context,
+        out long version,
+        out IResult? failure)
+    {
+        Microsoft.Extensions.Primitives.StringValues values =
+            context.Request.Headers.IfMatch;
+        string value = values.ToString();
+        if (values.Count == 0 || string.IsNullOrEmpty(value))
+        {
+            version = 0;
+            failure = Problem(
+                StatusCodes.Status428PreconditionRequired,
+                "if_match_required",
+                "Precondition required",
+                "The If-Match header is required.",
+                retryable: false);
+            return false;
+        }
+
+        version = 0;
+        bool valid = values.Count == 1
+            && value.Length >= 4
+            && value.StartsWith("\"v", StringComparison.Ordinal)
+            && value.EndsWith('"')
+            && value[2] is >= '1' and <= '9'
+            && long.TryParse(
+                value.AsSpan(2, value.Length - 3),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out version)
+            && version > 0
+            && string.Equals(value, ETag(version), StringComparison.Ordinal);
+        if (!valid)
+        {
+            version = 0;
+            failure = InvalidRequest(
+                "/headers/If-Match",
+                "If-Match must contain one strong API Key ETag such as \"v7\".");
+            return false;
+        }
+
+        failure = null;
+        return true;
+    }
+
+    internal static bool TryGetChangeReason(
+        HttpContext context,
+        out string? reason,
+        out IResult? failure)
+    {
+        Microsoft.Extensions.Primitives.StringValues values =
+            context.Request.Headers["X-Change-Reason"];
+        reason = values.ToString();
+        if (values.Count != 1 || !ApiKeyTextRules.IsValidAdminReason(reason))
+        {
+            failure = InvalidRequest(
+                "/headers/X-Change-Reason",
+                "X-Change-Reason must contain one valid audit reason of at most 500 Unicode scalar values.");
+            return false;
+        }
+
+        failure = null;
+        return true;
+    }
+
+    internal static IResult? RequireJsonContentType(HttpContext context) =>
+        RequireContentType(context, "application/json");
+
+    internal static IResult? RequireContentType(
+        HttpContext context,
+        string expected)
     {
         string value = context.Request.ContentType ?? string.Empty;
         int separator = value.IndexOf(';', StringComparison.Ordinal);
         string mediaType = (separator < 0 ? value : value[..separator]).Trim();
-        return string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
+        return string.Equals(mediaType, expected, StringComparison.OrdinalIgnoreCase)
             ? null
             : Problem(
                 StatusCodes.Status415UnsupportedMediaType,
                 "unsupported_media_type",
                 "Unsupported media type",
-                "This operation requires application/json.",
+                $"This operation requires {expected}.",
                 retryable: false);
     }
 
@@ -223,6 +294,86 @@ internal static class ApiKeyHttp
 
         return errors;
     }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ValidateUpdate(
+        bool setName,
+        string? name,
+        bool setStatus,
+        string? status,
+        bool setExpiresAt,
+        bool setAllowedCidrs,
+        IReadOnlyList<string>? allowedCidrs,
+        string? reason,
+        bool reasonRequired)
+    {
+        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
+        if (!setName && !setStatus && !setExpiresAt && !setAllowedCidrs)
+        {
+            errors["/"] = ["At least one mutable API Key field is required."];
+        }
+
+        if (setName && !ApiKeyTextRules.IsValidName(name))
+        {
+            errors["/name"] =
+            [
+                "A non-blank API Key name of at most 100 Unicode scalar values is required.",
+            ];
+        }
+
+        if (setStatus && status is not ("active" or "disabled"))
+        {
+            errors["/status"] = ["status must be active or disabled."];
+        }
+
+        if (setAllowedCidrs && allowedCidrs is null)
+        {
+            errors["/allowed_cidrs"] = ["allowed_cidrs must be an array when supplied."];
+        }
+        else if (setAllowedCidrs
+            && (allowedCidrs is { Count: > 50 }
+                || allowedCidrs is not null
+                && allowedCidrs.Any(static cidr => !IsValidCidr(cidr))))
+        {
+            errors["/allowed_cidrs"] =
+            [
+                "allowed_cidrs must contain at most 50 valid IPv4 or IPv6 CIDR values.",
+            ];
+        }
+
+        if (reasonRequired && !ApiKeyTextRules.IsValidAdminReason(reason))
+        {
+            errors["/reason"] =
+            [
+                "A non-blank audit reason of at most 500 Unicode scalar values is required.",
+            ];
+        }
+
+        return errors;
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ValidateRotate(
+        string? reason)
+    {
+        if (ApiKeyTextRules.IsValidAdminReason(reason))
+        {
+            return new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        }
+
+        return new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+        {
+            ["/reason"] =
+            [
+                "A non-blank audit reason of at most 500 Unicode scalar values is required.",
+            ],
+        };
+    }
+
+    internal static ApiKeyPersistentStatus? ParseMutableStatus(string? value) => value switch
+    {
+        "active" => ApiKeyPersistentStatus.Active,
+        "disabled" => ApiKeyPersistentStatus.Disabled,
+        _ => null,
+    };
 
     internal static PoolAI.Contracts.Generated.ApiKey ToContract(
         ApiKeyControlPlaneSnapshot value) => new()
@@ -417,6 +568,12 @@ internal static class ApiKeyHttp
             409, error.Code, "API Key Group immutable", "An API Key cannot be moved to another Group.", false),
         "api_key_revoked" => new(
             409, error.Code, "API Key revoked", "A revoked API Key cannot be restored.", false),
+        "version_conflict" => new(
+            412,
+            error.Code,
+            "Version conflict",
+            "The resource version no longer matches; retrieve it again before retrying.",
+            true),
         "validation_failed" => new(
             422,
             error.Code,

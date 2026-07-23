@@ -46,7 +46,50 @@ internal sealed class ApiKeyCreatedOutcomeValidator(
                 allowedCidrs,
                 StringComparer.Ordinal)
             || apiKey.Status != ApiKeyPersistentStatus.Active
-            || apiKey.EffectiveStatus != ApiKeyEffectiveStatus.Active
+            || apiKey.EffectiveStatus is not (
+                ApiKeyEffectiveStatus.Active or ApiKeyEffectiveStatus.Expired)
+            || apiKey.Version != 1
+            || apiKey.LastUsedAt is not null
+            || apiKey.CreatedAt != apiKey.UpdatedAt
+            || !validSecret
+            || !string.Equals(
+                apiKey.Prefix,
+                displayPrefix,
+                StringComparison.Ordinal)
+            || !string.Equals(outcome.ETag, "\"v1\"", StringComparison.Ordinal)
+            || !string.Equals(outcome.Location, location, StringComparison.Ordinal))
+        {
+            throw InvalidOutcome();
+        }
+    }
+
+    public void EnsureValid(
+        RotateApiKeyCommand command,
+        ApiKeyCreatedOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(outcome);
+        ApiKeyControlPlaneSnapshot apiKey = outcome.ApiKey
+            ?? throw InvalidOutcome();
+        bool validSecret = _credentialService.TryGetDisplayPrefix(
+            outcome.Secret,
+            out string? displayPrefix);
+        string location = command.AccessMode switch
+        {
+            ApiKeyAccessMode.Self =>
+                $"/api/v1/me/api-keys/{apiKey.ApiKeyId.Value:D}",
+            ApiKeyAccessMode.AdminProxy =>
+                $"/api/v1/admin/users/{command.UserId.Value:D}/api-keys/{apiKey.ApiKeyId.Value:D}",
+            _ => throw InvalidOutcome(),
+        };
+
+        if (!ApiKeyResourceValidator.IsValid(ToResource(apiKey))
+            || outcome.StatusCode != 201
+            || apiKey.ApiKeyId == command.ApiKeyId
+            || apiKey.UserId != command.UserId
+            || apiKey.Status != ApiKeyPersistentStatus.Active
+            || apiKey.EffectiveStatus is not (
+                ApiKeyEffectiveStatus.Active or ApiKeyEffectiveStatus.Expired)
             || apiKey.Version != 1
             || apiKey.LastUsedAt is not null
             || apiKey.CreatedAt != apiKey.UpdatedAt
@@ -79,5 +122,5 @@ internal sealed class ApiKeyCreatedOutcomeValidator(
         value.ObservedAt);
 
     private static InvalidOperationException InvalidOutcome() => new(
-        "The API Key create use case returned an invalid outcome.");
+        "The API Key credential use case returned an invalid outcome.");
 }

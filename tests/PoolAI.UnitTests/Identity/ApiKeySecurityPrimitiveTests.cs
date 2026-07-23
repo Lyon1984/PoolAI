@@ -438,5 +438,30 @@ public sealed class ApiKeySecurityPrimitiveTests
             IUnitOfWorkContext unitOfWorkContext,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
+        public ValueTask<ApiKeyResource?> LockAsync(
+            EntityId userId,
+            EntityId apiKeyId,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<ApiKeyUpdateResult> UpdateAsync(
+            ApiKeyUpdateWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<ApiKeyRevokeResult> RevokeAsync(
+            ApiKeyRevokeWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<ApiKeyRotateResult> RotateAsync(
+            ApiKeyRotateWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

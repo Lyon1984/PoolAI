@@ -88,9 +88,53 @@ internal sealed partial class PostgresApiKeyRepository(
         LIMIT 17;
         """;
 
+    // The dependent observed CTE cannot sample time until the row lock has
+    // completed, including any wait behind a concurrent mutation.
+    private static readonly string LockSql = $"""
+        WITH locked AS MATERIALIZED (
+            SELECT api_key.*
+            FROM public.api_keys AS api_key
+            WHERE api_key.user_id = $1
+              AND api_key.id = $2
+            FOR UPDATE OF api_key
+        ),
+        observed AS MATERIALIZED (
+            SELECT clock_timestamp() AS at
+            FROM locked
+        )
+        SELECT {SelectColumns}
+        FROM locked AS api_key
+        CROSS JOIN observed;
+        """;
+
     private const string CreateSql = """
         SELECT disposition, was_changed, before_state::text, current_version
         FROM public.poolai_api_key_create(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9
+        );
+        """;
+
+    private const string UpdateSql = """
+        SELECT disposition, was_changed, before_state::text, current_version
+        FROM public.poolai_api_key_update(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+        );
+        """;
+
+    private const string RevokeSql = """
+        SELECT disposition, was_changed, before_state::text, current_version
+        FROM public.poolai_api_key_revoke($1, $2, $3, $4);
+        """;
+
+    private const string RotateSql = """
+        SELECT
+            disposition,
+            was_changed,
+            before_state::text,
+            old_current_version,
+            new_api_key_id,
+            new_current_version
+        FROM public.poolai_api_key_rotate(
             $1, $2, $3, $4, $5, $6, $7, $8, $9
         );
         """;
@@ -160,6 +204,221 @@ internal sealed partial class PostgresApiKeyRepository(
         return new ApiKeyCreateResult(disposition, created);
     }
 
+    public async ValueTask<ApiKeyResource?> LockAsync(
+        EntityId userId,
+        EntityId apiKeyId,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(LockSql);
+        command.Parameters.AddWithValue(userId.Value);
+        command.Parameters.AddWithValue(apiKeyId.Value);
+        return await ReadSingleAsync(command, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<ApiKeyUpdateResult> UpdateAsync(
+        ApiKeyUpdateWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(UpdateSql);
+        command.Parameters.AddWithValue(write.ApiKeyId.Value);
+        command.Parameters.AddWithValue(write.UserId.Value);
+        command.Parameters.AddWithValue(write.ExpectedGroupId.Value);
+        command.Parameters.AddWithValue(write.ExpectedVersion);
+        command.Parameters.AddWithValue(EffectiveStatusCode(write.ExpectedEffectiveStatus));
+        command.Parameters.AddWithValue(write.SetName);
+        AddNullableText(command.Parameters, write.SetName ? write.Name : null);
+        command.Parameters.AddWithValue(write.SetStatus);
+        AddNullableText(
+            command.Parameters,
+            write.SetStatus && write.Status is ApiKeyPersistentStatus status
+                ? PersistentStatusCode(status)
+                : null);
+        command.Parameters.AddWithValue(write.SetExpiresAt);
+        AddNullableTimestamp(
+            command.Parameters,
+            write.SetExpiresAt ? write.ExpiresAt?.ToUniversalTime() : null);
+        command.Parameters.AddWithValue(write.SetAllowedCidrs);
+        AddNullableJson(
+            command.Parameters,
+            write.SetAllowedCidrs ? write.AllowedCidrs : null);
+
+        FunctionResult functionResult = await ReadFunctionResultAsync(
+            command,
+            cancellationToken).ConfigureAwait(false);
+        ApiKeyUpdateDisposition disposition = functionResult.Disposition switch
+        {
+            "updated" when functionResult.WasChanged
+                && functionResult.BeforeState is not null
+                && functionResult.CurrentVersion == write.ExpectedVersion + 1 =>
+                ApiKeyUpdateDisposition.Updated,
+            "updated" when !functionResult.WasChanged
+                && functionResult.BeforeState is null
+                && functionResult.CurrentVersion == write.ExpectedVersion =>
+                ApiKeyUpdateDisposition.Updated,
+            "not_found" when IsEmptyFailure(functionResult) =>
+                ApiKeyUpdateDisposition.NotFound,
+            "api_key_revoked" when IsStateFailure(functionResult) =>
+                ApiKeyUpdateDisposition.Revoked,
+            "version_conflict" when IsStateFailure(functionResult) =>
+                ApiKeyUpdateDisposition.VersionConflict,
+            "resource_conflict" when IsStateFailure(functionResult) =>
+                ApiKeyUpdateDisposition.ResourceConflict,
+            "validation_failed" when IsEmptyFailure(functionResult) =>
+                ApiKeyUpdateDisposition.ValidationFailed,
+            _ => throw new InvalidOperationException(
+                "The API Key update function returned an invalid disposition."),
+        };
+        ApiKeyResource? current = disposition == ApiKeyUpdateDisposition.Updated
+            ? await GetRequiredAsync(
+                write.UserId,
+                write.ApiKeyId,
+                session,
+                cancellationToken).ConfigureAwait(false)
+            : null;
+        return new ApiKeyUpdateResult(
+            disposition,
+            functionResult.WasChanged,
+            functionResult.CurrentVersion,
+            current);
+    }
+
+    public async ValueTask<ApiKeyRevokeResult> RevokeAsync(
+        ApiKeyRevokeWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(RevokeSql);
+        command.Parameters.AddWithValue(write.ApiKeyId.Value);
+        command.Parameters.AddWithValue(write.UserId.Value);
+        command.Parameters.AddWithValue(write.ExpectedVersion);
+        command.Parameters.AddWithValue(write.Reason);
+
+        FunctionResult functionResult = await ReadFunctionResultAsync(
+            command,
+            cancellationToken).ConfigureAwait(false);
+        ApiKeyRevokeDisposition disposition = functionResult.Disposition switch
+        {
+            "revoked" when functionResult.WasChanged
+                && functionResult.BeforeState is not null
+                && functionResult.CurrentVersion == write.ExpectedVersion + 1 =>
+                ApiKeyRevokeDisposition.Revoked,
+            "not_found" when IsEmptyFailure(functionResult) =>
+                ApiKeyRevokeDisposition.NotFound,
+            "api_key_revoked" when IsStateFailure(functionResult) =>
+                ApiKeyRevokeDisposition.AlreadyRevoked,
+            "version_conflict" when IsStateFailure(functionResult) =>
+                ApiKeyRevokeDisposition.VersionConflict,
+            "validation_failed" when IsEmptyFailure(functionResult) =>
+                ApiKeyRevokeDisposition.ValidationFailed,
+            _ => throw new InvalidOperationException(
+                "The API Key revoke function returned an invalid disposition."),
+        };
+        ApiKeyResource? current = disposition == ApiKeyRevokeDisposition.Revoked
+            ? await GetRequiredAsync(
+                write.UserId,
+                write.ApiKeyId,
+                session,
+                cancellationToken).ConfigureAwait(false)
+            : null;
+        return new ApiKeyRevokeResult(
+            disposition,
+            functionResult.CurrentVersion,
+            current);
+    }
+
+    public async ValueTask<ApiKeyRotateResult> RotateAsync(
+        ApiKeyRotateWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(RotateSql);
+        command.Parameters.AddWithValue(write.ApiKeyId.Value);
+        command.Parameters.AddWithValue(write.UserId.Value);
+        command.Parameters.AddWithValue(write.ExpectedGroupId.Value);
+        command.Parameters.AddWithValue(write.ExpectedVersion);
+        command.Parameters.AddWithValue(write.NewApiKeyId.Value);
+        command.Parameters.AddWithValue(write.NewPrefix);
+        command.Parameters.Add(
+            new NpgsqlParameter
+            {
+                NpgsqlDbType = NpgsqlDbType.Bytea,
+                Value = write.NewSecretHash,
+            });
+        command.Parameters.AddWithValue(write.NewPepperVersion);
+        command.Parameters.AddWithValue(write.Reason);
+
+        RotateFunctionResult functionResult = await ReadRotateFunctionResultAsync(
+            command,
+            cancellationToken).ConfigureAwait(false);
+        ApiKeyRotateDisposition disposition = functionResult.Disposition switch
+        {
+            "rotated" when functionResult.WasChanged
+                && functionResult.BeforeState is not null
+                && functionResult.OldCurrentVersion == write.ExpectedVersion + 1
+                && functionResult.NewApiKeyId == write.NewApiKeyId
+                && functionResult.NewCurrentVersion == 1 =>
+                ApiKeyRotateDisposition.Rotated,
+            "not_found" when IsEmptyFailure(functionResult) =>
+                ApiKeyRotateDisposition.NotFound,
+            "api_key_revoked" when IsStateFailure(functionResult) =>
+                ApiKeyRotateDisposition.Revoked,
+            "version_conflict" when IsStateFailure(functionResult) =>
+                ApiKeyRotateDisposition.VersionConflict,
+            "resource_conflict" when IsStateFailure(functionResult) =>
+                ApiKeyRotateDisposition.ResourceConflict,
+            "conflict" when IsStateFailure(functionResult) =>
+                ApiKeyRotateDisposition.Conflict,
+            "validation_failed" when IsEmptyFailure(functionResult) =>
+                ApiKeyRotateDisposition.ValidationFailed,
+            _ => throw new InvalidOperationException(
+                "The API Key rotate function returned an invalid disposition."),
+        };
+        if (disposition != ApiKeyRotateDisposition.Rotated)
+        {
+            return new ApiKeyRotateResult(
+                disposition,
+                functionResult.OldCurrentVersion,
+                OldApiKey: null,
+                NewApiKey: null);
+        }
+
+        if (functionResult.NewApiKeyId != write.NewApiKeyId
+            || functionResult.NewCurrentVersion != 1)
+        {
+            throw new InvalidOperationException(
+                "The API Key rotate function returned inconsistent new-Key metadata.");
+        }
+
+        ApiKeyResource oldApiKey = await GetRequiredAsync(
+            write.UserId,
+            write.ApiKeyId,
+            session,
+            cancellationToken).ConfigureAwait(false);
+        ApiKeyResource newApiKey = await GetRequiredAsync(
+            write.UserId,
+            write.NewApiKeyId,
+            session,
+            cancellationToken).ConfigureAwait(false);
+        return new ApiKeyRotateResult(
+            disposition,
+            functionResult.OldCurrentVersion,
+            oldApiKey,
+            newApiKey);
+    }
+
     private static async ValueTask<FunctionResult> ReadFunctionResultAsync(
         NpgsqlCommand command,
         CancellationToken cancellationToken)
@@ -186,6 +445,59 @@ internal sealed partial class PostgresApiKeyRepository(
 
         return result;
     }
+
+    private static async ValueTask<RotateFunctionResult> ReadRotateFunctionResultAsync(
+        NpgsqlCommand command,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "The API Key rotate function returned no result.");
+        }
+
+        RotateFunctionResult result = new(
+            reader.GetString(0),
+            reader.GetBoolean(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetInt64(3),
+            reader.IsDBNull(4) ? null : new EntityId(reader.GetGuid(4)),
+            reader.IsDBNull(5) ? null : reader.GetInt64(5));
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "The API Key rotate function returned more than one result.");
+        }
+
+        return result;
+    }
+
+    private static bool IsEmptyFailure(FunctionResult result) =>
+        !result.WasChanged
+        && result.BeforeState is null
+        && result.CurrentVersion is null;
+
+    private static bool IsStateFailure(FunctionResult result) =>
+        !result.WasChanged
+        && result.BeforeState is not null
+        && result.CurrentVersion is > 0;
+
+    private static bool IsEmptyFailure(RotateFunctionResult result) =>
+        !result.WasChanged
+        && result.BeforeState is null
+        && result.OldCurrentVersion is null
+        && result.NewApiKeyId is null
+        && result.NewCurrentVersion is null;
+
+    private static bool IsStateFailure(RotateFunctionResult result) =>
+        !result.WasChanged
+        && result.BeforeState is not null
+        && result.OldCurrentVersion is > 0
+        && result.NewApiKeyId is null
+        && result.NewCurrentVersion is null;
 
     private static async ValueTask<ApiKeyResource> GetRequiredAsync(
         EntityId userId,
@@ -274,10 +586,54 @@ internal sealed partial class PostgresApiKeyRepository(
                 Value = value ?? (object)DBNull.Value,
             });
 
+    private static void AddNullableText(
+        NpgsqlParameterCollection parameters,
+        string? value) => parameters.Add(
+        new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.Text,
+            Value = value ?? (object)DBNull.Value,
+        });
+
+    private static void AddNullableJson(
+        NpgsqlParameterCollection parameters,
+        IReadOnlyList<string>? value) => parameters.Add(
+        new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.Jsonb,
+            Value = value is null
+                ? DBNull.Value
+                : JsonSerializer.Serialize(value),
+        });
+
+    private static string PersistentStatusCode(ApiKeyPersistentStatus value) => value switch
+    {
+        ApiKeyPersistentStatus.Active => "active",
+        ApiKeyPersistentStatus.Disabled => "disabled",
+        _ => throw new ArgumentOutOfRangeException(nameof(value)),
+    };
+
+    private static string EffectiveStatusCode(ApiKeyEffectiveStatus value) => value switch
+    {
+        ApiKeyEffectiveStatus.Active => "active",
+        ApiKeyEffectiveStatus.Disabled => "disabled",
+        ApiKeyEffectiveStatus.Expired => "expired",
+        ApiKeyEffectiveStatus.Revoked => "revoked",
+        _ => throw new ArgumentOutOfRangeException(nameof(value)),
+    };
+
     private sealed record FunctionResult(
         string Disposition,
         bool WasChanged,
         string? BeforeState,
         long? CurrentVersion);
+
+    private sealed record RotateFunctionResult(
+        string Disposition,
+        bool WasChanged,
+        string? BeforeState,
+        long? OldCurrentVersion,
+        EntityId? NewApiKeyId,
+        long? NewCurrentVersion);
 }
 #pragma warning restore MA0051

@@ -35,9 +35,15 @@ public sealed class ApiKeyEndpointContractTests
         "adminCreateUserApiKey",
         "adminGetUserApiKey",
         "adminListUserApiKeys",
+        "adminRevokeUserApiKey",
+        "adminRotateUserApiKey",
+        "adminUpdateUserApiKey",
         "createMyApiKey",
         "getMyApiKey",
         "listMyApiKeys",
+        "revokeMyApiKey",
+        "rotateMyApiKey",
+        "updateMyApiKey",
     ];
 
     [Fact]
@@ -238,6 +244,286 @@ public sealed class ApiKeyEndpointContractTests
         Assert.Equal(TargetUserId, command.UserId);
         Assert.Equal("approved operational access", command.Reason);
         Assert.Empty(command.AllowedCidrs);
+    }
+
+    [Fact]
+    public async Task SelfAndAdminUpdatePreserveMergePatchPresenceAndReturnCurrentEtag()
+    {
+        await using ApiKeyApiFactory factory = new();
+        factory.Port.UpdateResult = Result.Success(new ApiKeyUpdatedOutcome(
+            StatusCodes.Status200OK,
+            IsReplay: false,
+            Snapshot(ActorId, version: 8) with
+            {
+                Status = ApiKeyPersistentStatus.Disabled,
+                EffectiveStatus = ApiKeyEffectiveStatus.Disabled,
+                ExpiresAt = null,
+                AllowedCidrs = [],
+            },
+            "\"v8\""));
+        using HttpClient client = AuthenticatedClient(factory, "user");
+        using HttpRequestMessage self = MutationJsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/me/api-keys/{ApiKeyId.Value:D}",
+            new
+            {
+                status = "disabled",
+                expires_at = (DateTimeOffset?)null,
+                allowed_cidrs = Array.Empty<string>(),
+            },
+            "self-update",
+            "\"v7\"",
+            "application/merge-patch+json");
+
+        using HttpResponseMessage selfResponse = await client.SendAsync(
+            self,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, selfResponse.StatusCode);
+        Assert.Equal("\"v8\"", selfResponse.Headers.ETag?.Tag);
+        UpdateApiKeyCommand selfCommand = Assert.IsType<UpdateApiKeyCommand>(
+            factory.Port.LastUpdateCommand);
+        Assert.Equal(ApiKeyAccessMode.Self, selfCommand.AccessMode);
+        Assert.Equal(ActorId, selfCommand.UserId);
+        Assert.Equal(ApiKeyId, selfCommand.ApiKeyId);
+        Assert.Equal(7, selfCommand.ExpectedVersion);
+        Assert.False(selfCommand.SetName);
+        Assert.True(selfCommand.SetStatus);
+        Assert.Equal(ApiKeyPersistentStatus.Disabled, selfCommand.Status);
+        Assert.True(selfCommand.SetExpiresAt);
+        Assert.Null(selfCommand.ExpiresAt);
+        Assert.True(selfCommand.SetAllowedCidrs);
+        Assert.Empty(selfCommand.AllowedCidrs!);
+        Assert.Null(selfCommand.Reason);
+
+        factory.Port.UpdateResult = Result.Success(new ApiKeyUpdatedOutcome(
+            StatusCodes.Status200OK,
+            IsReplay: false,
+            Snapshot(TargetUserId, version: 10) with { Name = "proxy-updated" },
+            "\"v10\""));
+        using HttpClient admin = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage proxy = MutationJsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/users/{TargetUserId.Value:D}/api-keys/{ApiKeyId.Value:D}",
+            new
+            {
+                name = "proxy-updated",
+                reason = "approved metadata correction",
+            },
+            "admin-update",
+            "\"v9\"",
+            "application/merge-patch+json");
+
+        using HttpResponseMessage proxyResponse = await admin.SendAsync(
+            proxy,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, proxyResponse.StatusCode);
+        Assert.Equal("\"v10\"", proxyResponse.Headers.ETag?.Tag);
+        UpdateApiKeyCommand proxyCommand = Assert.IsType<UpdateApiKeyCommand>(
+            factory.Port.LastUpdateCommand);
+        Assert.Equal(ApiKeyAccessMode.AdminProxy, proxyCommand.AccessMode);
+        Assert.Equal(TargetUserId, proxyCommand.UserId);
+        Assert.True(proxyCommand.SetName);
+        Assert.Equal("proxy-updated", proxyCommand.Name);
+        Assert.Equal("approved metadata correction", proxyCommand.Reason);
+    }
+
+    [Fact]
+    public async Task RevokeAndRotateMapStrongPreconditionsReasonsAndSecretHeaders()
+    {
+        await using ApiKeyApiFactory factory = new();
+        using HttpClient selfClient = AuthenticatedClient(factory, "auditor");
+        using HttpRequestMessage revoke = new(
+            HttpMethod.Delete,
+            $"/api/v1/me/api-keys/{ApiKeyId.Value:D}");
+        revoke.Headers.TryAddWithoutValidation("Idempotency-Key", "self-revoke");
+        revoke.Headers.TryAddWithoutValidation("If-Match", "\"v7\"");
+        revoke.Headers.TryAddWithoutValidation(
+            "X-Change-Reason",
+            " \u00a0retired\U0001f600\u3000");
+
+        using HttpResponseMessage revokeResponse = await selfClient.SendAsync(
+            revoke,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NoContent, revokeResponse.StatusCode);
+        Assert.Equal("\"v8\"", revokeResponse.Headers.ETag?.Tag);
+        RevokeApiKeyCommand revokeCommand = Assert.IsType<RevokeApiKeyCommand>(
+            factory.Port.LastRevokeCommand);
+        Assert.Equal(ApiKeyAccessMode.Self, revokeCommand.AccessMode);
+        Assert.Equal(" \u00a0retired\U0001f600\u3000", revokeCommand.Reason);
+        Assert.Equal(7, revokeCommand.ExpectedVersion);
+
+        EntityId newApiKeyId = Id("019bd5e8-30e0-7d4c-a7f2-bb1db0636110");
+        ApiKeyCreatedOutcome rotated = Created(
+            TargetUserId,
+            $"/api/v1/admin/users/{TargetUserId.Value:D}/api-keys/{newApiKeyId.Value:D}",
+            "automation");
+        factory.Port.RotateResult = Result.Success(rotated with
+        {
+            ApiKey = rotated.ApiKey with { ApiKeyId = newApiKeyId },
+        });
+        using HttpClient admin = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage rotate = MutationJsonCommand(
+            HttpMethod.Post,
+            $"/api/v1/admin/users/{TargetUserId.Value:D}/api-keys/{ApiKeyId.Value:D}/rotate",
+            new { reason = "incident rotation" },
+            "admin-rotate",
+            "\"v8\"",
+            "application/json");
+
+        using HttpResponseMessage rotateResponse = await admin.SendAsync(
+            rotate,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, rotateResponse.StatusCode);
+        Assert.Equal("\"v1\"", rotateResponse.Headers.ETag?.Tag);
+        Assert.Equal(
+            $"/api/v1/admin/users/{TargetUserId.Value:D}/api-keys/{newApiKeyId.Value:D}",
+            rotateResponse.Headers.Location?.OriginalString);
+        Assert.True(rotateResponse.Headers.CacheControl?.NoStore);
+        using (JsonDocument document =
+               await ReadJsonAsync(rotateResponse).ConfigureAwait(true))
+        {
+            Assert.Equal(TestSecret, document.RootElement.GetProperty("secret").GetString());
+            Assert.Equal(
+                newApiKeyId.Value,
+                document.RootElement
+                    .GetProperty("api_key")
+                    .GetProperty("id")
+                    .GetGuid());
+        }
+
+        RotateApiKeyCommand rotateCommand = Assert.IsType<RotateApiKeyCommand>(
+            factory.Port.LastRotateCommand);
+        Assert.Equal(ApiKeyAccessMode.AdminProxy, rotateCommand.AccessMode);
+        Assert.Equal(TargetUserId, rotateCommand.UserId);
+        Assert.Equal(ApiKeyId, rotateCommand.ApiKeyId);
+        Assert.Equal(8, rotateCommand.ExpectedVersion);
+        Assert.Equal("incident rotation", rotateCommand.Reason);
+    }
+
+    [Fact]
+    public async Task MutationTransportValidationRejectsBeforeCallingTheUseCase()
+    {
+        await using ApiKeyApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "user");
+        string itemPath = $"/api/v1/me/api-keys/{ApiKeyId.Value:D}";
+        using HttpRequestMessage empty = MutationJsonCommand(
+            HttpMethod.Patch,
+            itemPath,
+            new { },
+            "empty-update",
+            "\"v7\"",
+            "application/merge-patch+json");
+        using HttpRequestMessage missingIfMatch = MutationJsonCommand(
+            HttpMethod.Patch,
+            itemPath,
+            new { name = "valid" },
+            "missing-if-match",
+            ifMatch: null,
+            contentType: "application/merge-patch+json");
+        using HttpRequestMessage invalidIfMatch = MutationJsonCommand(
+            HttpMethod.Patch,
+            itemPath,
+            new { name = "valid" },
+            "invalid-if-match",
+            "W/\"v7\"",
+            "application/merge-patch+json");
+        using HttpRequestMessage wrongType = MutationJsonCommand(
+            HttpMethod.Patch,
+            itemPath,
+            new { name = "valid" },
+            "wrong-type",
+            "\"v7\"",
+            "application/json");
+        using HttpRequestMessage missingReason = new(HttpMethod.Delete, itemPath);
+        missingReason.Headers.TryAddWithoutValidation("Idempotency-Key", "missing-reason");
+        missingReason.Headers.TryAddWithoutValidation("If-Match", "\"v7\"");
+        using HttpRequestMessage invalidRotate = MutationJsonCommand(
+            HttpMethod.Post,
+            $"{itemPath}/rotate",
+            new { reason = " " },
+            "invalid-rotate",
+            "\"v7\"",
+            "application/json");
+
+        using HttpResponseMessage emptyResponse = await client.SendAsync(
+            empty,
+            TestContext.Current.CancellationToken);
+        using HttpResponseMessage missingIfMatchResponse = await client.SendAsync(
+            missingIfMatch,
+            TestContext.Current.CancellationToken);
+        using HttpResponseMessage invalidIfMatchResponse = await client.SendAsync(
+            invalidIfMatch,
+            TestContext.Current.CancellationToken);
+        using HttpResponseMessage wrongTypeResponse = await client.SendAsync(
+            wrongType,
+            TestContext.Current.CancellationToken);
+        using HttpResponseMessage missingReasonResponse = await client.SendAsync(
+            missingReason,
+            TestContext.Current.CancellationToken);
+        using HttpResponseMessage invalidRotateResponse = await client.SendAsync(
+            invalidRotate,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, emptyResponse.StatusCode);
+        Assert.Equal((HttpStatusCode)428, missingIfMatchResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidIfMatchResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, wrongTypeResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, missingReasonResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, invalidRotateResponse.StatusCode);
+        await AssertProblemAsync(emptyResponse, "validation_failed", "/")
+            .ConfigureAwait(true);
+        await AssertProblemAsync(missingIfMatchResponse, "if_match_required")
+            .ConfigureAwait(true);
+        await AssertProblemAsync(
+            invalidIfMatchResponse,
+            "invalid_request",
+            "/headers/If-Match").ConfigureAwait(true);
+        await AssertProblemAsync(wrongTypeResponse, "unsupported_media_type")
+            .ConfigureAwait(true);
+        await AssertProblemAsync(
+            missingReasonResponse,
+            "invalid_request",
+            "/headers/X-Change-Reason").ConfigureAwait(true);
+        await AssertProblemAsync(
+            invalidRotateResponse,
+            "validation_failed",
+            "/reason").ConfigureAwait(true);
+        Assert.Equal(0, factory.Port.UpdateCalls);
+        Assert.Equal(0, factory.Port.RevokeCalls);
+        Assert.Equal(0, factory.Port.RotateCalls);
+    }
+
+    [Fact]
+    public async Task VersionConflictReturnsTheCurrentApiKeyEtag()
+    {
+        await using ApiKeyApiFactory factory = new();
+        factory.Port.UpdateResult = Result.Failure<ApiKeyUpdatedOutcome>(
+            "version_conflict",
+            "synthetic stale version",
+            etag: "\"v9\"");
+        using HttpClient client = AuthenticatedClient(factory, "user");
+        using HttpRequestMessage request = MutationJsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/me/api-keys/{ApiKeyId.Value:D}",
+            new { name = "valid" },
+            "stale-version",
+            "\"v7\"",
+            "application/merge-patch+json");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, response.StatusCode);
+        Assert.Equal("\"v9\"", response.Headers.ETag?.Tag);
+        await AssertProblemAsync(
+            response,
+            "version_conflict",
+            expectedRetryable: true).ConfigureAwait(true);
     }
 
     [Fact]
@@ -591,7 +877,7 @@ public sealed class ApiKeyEndpointContractTests
     }
 
     [Fact]
-    public void OnlyTheSixApprovedApiKeyOperationsAreMapped()
+    public void AllTwelveApprovedApiKeyOperationsAreMapped()
     {
         using ApiKeyApiFactory factory = new();
         using HttpClient _ = factory.CreateClient();
@@ -624,6 +910,34 @@ public sealed class ApiKeyEndpointContractTests
         if (idempotencyKey is not null)
         {
             request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        }
+
+        return request;
+    }
+
+    private static HttpRequestMessage MutationJsonCommand(
+        HttpMethod method,
+        string path,
+        object body,
+        string? idempotencyKey,
+        string? ifMatch,
+        string contentType)
+    {
+        HttpRequestMessage request = new(method, path)
+        {
+            Content = JsonContent.Create(body),
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        if (idempotencyKey is not null)
+        {
+            request.Headers.TryAddWithoutValidation(
+                "Idempotency-Key",
+                idempotencyKey);
+        }
+
+        if (ifMatch is not null)
+        {
+            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
         }
 
         return request;
@@ -765,13 +1079,18 @@ public sealed class ApiKeyEndpointContractTests
             {
                 services.RemoveAll<IApiKeyCreateUseCase>();
                 services.RemoveAll<IApiKeyControlPlaneReader>();
+                services.RemoveAll<IApiKeyMutationUseCase>();
                 services.AddSingleton<IApiKeyCreateUseCase>(Port);
                 services.AddSingleton<IApiKeyControlPlaneReader>(Port);
+                services.AddSingleton<IApiKeyMutationUseCase>(Port);
             });
         }
     }
 
-    private sealed class FakeApiKeyPort : IApiKeyCreateUseCase, IApiKeyControlPlaneReader
+    private sealed class FakeApiKeyPort :
+        IApiKeyCreateUseCase,
+        IApiKeyControlPlaneReader,
+        IApiKeyMutationUseCase
     {
         internal Result<PoolAI.Modules.Identity.Abstractions.ApiKeyPage> ListResult { get; set; } =
             Result.Success(new PoolAI.Modules.Identity.Abstractions.ApiKeyPage(
@@ -788,17 +1107,48 @@ public sealed class ApiKeyEndpointContractTests
                 $"/api/v1/me/api-keys/{ApiKeyId.Value:D}",
                 "valid"));
 
+        internal Result<ApiKeyUpdatedOutcome> UpdateResult { get; set; } =
+            Result.Success(new ApiKeyUpdatedOutcome(
+                StatusCodes.Status200OK,
+                IsReplay: false,
+                Snapshot(ActorId, version: 8),
+                "\"v8\""));
+
+        internal Result<ApiKeyRevokedOutcome> RevokeResult { get; set; } =
+            Result.Success(new ApiKeyRevokedOutcome(
+                StatusCodes.Status204NoContent,
+                IsReplay: false,
+                "\"v8\""));
+
+        internal Result<ApiKeyCreatedOutcome> RotateResult { get; set; } =
+            Result.Success(Created(
+                ActorId,
+                $"/api/v1/me/api-keys/{ApiKeyId.Value:D}",
+                "automation"));
+
         internal ListApiKeysQuery? LastListQuery { get; private set; }
 
         internal GetApiKeyQuery? LastGetQuery { get; private set; }
 
         internal CreateApiKeyCommand? LastCreateCommand { get; private set; }
 
+        internal UpdateApiKeyCommand? LastUpdateCommand { get; private set; }
+
+        internal RevokeApiKeyCommand? LastRevokeCommand { get; private set; }
+
+        internal RotateApiKeyCommand? LastRotateCommand { get; private set; }
+
         internal int ListCalls { get; private set; }
 
         internal int GetCalls { get; private set; }
 
         internal int CreateCalls { get; private set; }
+
+        internal int UpdateCalls { get; private set; }
+
+        internal int RevokeCalls { get; private set; }
+
+        internal int RotateCalls { get; private set; }
 
         public ValueTask<Result<PoolAI.Modules.Identity.Abstractions.ApiKeyPage>> ListAsync(
             ListApiKeysQuery query,
@@ -828,6 +1178,36 @@ public sealed class ApiKeyEndpointContractTests
             CreateCalls++;
             LastCreateCommand = command;
             return ValueTask.FromResult(CreateResult);
+        }
+
+        public ValueTask<Result<ApiKeyUpdatedOutcome>> UpdateAsync(
+            UpdateApiKeyCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            UpdateCalls++;
+            LastUpdateCommand = command;
+            return ValueTask.FromResult(UpdateResult);
+        }
+
+        public ValueTask<Result<ApiKeyRevokedOutcome>> RevokeAsync(
+            RevokeApiKeyCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RevokeCalls++;
+            LastRevokeCommand = command;
+            return ValueTask.FromResult(RevokeResult);
+        }
+
+        public ValueTask<Result<ApiKeyCreatedOutcome>> RotateAsync(
+            RotateApiKeyCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RotateCalls++;
+            LastRotateCommand = command;
+            return ValueTask.FromResult(RotateResult);
         }
     }
 }

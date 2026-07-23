@@ -40,5 +40,15 @@ internal interface IApiKeyCreateResponseEnvelope
         JsonElement envelope,
         EntityId apiKeyId,
         IdempotencySecretBinding binding);
+
+    JsonElement EncryptRotate(
+        ApiKeyCreateResponseSecret response,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding);
+
+    ApiKeyCreateResponseSecret DecryptRotate(
+        JsonElement envelope,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding);
 }
 #pragma warning restore MA0048

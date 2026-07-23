@@ -143,6 +143,11 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
         services.AddSingleton<IApiKeyIssuer>(static serviceProvider =>
             serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyMutationIdempotencyPreflight>(
+            static serviceProvider =>
+                serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyMutationOwner>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
         services.AddSingleton(static serviceProvider => new ApiKeyAuthenticationService(
             serviceProvider.GetRequiredService<IApiKeyRepository>(),
             serviceProvider.GetRequiredService<IApiKeyCredentialService>()));

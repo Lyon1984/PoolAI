@@ -8,7 +8,8 @@ namespace PoolAI.Modules.Identity.Infrastructure.Security;
 
 internal sealed partial class ApiKeyCreateResponseEnvelopeV1 : IApiKeyCreateResponseEnvelope
 {
-    private const string ResponseField = "api_key_create_response";
+    private const string CreateResponseField = "api_key_create_response";
+    private const string RotateResponseField = "api_key_rotate_response";
     private readonly AeadEnvelopeV1 _envelope;
 
     internal ApiKeyCreateResponseEnvelopeV1(EnvelopeKeyRingOptions keyRing)
@@ -19,7 +20,44 @@ internal sealed partial class ApiKeyCreateResponseEnvelopeV1 : IApiKeyCreateResp
     public JsonElement Encrypt(
         ApiKeyCreateResponseSecret response,
         EntityId apiKeyId,
-        IdempotencySecretBinding binding)
+        IdempotencySecretBinding binding) => Encrypt(
+        response,
+        apiKeyId,
+        binding,
+        CreateResponseField);
+
+    public ApiKeyCreateResponseSecret Decrypt(
+        JsonElement envelope,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding) => Decrypt(
+        envelope,
+        apiKeyId,
+        binding,
+        CreateResponseField);
+
+    public JsonElement EncryptRotate(
+        ApiKeyCreateResponseSecret response,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding) => Encrypt(
+        response,
+        apiKeyId,
+        binding,
+        RotateResponseField);
+
+    public ApiKeyCreateResponseSecret DecryptRotate(
+        JsonElement envelope,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding) => Decrypt(
+        envelope,
+        apiKeyId,
+        binding,
+        RotateResponseField);
+
+    private JsonElement Encrypt(
+        ApiKeyCreateResponseSecret response,
+        EntityId apiKeyId,
+        IdempotencySecretBinding binding,
+        string responseField)
     {
         Validate(response, apiKeyId);
         EnvelopePayload payload = EnvelopePayload.From(response);
@@ -30,7 +68,7 @@ internal sealed partial class ApiKeyCreateResponseEnvelopeV1 : IApiKeyCreateResp
         {
             return _envelope.Encrypt(
                 plaintext,
-                IdempotencyResponseAad.Build(ResponseField, apiKeyId, binding));
+                IdempotencyResponseAad.Build(responseField, apiKeyId, binding));
         }
         finally
         {
@@ -38,17 +76,18 @@ internal sealed partial class ApiKeyCreateResponseEnvelopeV1 : IApiKeyCreateResp
         }
     }
 
-    public ApiKeyCreateResponseSecret Decrypt(
+    private ApiKeyCreateResponseSecret Decrypt(
         JsonElement envelope,
         EntityId apiKeyId,
-        IdempotencySecretBinding binding)
+        IdempotencySecretBinding binding,
+        string responseField)
     {
         byte[] plaintext;
         try
         {
             plaintext = _envelope.Decrypt(
                 envelope,
-                IdempotencyResponseAad.Build(ResponseField, apiKeyId, binding));
+                IdempotencyResponseAad.Build(responseField, apiKeyId, binding));
         }
         catch (CryptographicException exception)
         {

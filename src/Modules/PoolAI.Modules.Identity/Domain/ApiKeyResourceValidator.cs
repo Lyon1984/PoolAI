@@ -37,8 +37,6 @@ internal static class ApiKeyResourceValidator
             || value.CreatedAt.Offset != TimeSpan.Zero
             || value.UpdatedAt.Offset != TimeSpan.Zero
             || value.ObservedAt.Offset != TimeSpan.Zero
-            || value.ExpiresAt is DateTimeOffset expiry
-                && expiry <= value.CreatedAt
             || value.LastUsedAt is DateTimeOffset usedAt
                 && usedAt < value.CreatedAt
             || EffectiveStatus(value) != value.EffectiveStatus)

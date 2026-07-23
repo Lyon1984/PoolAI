@@ -1,4 +1,5 @@
 #pragma warning disable MA0051 // PostgreSQL security and atomicity scenarios stay explicit.
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -148,6 +149,286 @@ public sealed class IdentityApiKeyPostgresRuntimeTests(PostgresRuntimeFixture fi
             auditText,
             StringComparison.OrdinalIgnoreCase);
         Assert.False(await auditReader.ReadAsync(cancellationToken).ConfigureAwait(true));
+        runtime.ClearLastCreatedHash();
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task UpdateRotateAndRevokeCommitTheirExactAtomicReplayShapes()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (EntityId userId, EntityId groupId) = await SeedOwnerAsync(
+            "api-key-mutations",
+            cancellationToken).ConfigureAwait(true);
+        ApiKeyRuntime runtime = Runtime();
+        CreateApiKeyCommand createCommand = Command(
+            userId,
+            groupId,
+            "mutation-source",
+            expiresAt: null);
+        Result<ApiKeyCreatedOutcome> created = await runtime.Service.CreateAsync(
+            createCommand,
+            Authorized(createCommand),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(created.IsSuccess, created.Error.Description);
+
+        UpdateApiKeyCommand updateCommand = new(
+            EntityId.New(),
+            createCommand.Actor,
+            ApiKeyAccessMode.Self,
+            userId,
+            created.Value.ApiKey.ApiKeyId,
+            $"api-key-update-{Guid.NewGuid():N}",
+            ExpectedVersion: 1,
+            SetName: true,
+            Name: "  Runtime updated  ",
+            SetStatus: false,
+            Status: null,
+            SetExpiresAt: false,
+            ExpiresAt: null,
+            SetAllowedCidrs: true,
+            AllowedCidrs: ["10.20.30.41/24"],
+            Reason: null,
+            IpAddress: "192.0.2.91",
+            UserAgent: "api-key-postgres-integration");
+        Result<ApiKeyUpdatedOutcome> updated = await runtime.Service.UpdateAsync(
+            updateCommand,
+            created.Value.ApiKey,
+            accessDecision: null,
+            cancellationToken).ConfigureAwait(true);
+        Result<ApiKeyUpdatedOutcome> updateReplay = await runtime.Service.UpdateAsync(
+            updateCommand,
+            created.Value.ApiKey,
+            accessDecision: null,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(updated.IsSuccess, updated.Error.Description);
+        Assert.True(updateReplay.IsSuccess, updateReplay.Error.Description);
+        Assert.False(updated.Value.IsReplay);
+        Assert.True(updateReplay.Value.IsReplay);
+        Assert.Equal("\"v2\"", updated.Value.ETag);
+        Assert.Equal(updated.Value.ApiKey, updateReplay.Value.ApiKey);
+        Assert.Equal("  Runtime updated  ", updated.Value.ApiKey.Name);
+        Assert.Equal(["10.20.30.0/24"], updated.Value.ApiKey.AllowedCidrs);
+
+        RotateApiKeyCommand rotateCommand = new(
+            EntityId.New(),
+            createCommand.Actor,
+            ApiKeyAccessMode.Self,
+            userId,
+            created.Value.ApiKey.ApiKeyId,
+            $"api-key-rotate-{Guid.NewGuid():N}",
+            ExpectedVersion: 2,
+            Reason: "scheduled credential rotation",
+            IpAddress: "192.0.2.92",
+            UserAgent: "api-key-postgres-integration");
+        ApiKeyAccessDecision authorized = new(
+            ApiKeyAccessDecisionKind.Authorized,
+            userId,
+            groupId,
+            EntityId.New(),
+            TimeProvider.System.GetUtcNow());
+        Result<ApiKeyCreatedOutcome> rotated = await runtime.Service.RotateAsync(
+            rotateCommand,
+            updated.Value.ApiKey,
+            authorized,
+            cancellationToken).ConfigureAwait(true);
+        Result<ApiKeyCreatedOutcome> rotateReplay = await runtime.Service.RotateAsync(
+            rotateCommand,
+            updated.Value.ApiKey,
+            authorized,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(rotated.IsSuccess, rotated.Error.Description);
+        Assert.True(rotateReplay.IsSuccess, rotateReplay.Error.Description);
+        Assert.True(rotateReplay.Value.IsReplay);
+        Assert.Equal(rotated.Value.Secret, rotateReplay.Value.Secret);
+        Assert.Equal(rotated.Value.ApiKey, rotateReplay.Value.ApiKey);
+        Assert.NotEqual(created.Value.ApiKey.ApiKeyId, rotated.Value.ApiKey.ApiKeyId);
+        Assert.Equal(updated.Value.ApiKey.Name, rotated.Value.ApiKey.Name);
+        Assert.Equal(updated.Value.ApiKey.GroupId, rotated.Value.ApiKey.GroupId);
+        Assert.Equal(updated.Value.ApiKey.AllowedCidrs, rotated.Value.ApiKey.AllowedCidrs);
+
+        RevokeApiKeyCommand revokeCommand = new(
+            EntityId.New(),
+            createCommand.Actor,
+            ApiKeyAccessMode.Self,
+            userId,
+            rotated.Value.ApiKey.ApiKeyId,
+            $"api-key-revoke-{Guid.NewGuid():N}",
+            ExpectedVersion: 1,
+            Reason: "replacement retired",
+            IpAddress: "192.0.2.93",
+            UserAgent: "api-key-postgres-integration");
+        Result<ApiKeyRevokedOutcome> revoked = await runtime.Service.RevokeAsync(
+            revokeCommand,
+            rotated.Value.ApiKey,
+            cancellationToken).ConfigureAwait(true);
+        Result<ApiKeyRevokedOutcome> revokeReplay = await runtime.Service.RevokeAsync(
+            revokeCommand,
+            rotated.Value.ApiKey,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(revoked.IsSuccess, revoked.Error.Description);
+        Assert.True(revokeReplay.IsSuccess, revokeReplay.Error.Description);
+        Assert.True(revokeReplay.Value.IsReplay);
+        Assert.Equal("\"v2\"", revoked.Value.ETag);
+        Assert.Equal(revoked.Value.ETag, revokeReplay.Value.ETag);
+
+        using NpgsqlCommand state = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT
+                (SELECT status || ':' || version::text
+                 FROM public.api_keys WHERE id = $1),
+                (SELECT status || ':' || version::text
+                 FROM public.api_keys WHERE id = $2),
+                (SELECT count(*) FROM public.audit_logs
+                 WHERE request_id = ANY ($3)),
+                (SELECT count(*) FROM public.idempotency_records
+                 WHERE idempotency_key = ANY ($4)
+                   AND status = 'completed'),
+                (SELECT count(*) FROM public.idempotency_records
+                 WHERE idempotency_key = $5
+                   AND response_status = 200
+                   AND response_body IS NOT NULL
+                   AND response_body_envelope IS NULL),
+                (SELECT count(*) FROM public.idempotency_records
+                 WHERE idempotency_key = $6
+                   AND response_status = 201
+                   AND response_body IS NULL
+                   AND response_body_envelope IS NOT NULL),
+                (SELECT count(*) FROM public.idempotency_records
+                 WHERE idempotency_key = $7
+                   AND response_status = 204
+                   AND response_body IS NULL
+                   AND response_body_envelope IS NULL);
+            """);
+        state.Parameters.AddWithValue(created.Value.ApiKey.ApiKeyId.Value);
+        state.Parameters.AddWithValue(rotated.Value.ApiKey.ApiKeyId.Value);
+        state.Parameters.AddWithValue(
+            new[]
+            {
+                updateCommand.RequestId.Value,
+                rotateCommand.RequestId.Value,
+                revokeCommand.RequestId.Value,
+            });
+        state.Parameters.AddWithValue(
+            new[]
+            {
+                updateCommand.IdempotencyKey,
+                rotateCommand.IdempotencyKey,
+                revokeCommand.IdempotencyKey,
+            });
+        state.Parameters.AddWithValue(updateCommand.IdempotencyKey);
+        state.Parameters.AddWithValue(rotateCommand.IdempotencyKey);
+        state.Parameters.AddWithValue(revokeCommand.IdempotencyKey);
+        using NpgsqlDataReader reader = await state
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(true);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+        Assert.Equal("revoked:3", reader.GetString(0));
+        Assert.Equal("revoked:2", reader.GetString(1));
+        Assert.Equal(4L, reader.GetInt64(2));
+        Assert.Equal(3L, reader.GetInt64(3));
+        Assert.Equal(1L, reader.GetInt64(4));
+        Assert.Equal(1L, reader.GetInt64(5));
+        Assert.Equal(1L, reader.GetInt64(6));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+
+        using NpgsqlCommand secretScan = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT coalesce(string_agg(
+                coalesce(before_state::text, '') ||
+                coalesce(after_state::text, '') ||
+                metadata::text,
+                ''
+            ), '')
+            FROM public.audit_logs
+            WHERE request_id = ANY ($1);
+            """);
+        secretScan.Parameters.AddWithValue(
+            new[]
+            {
+                updateCommand.RequestId.Value,
+                rotateCommand.RequestId.Value,
+                revokeCommand.RequestId.Value,
+            });
+        string auditText = (string)(await secretScan
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(true))!;
+        Assert.DoesNotContain(created.Value.Secret, auditText, StringComparison.Ordinal);
+        Assert.DoesNotContain(rotated.Value.Secret, auditText, StringComparison.Ordinal);
+        runtime.ClearLastCreatedHash();
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task LockedSnapshotSamplesDatabaseTimeAfterConcurrentRowLockWait()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        (EntityId userId, EntityId groupId) = await SeedOwnerAsync(
+            "api-key-post-lock-time",
+            cancellationToken).ConfigureAwait(true);
+        ApiKeyRuntime runtime = Runtime();
+        CreateApiKeyCommand createCommand = Command(
+            userId,
+            groupId,
+            "post-lock-time",
+            expiresAt: null);
+        Result<ApiKeyCreatedOutcome> created = await runtime.Service.CreateAsync(
+            createCommand,
+            Authorized(createCommand),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(created.IsSuccess, created.Error.Description);
+
+        await using NpgsqlConnection blocker = await fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken).ConfigureAwait(true);
+        await using NpgsqlTransaction blockerTransaction = await blocker
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(true);
+        using (NpgsqlCommand update = blocker.CreateCommand())
+        {
+            update.Transaction = blockerTransaction;
+            update.CommandText = """
+                UPDATE public.api_keys
+                SET name = 'Concurrent winner',
+                    version = version + 1,
+                    updated_at = clock_timestamp()
+                WHERE id = $1;
+                """;
+            update.Parameters.AddWithValue(created.Value.ApiKey.ApiKeyId.Value);
+            Assert.Equal(
+                1,
+                await update.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(true));
+        }
+
+        IUnitOfWork unitOfWork = await fixture.ApiServices
+            .GetRequiredService<IUnitOfWorkFactory>()
+            .BeginAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(true);
+        PostgresTransactionSession session =
+            PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
+        int waiterProcessId;
+        using (NpgsqlCommand processId = session.CreateCommand(
+            "SELECT pg_catalog.pg_backend_pid();"))
+        {
+            waiterProcessId = Assert.IsType<int>(await processId
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(true));
+        }
+
+        Task<ApiKeyResource?> waiting = runtime.Repository.LockAsync(
+            userId,
+            created.Value.ApiKey.ApiKeyId,
+            unitOfWork.Context,
+            cancellationToken).AsTask();
+        bool observedLockWait = await WaitForLockWaitAsync(
+            waiterProcessId,
+            cancellationToken).ConfigureAwait(true);
+        await blockerTransaction.CommitAsync(cancellationToken).ConfigureAwait(true);
+        ApiKeyResource locked = Assert.IsType<ApiKeyResource>(
+            await waiting.WaitAsync(cancellationToken).ConfigureAwait(true));
+
+        Assert.True(observedLockWait);
+        Assert.Equal("Concurrent winner", locked.Name);
+        Assert.Equal(2, locked.Version);
+        Assert.True(locked.ObservedAt >= locked.UpdatedAt);
+        ApiKeyResourceValidator.EnsureValid(locked);
         runtime.ClearLastCreatedHash();
     }
 
@@ -502,6 +783,33 @@ public sealed class IdentityApiKeyPostgresRuntimeTests(PostgresRuntimeFixture fi
         return apiKeyId;
     }
 
+    private async ValueTask<bool> WaitForLockWaitAsync(
+        int processId,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; attempt < 200; attempt++)
+        {
+            using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+                SELECT wait_event_type = 'Lock'
+                FROM pg_catalog.pg_stat_activity
+                WHERE pid = $1;
+                """);
+            command.Parameters.AddWithValue(processId);
+            object? scalar = await command
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(true);
+            if (scalar is true)
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken)
+                .ConfigureAwait(true);
+        }
+
+        return false;
+    }
+
     private static CreateApiKeyCommand Command(
         EntityId userId,
         EntityId groupId,
@@ -650,6 +958,35 @@ public sealed class IdentityApiKeyPostgresRuntimeTests(PostgresRuntimeFixture fi
             IUnitOfWorkContext unitOfWorkContext,
             CancellationToken cancellationToken) =>
             inner.CreateAsync(write, unitOfWorkContext, cancellationToken);
+
+        public ValueTask<ApiKeyResource?> LockAsync(
+            EntityId userId,
+            EntityId apiKeyId,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            inner.LockAsync(
+                userId,
+                apiKeyId,
+                unitOfWorkContext,
+                cancellationToken);
+
+        public ValueTask<ApiKeyUpdateResult> UpdateAsync(
+            ApiKeyUpdateWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            inner.UpdateAsync(write, unitOfWorkContext, cancellationToken);
+
+        public ValueTask<ApiKeyRevokeResult> RevokeAsync(
+            ApiKeyRevokeWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            inner.RevokeAsync(write, unitOfWorkContext, cancellationToken);
+
+        public ValueTask<ApiKeyRotateResult> RotateAsync(
+            ApiKeyRotateWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) =>
+            inner.RotateAsync(write, unitOfWorkContext, cancellationToken);
     }
 
     private sealed class ThrowAfterCompleteIdempotencyStore(

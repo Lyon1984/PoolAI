@@ -24,6 +24,27 @@ internal interface IApiKeyRepository
         ApiKeyCreateWrite write,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
+
+    ValueTask<ApiKeyResource?> LockAsync(
+        EntityId userId,
+        EntityId apiKeyId,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<ApiKeyUpdateResult> UpdateAsync(
+        ApiKeyUpdateWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<ApiKeyRevokeResult> RevokeAsync(
+        ApiKeyRevokeWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<ApiKeyRotateResult> RotateAsync(
+        ApiKeyRotateWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record ApiKeyAuthenticationCandidate(
