@@ -25,9 +25,11 @@ internal interface IApiKeyRepository
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 
-    ValueTask<ApiKeyResource?> LockAsync(
+    ValueTask<ApiKeyResource?> LockForMutationAsync(
         EntityId userId,
         EntityId apiKeyId,
+        EntityId expectedGroupId,
+        long expectedVersion,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 

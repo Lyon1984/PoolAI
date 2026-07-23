@@ -88,22 +88,29 @@ internal sealed partial class PostgresApiKeyRepository(
         LIMIT 17;
         """;
 
-    // The dependent observed CTE cannot sample time until the row lock has
-    // completed, including any wait behind a concurrent mutation.
-    private static readonly string LockSql = $"""
-        WITH locked AS MATERIALIZED (
-            SELECT api_key.*
-            FROM public.api_keys AS api_key
-            WHERE api_key.user_id = $1
-              AND api_key.id = $2
-            FOR UPDATE OF api_key
+    // poolai_api intentionally has no api_keys UPDATE privilege, so it cannot
+    // issue FOR UPDATE directly. The signed update entry point performs the
+    // lock under its NOLOGIN owner and is forced down a no-write lifecycle
+    // mismatch path; the dependent clock sample is therefore post-lock.
+    private const string LockForMutationSql = """
+        WITH probe AS MATERIALIZED (
+            SELECT disposition, was_changed, before_state::text, current_version
+            FROM public.poolai_api_key_update(
+                $1, $2, $3, $4, 'revoked',
+                false, NULL, true, 'active', false, NULL, false, NULL
+            )
         ),
         observed AS MATERIALIZED (
             SELECT clock_timestamp() AS at
-            FROM locked
+            FROM probe
         )
-        SELECT {SelectColumns}
-        FROM locked AS api_key
+        SELECT
+            probe.disposition,
+            probe.was_changed,
+            probe.before_state,
+            probe.current_version,
+            observed.at
+        FROM probe
         CROSS JOIN observed;
         """;
 
@@ -204,18 +211,84 @@ internal sealed partial class PostgresApiKeyRepository(
         return new ApiKeyCreateResult(disposition, created);
     }
 
-    public async ValueTask<ApiKeyResource?> LockAsync(
+    public async ValueTask<ApiKeyResource?> LockForMutationAsync(
         EntityId userId,
         EntityId apiKeyId,
+        EntityId expectedGroupId,
+        long expectedVersion,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken)
     {
         PostgresTransactionSession session =
             PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
-        using NpgsqlCommand command = session.CreateCommand(LockSql);
-        command.Parameters.AddWithValue(userId.Value);
+        using NpgsqlCommand command = session.CreateCommand(LockForMutationSql);
         command.Parameters.AddWithValue(apiKeyId.Value);
-        return await ReadSingleAsync(command, cancellationToken).ConfigureAwait(false);
+        command.Parameters.AddWithValue(userId.Value);
+        command.Parameters.AddWithValue(expectedGroupId.Value);
+        command.Parameters.AddWithValue(expectedVersion);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation lock probe returned no result.");
+        }
+
+        string disposition = reader.GetString(0);
+        bool wasChanged = reader.GetBoolean(1);
+        string? beforeState = reader.IsDBNull(2) ? null : reader.GetString(2);
+        long? currentVersion = reader.IsDBNull(3) ? null : reader.GetInt64(3);
+        DateTimeOffset observedAt =
+            reader.GetFieldValue<DateTimeOffset>(4).ToUniversalTime();
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation lock probe returned more than one result.");
+        }
+
+        ApiKeyResource? resource = disposition switch
+        {
+            "not_found" when !wasChanged
+                && beforeState is null
+                && currentVersion is null => null,
+            "api_key_revoked" or "version_conflict" or "resource_conflict"
+                when !wasChanged
+                    && beforeState is not null
+                    && currentVersion is > 0 =>
+                ParseBeforeState(beforeState, observedAt),
+            _ => throw new InvalidOperationException(
+                "The API Key mutation lock probe returned an invalid disposition."),
+        };
+        if (resource is not null
+            && (resource.Id != apiKeyId
+                || resource.UserId != userId
+                || resource.Version != currentVersion))
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation lock probe returned an inconsistent resource.");
+        }
+
+        if (resource is not null)
+        {
+            string expectedDisposition = resource.Status switch
+            {
+                ApiKeyPersistentStatus.Revoked => "api_key_revoked",
+                _ when resource.GroupId != expectedGroupId => "resource_conflict",
+                _ when resource.Version != expectedVersion => "version_conflict",
+                _ => "resource_conflict",
+            };
+            if (!string.Equals(
+                    disposition,
+                    expectedDisposition,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The API Key mutation lock probe returned an inconsistent disposition.");
+            }
+        }
+
+        return resource;
     }
 
     public async ValueTask<ApiKeyUpdateResult> UpdateAsync(
@@ -540,6 +613,132 @@ internal sealed partial class PostgresApiKeyRepository(
         reader.GetFieldValue<DateTimeOffset>(11),
         reader.GetFieldValue<DateTimeOffset>(12),
         reader.GetFieldValue<DateTimeOffset>(13));
+
+    private static ApiKeyResource ParseBeforeState(
+        string json,
+        DateTimeOffset observedAt)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || root.EnumerateObject().Count() != 15)
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation function returned an invalid before-state.");
+        }
+
+        ApiKeyPersistentStatus status = ParsePersistentStatus(
+            root.GetProperty("status").GetString()
+            ?? throw new InvalidOperationException(
+                "The API Key mutation before-state status is invalid."));
+        ApiKeyEffectiveStatus functionEffectiveStatus = ParseEffectiveStatus(
+            root.GetProperty("effective_status").GetString()
+            ?? throw new InvalidOperationException(
+                "The API Key mutation before-state lifecycle is invalid."));
+        DateTimeOffset? expiresAt = ReadNullableTimestamp(
+            root,
+            "expires_at");
+        DateTimeOffset? lastUsedAt = ReadNullableTimestamp(
+            root,
+            "last_used_at");
+        DateTimeOffset? revokedAt = ReadNullableTimestamp(
+            root,
+            "revoked_at");
+        JsonElement revokeReasonElement = root.GetProperty("revoke_reason");
+        string? revokeReason = revokeReasonElement.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => revokeReasonElement.GetString(),
+            _ => throw new InvalidOperationException(
+                "The API Key mutation before-state revocation is invalid."),
+        };
+        bool hasValidRevocation = status == ApiKeyPersistentStatus.Revoked
+            ? revokedAt is not null
+                && ApiKeyTextRules.IsValidAdminReason(revokeReason)
+            : revokedAt is null && revokeReason is null;
+        if (!hasValidRevocation)
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation before-state revocation is invalid.");
+        }
+
+        DateTimeOffset createdAt = ReadTimestamp(root, "created_at");
+        DateTimeOffset updatedAt = ReadTimestamp(root, "updated_at");
+        if (revokedAt is DateTimeOffset revoked
+            && (revoked < createdAt
+                || revoked > updatedAt
+                || revoked > observedAt))
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation before-state revocation is invalid.");
+        }
+
+        ApiKeyEffectiveStatus effectiveStatus = status switch
+        {
+            ApiKeyPersistentStatus.Revoked => ApiKeyEffectiveStatus.Revoked,
+            ApiKeyPersistentStatus.Disabled => ApiKeyEffectiveStatus.Disabled,
+            _ when expiresAt is DateTimeOffset expiration
+                && expiration <= observedAt => ApiKeyEffectiveStatus.Expired,
+            _ => ApiKeyEffectiveStatus.Active,
+        };
+        if (functionEffectiveStatus != effectiveStatus
+            && (functionEffectiveStatus != ApiKeyEffectiveStatus.Active
+                || effectiveStatus != ApiKeyEffectiveStatus.Expired))
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation before-state lifecycle is invalid.");
+        }
+
+        ApiKeyResource resource = new(
+            new EntityId(root.GetProperty("id").GetGuid()),
+            new EntityId(root.GetProperty("user_id").GetGuid()),
+            new EntityId(root.GetProperty("group_id").GetGuid()),
+            root.GetProperty("name").GetString()
+                ?? throw new InvalidOperationException(
+                    "The API Key mutation before-state name is invalid."),
+            root.GetProperty("prefix").GetString()
+                ?? throw new InvalidOperationException(
+                    "The API Key mutation before-state prefix is invalid."),
+            status,
+            effectiveStatus,
+            expiresAt,
+            ParseAllowedCidrs(root.GetProperty("allowed_cidrs").GetRawText()),
+            lastUsedAt,
+            root.GetProperty("version").GetInt64(),
+            createdAt,
+            updatedAt,
+            observedAt);
+        ApiKeyResourceValidator.EnsureValid(resource);
+        return resource;
+    }
+
+    private static DateTimeOffset ReadTimestamp(
+        JsonElement root,
+        string propertyName)
+    {
+        JsonElement value = root.GetProperty(propertyName);
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException(
+                "The API Key mutation before-state timestamp is invalid.");
+        }
+
+        return value.GetDateTimeOffset().ToUniversalTime();
+    }
+
+    private static DateTimeOffset? ReadNullableTimestamp(
+        JsonElement root,
+        string propertyName)
+    {
+        JsonElement value = root.GetProperty(propertyName);
+        return value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => value.GetDateTimeOffset().ToUniversalTime(),
+            _ => throw new InvalidOperationException(
+                "The API Key mutation before-state timestamp is invalid."),
+        };
+    }
 
     private static string[] ParseAllowedCidrs(string json)
     {

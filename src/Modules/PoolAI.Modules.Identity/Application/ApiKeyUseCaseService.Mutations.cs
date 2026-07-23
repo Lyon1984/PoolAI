@@ -285,9 +285,11 @@ internal sealed partial class ApiKeyUseCaseService
             }
 
             CommandIdempotencyLease lease = acquire.Lease!;
-            ApiKeyResource? locked = await _repository.LockAsync(
+            ApiKeyResource? locked = await _repository.LockForMutationAsync(
                 command.UserId,
                 command.ApiKeyId,
+                snapshot.GroupId,
+                command.ExpectedVersion,
                 unitOfWork.Context,
                 cancellationToken).ConfigureAwait(false);
             Result<ApiKeyUpdatedOutcome>? lockedFailure =
@@ -461,9 +463,11 @@ internal sealed partial class ApiKeyUseCaseService
             }
 
             CommandIdempotencyLease lease = acquire.Lease!;
-            ApiKeyResource? locked = await _repository.LockAsync(
+            ApiKeyResource? locked = await _repository.LockForMutationAsync(
                 command.UserId,
                 command.ApiKeyId,
+                snapshot.GroupId,
+                command.ExpectedVersion,
                 unitOfWork.Context,
                 cancellationToken).ConfigureAwait(false);
             if (locked is null)
@@ -644,9 +648,11 @@ internal sealed partial class ApiKeyUseCaseService
             }
 
             CommandIdempotencyLease lease = acquire.Lease!;
-            ApiKeyResource? locked = await _repository.LockAsync(
+            ApiKeyResource? locked = await _repository.LockForMutationAsync(
                 command.UserId,
                 command.ApiKeyId,
+                snapshot.GroupId,
+                command.ExpectedVersion,
                 unitOfWork.Context,
                 cancellationToken).ConfigureAwait(false);
             Result<ApiKeyCreatedOutcome>? lockedFailure =
