@@ -51,6 +51,10 @@ public sealed partial class PostgresMigrationTests
             .ConfigureAwait(true);
         await AssertM1E4ArchiveConcurrencyAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await AssertM1E5RuntimePermissionsAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
+        await AssertM1E5LifecycleAndClockAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertAppliedMetadataDriftRejectedAsync(
             migrator,
@@ -115,6 +119,9 @@ public sealed partial class PostgresMigrationTests
         await AssertM1E4RuntimePermissionsAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
+        await AssertM1E5RuntimePermissionsAsync(
+            administratorConnectionString,
+            cancellationToken).ConfigureAwait(true);
         await AssertRuntimeSchemaCreateRevokedAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
@@ -150,7 +157,7 @@ public sealed partial class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(7L, Assert.IsType<long>(scalar));
+        Assert.Equal(8L, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(
