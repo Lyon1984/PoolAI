@@ -137,6 +137,15 @@ const adr0006HistoricalBaseReferenceDigestsByMemoryBlob = new Map([
       '78e93430ef185e99ccf1f53b8ba11968fc682d42280213a783ffa9ec3e76704b',
     ]),
   ],
+  [
+    'ba6bfb2ce883253f9c5818646965352b1837abcf',
+    new Set([
+      'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
+      'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
+      '80e00b3140607a10b90b1d81b6dc8aa72078f73cba6cb4a09630cbc43d662cc3',
+      'd6b22840cc7764d7d52bfc773b5a75df041c531720b6a6fefabc16015375d0c3',
+    ]),
+  ],
 ])
 const selectAdr0006CurrentStateReferenceDigests = (
   memoryBlob,
@@ -146,8 +155,8 @@ const selectAdr0006CurrentStateReferenceDigests = (
     ?? adr0006AllowedCurrentStateReferenceDigests
   : adr0006AllowedCurrentStateReferenceDigests
 
-if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 1) {
-  fail('ADR 0006 historical current-state policy must register exactly one reviewed base blob.')
+if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 2) {
+  fail('ADR 0006 historical current-state policy must register exactly two reviewed base blobs.')
 }
 for (const [memoryBlob, digests] of adr0006HistoricalBaseReferenceDigestsByMemoryBlob) {
   if (!/^[0-9a-f]{40}$/u.test(memoryBlob)
@@ -515,23 +524,33 @@ const adr0006ReviewedMemoryReferenceIndexes = adr0006ReviewedMemoryFixtureLines
 if (adr0006ReviewedMemoryReferenceIndexes.length !== 4) {
   fail('ADR 0006 current-state digest-drift self-test requires exactly four reviewed non-status reference lines.')
 }
-const adr0006HistoricalMemoryReferenceDigests =
-  adr0006HistoricalBaseReferenceDigestsByMemoryBlob.values().next().value ?? new Set()
-const adr0006MixedGenerationReferenceDigests = new Set([
-  ...[...adr0006AllowedCurrentStateReferenceDigests].slice(0, 2),
-  ...[...adr0006HistoricalMemoryReferenceDigests].slice(0, 2),
-])
-for (const [label, digests] of [
-  ['historical base digests on the current memory', adr0006HistoricalMemoryReferenceDigests],
-  ['mixed current and historical digests', adr0006MixedGenerationReferenceDigests],
-]) {
+for (const [memoryBlob, digests] of adr0006HistoricalBaseReferenceDigestsByMemoryBlob) {
   if (validateAdr0006CurrentState(
     adr0006GovernanceFixtures.proposedMemory,
     'Proposed',
     null,
     digests,
   ).length === 0) {
-    fail(`ADR 0006 current-state digest self-test accepted ${label}.`)
+    fail(`ADR 0006 current-state digest self-test accepted historical base ${memoryBlob} digests on the current memory.`)
+  }
+  const currentOnlyDigest = [...adr0006AllowedCurrentStateReferenceDigests]
+    .find((digest) => !digests.has(digest))
+  const historicalOnlyDigest = [...digests]
+    .find((digest) => !adr0006AllowedCurrentStateReferenceDigests.has(digest))
+  if (!currentOnlyDigest || !historicalOnlyDigest) {
+    fail(`ADR 0006 historical base ${memoryBlob} must differ from the current reviewed digest set.`)
+  }
+  const mixedGenerationReferenceDigests =
+    new Set(adr0006AllowedCurrentStateReferenceDigests)
+  mixedGenerationReferenceDigests.delete(currentOnlyDigest)
+  mixedGenerationReferenceDigests.add(historicalOnlyDigest)
+  if (validateAdr0006CurrentState(
+    adr0006GovernanceFixtures.proposedMemory,
+    'Proposed',
+    null,
+    mixedGenerationReferenceDigests,
+  ).length === 0) {
+    fail(`ADR 0006 current-state digest self-test accepted mixed current and historical base ${memoryBlob} digests.`)
   }
 }
 for (const referenceIndex of adr0006ReviewedMemoryReferenceIndexes) {
