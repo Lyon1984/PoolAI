@@ -122,7 +122,7 @@ const adr0006AllowedCurrentStateReferenceDigests = new Set([
   'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
   'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
   '40567e0eaa9ade58302cc2576b85ae3c5e8ceb77c98cf5d4d7c4d4d48b592393',
-  '89ce1f90b6748b5ffb2384f038358cef633074e8c23f02cf1e298d6830bce477',
+  '9672da6e9e8f90535a86a76954c68ea84ab0d7347f970ae2e65fdabacfbf0293',
 ])
 // Accepted bases may predate a reviewed current-state refresh. Historical
 // digests remain valid only for the exact Git blob that originally carried
@@ -155,6 +155,15 @@ const adr0006HistoricalBaseReferenceDigestsByMemoryBlob = new Map([
       'd6b22840cc7764d7d52bfc773b5a75df041c531720b6a6fefabc16015375d0c3',
     ]),
   ],
+  [
+    '17291f86547123567a46271fac86667518e75949',
+    new Set([
+      'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
+      'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
+      '40567e0eaa9ade58302cc2576b85ae3c5e8ceb77c98cf5d4d7c4d4d48b592393',
+      '89ce1f90b6748b5ffb2384f038358cef633074e8c23f02cf1e298d6830bce477',
+    ]),
+  ],
 ])
 const selectAdr0006CurrentStateReferenceDigests = (
   memoryBlob,
@@ -164,8 +173,8 @@ const selectAdr0006CurrentStateReferenceDigests = (
     ?? adr0006AllowedCurrentStateReferenceDigests
   : adr0006AllowedCurrentStateReferenceDigests
 
-if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 3) {
-  fail('ADR 0006 historical current-state policy must register exactly three reviewed base blobs.')
+if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 4) {
+  fail('ADR 0006 historical current-state policy must register exactly four reviewed base blobs.')
 }
 for (const [memoryBlob, digests] of adr0006HistoricalBaseReferenceDigestsByMemoryBlob) {
   if (!/^[0-9a-f]{40}$/u.test(memoryBlob)
