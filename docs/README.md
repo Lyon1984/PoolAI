@@ -122,7 +122,7 @@ Anthropic Messages 属于 Release 1.2。Gemini、Antigravity、Grok、图片/视
 ## 5. 开发启动顺序
 
 1. 先执行执行规格中的 M0 契约校验和决策签收。
-2. 由平台先预置 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`，再由具备 owner 切换/授权能力的 Migrator 按 manifest 顺序执行 `0001_baseline.sql`、`0002_quota_functions.sql`、`0003_runtime_permissions.sql` 及后续已登记前向 migration（当前 Identity 增量为 `0006_identity_m1_e3.sql`），并生成 EF Core 映射；0003 不创建角色，API/Worker 不得执行迁移，也不得让 EF migration 反向改变 baseline。
+2. 由平台先预置 `poolai_runtime_owner NOLOGIN`、`poolai_api`、`poolai_worker`，再由具备 owner 切换/授权能力的 Migrator 按 manifest 顺序执行 `0001_baseline.sql`、`0002_quota_functions.sql`、`0003_runtime_permissions.sql` 及后续已登记前向 migration（当前 M1 增量为 `0004_identity_m1_e1.sql`、`0005_identity_m1_e2.sql`、`0006_identity_m1_e3.sql`、`0007_group_subscription_m1_e4.sql`、`0008_identity_api_keys_m1_e5.sql`、`0009_identity_api_key_text_validation_m1_e5.sql`），并生成 EF Core 映射；0003 不创建角色，API/Worker 不得执行迁移，也不得让 EF migration 反向改变 baseline。
 3. M0 按 `runtime/redis-contract.md` 建立 Redis 连接、时间、versioned script 登记和测试框架，同时建立 Solution、模块依赖测试、配置启动校验、认证和审计基座；M1-E1 只前向加入密码重置共用的 `fixed_window_increment_v1`，Account lease、Group RPM、breaker 的其余业务 Lua/TTL 与完整故障矩阵仍在 M2 实现并验收。
 4. 实现控制面，再实现 Group reservation/settlement 与 `/v1/usage`。
 5. 最后接入 OpenAI/Codex Gateway 垂直切片，并用 fixture、并发、故障和长流测试验收。
