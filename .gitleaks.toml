@@ -4,6 +4,15 @@ title = "PoolAI Gitleaks configuration"
 useDefault = true
 
 [[allowlists]]
+description = "M1 Exit deterministic idempotency keys are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^tests/PoolAI\.EndToEndTests/M1ExitPublicApiEndToEndTests\.cs$''',
+]
+regexes = ['''^(m1-exit-key-while-suspended|m1-exit-api-key-revoke)$''']
+
+[[allowlists]]
 description = "Canonical traceability contract paths are not an API credential"
 condition = "AND"
 regexTarget = "match"
