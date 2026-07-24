@@ -224,6 +224,10 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
     [Trait("Category", "PostgreSQL")]
     public async Task ExpiredSubscriptionIsRejectedByCanonicalGrantReaderWithoutWriteback()
     {
+        // ADR 0007/error-catalog section 3.3 requires a missing canonical row
+        // to return subscription_required and an existing expired row to
+        // return subscription_inactive. AC-009 requires DB-time expiration
+        // without lifecycle writeback.
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         EntityId actorId = await SeedUserAsync("ac009-actor", cancellationToken)
             .ConfigureAwait(true);
@@ -237,6 +241,18 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             .GetRequiredService<ISubscriptionAccessReader>();
         PostgresSubscriptionRepository repository = new(
             fixture.ApiServices.GetRequiredService<NpgsqlDataSource>());
+
+        Result<SubscriptionAccessSnapshot> missing = await reader.GetEffectiveAccessAsync(
+            userId,
+            groupId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(missing.IsFailure);
+        Assert.Equal("subscription_required", missing.Error.Code);
+        Assert.Null(await repository.GetEffectiveAccessAsync(
+            userId,
+            groupId,
+            cancellationToken).ConfigureAwait(true));
+
         EntityId templateId = EntityId.New();
         TemplateMutationResult template = await ExecuteAsync(
             (context, token) => repository.CreateTemplateAsync(
@@ -322,11 +338,14 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             groupId,
             cancellationToken).ConfigureAwait(true);
         Assert.True(expired.IsFailure);
-        Assert.Equal("subscription_required", expired.Error.Code);
-        Assert.Null(await repository.GetEffectiveAccessAsync(
-            userId,
-            groupId,
-            cancellationToken).ConfigureAwait(true));
+        Assert.Equal("subscription_inactive", expired.Error.Code);
+        SubscriptionRecord expiredRecord = Assert.IsType<SubscriptionRecord>(
+            await repository.GetEffectiveAccessAsync(
+                userId,
+                groupId,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal(SubscriptionEffectiveLifecycle.Expired, expiredRecord.EffectiveStatus);
+        Assert.True(expiredRecord.ObservedAt >= expiredRecord.ExpiresAt);
         SubscriptionPersistenceSnapshot after = await ReadSubscriptionPersistenceAsync(
             subscriptionId,
             cancellationToken).ConfigureAwait(true);

@@ -63,6 +63,30 @@
         "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/412/headers/etag: reference changed from #/components/headers/ETag to #/components/headers/ApiKeyETag",
         "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/patch/responses/412: reference changed from #/components/responses/PreconditionFailed to #/components/responses/ApiKeyPreconditionFailed"
       ]
+    },
+    {
+      "id": "m1-e5-api-key-unicode-text-validation",
+      "status": "accepted",
+      "scope": "openapi-v1-compatibility-window",
+      "baseRef": "f91b11950c117c382d2a6b96ac531fa864124101",
+      "baseOpenApiSha256": "14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c",
+      "headOpenApiSha256": "1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141",
+      "adr": "docs/architecture/adr/0008-freeze-api-key-unicode-scalar-text-contract.md",
+      "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5055204931",
+      "allowedFailures": [
+        "#/components/schemas/AdminUserApiKeyCreateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/AdminUserApiKeyCreateRequest/properties/reason/pattern: pattern changed from .*\\S.* to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/AdminUserApiKeyUpdateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/AdminUserApiKeyUpdateRequest/properties/reason/pattern: pattern changed from .*\\S.* to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/ApiKeyCreateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/ApiKeyRotateRequest/properties/reason/pattern: pattern changed from .*\\S.* to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/components/schemas/ApiKeyUpdateRequest/properties/name/pattern: pattern changed from <none> to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/parameters/header:x-change-reason/schema/pattern: pattern changed from .*\\S.* to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/paths/~1api~1v1~1admin~1users~1{userId}~1api-keys~1{apiKeyId}/delete/parameters/header:x-change-reason: reference changed from #/components/parameters/XChangeReason to #/components/parameters/ApiKeyChangeReason",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/parameters/header:x-change-reason/schema/pattern: pattern changed from .*\\S.* to ^(?=[\\s\\S]*[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000])[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF]+$",
+        "#/paths/~1api~1v1~1me~1api-keys~1{apiKeyId}/delete/parameters/header:x-change-reason: reference changed from #/components/parameters/XChangeReason to #/components/parameters/ApiKeyChangeReason"
+      ]
     }
   ]
 }

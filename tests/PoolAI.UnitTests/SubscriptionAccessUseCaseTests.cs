@@ -1269,6 +1269,8 @@ public sealed class SubscriptionAccessUseCaseTests
     public async Task EffectiveAccessRejectsEveryInactiveLifecycleStatus(
         SubscriptionEffectiveLifecycle source)
     {
+        // ADR 0007 and the frozen error catalog distinguish an existing
+        // non-active canonical Subscription from a missing canonical row.
         SubscriptionRecord subscription = Subscription(version: 7) with
         {
             EffectiveStatus = source,
@@ -1285,7 +1287,7 @@ public sealed class SubscriptionAccessUseCaseTests
             TestContext.Current.CancellationToken);
 
         Assert.True(result.IsFailure);
-        Assert.Equal("subscription_required", result.Error.Code);
+        Assert.Equal("subscription_inactive", result.Error.Code);
     }
 
     [Fact]

@@ -98,6 +98,7 @@ public static class IdentityErrorCodes
     public const string IdempotencyConflict = "idempotency_conflict";
     public const string InvalidRequest = "invalid_request";
     public const string InvalidCredentials = "invalid_credentials";
+    public const string InvalidApiKey = "invalid_api_key";
     public const string InvalidUserToken = "invalid_user_token";
     public const string MfaChallengeInvalid = "mfa_challenge_invalid";
     public const string PasswordPolicyFailed = "password_policy_failed";

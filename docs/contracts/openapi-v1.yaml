@@ -979,7 +979,7 @@ paths:
         - $ref: '#/components/parameters/ApiKeyId'
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/IfMatch'
-        - $ref: '#/components/parameters/XChangeReason'
+        - $ref: '#/components/parameters/ApiKeyChangeReason'
       responses:
         '204':
           description: 已撤销；相同幂等请求重放仍返回 204
@@ -1615,7 +1615,7 @@ paths:
         - $ref: '#/components/parameters/ApiKeyId'
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/IfMatch'
-        - $ref: '#/components/parameters/XChangeReason'
+        - $ref: '#/components/parameters/ApiKeyChangeReason'
       responses:
         '204':
           description: 已永久撤销；相同幂等请求重放仍返回 204
@@ -3403,6 +3403,19 @@ components:
         minLength: 1
         maxLength: 500
         pattern: '.*\S.*'
+    ApiKeyChangeReason:
+      name: X-Change-Reason
+      in: header
+      required: true
+      description: |
+        API Key 撤销的强制审计原因；按 Unicode scalar value 计数 1..500，
+        必须包含至少一个不属于冻结 Unicode White_Space 集合的 scalar，
+        拒绝 C0/C1、U+2028/U+2029 和无效 scalar；合法首尾空白原样保留。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 500
+        pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
     UserId:
       name: userId
       in: path
@@ -5909,6 +5922,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            按 Unicode scalar value 计数 1..100；必须包含至少一个不属于冻结
+            Unicode White_Space 集合的 scalar；拒绝 C0/C1、U+2028/U+2029
+            和无效 scalar；合法首尾空白原样保留。
         group_id:
           $ref: '#/components/schemas/Uuid'
         expires_at:
@@ -5934,6 +5952,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            按 Unicode scalar value 计数 1..100；必须包含至少一个不属于冻结
+            Unicode White_Space 集合的 scalar；拒绝 C0/C1、U+2028/U+2029
+            和无效 scalar；合法首尾空白原样保留。
         group_id:
           $ref: '#/components/schemas/Uuid'
         expires_at:
@@ -5954,8 +5977,11 @@ components:
           type: string
           minLength: 1
           maxLength: 500
-          pattern: '.*\S.*'
-          description: 管理员代理创建目标用户 API Key 的强制审计理由
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            管理员代理创建目标用户 API Key 的强制审计理由；按 Unicode scalar
+            value 计数 1..500，必须含至少一个非冻结 White_Space scalar；
+            拒绝 C0/C1、U+2028/U+2029 和无效 scalar；合法首尾空白原样保留。
     ApiKeyCreated:
       type: object
       additionalProperties: false
@@ -5978,8 +6004,11 @@ components:
           type: string
           minLength: 1
           maxLength: 500
-          pattern: '.*\S.*'
-          description: 本人或管理员轮换凭据的强制审计理由
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            本人或管理员轮换凭据的强制审计理由；按 Unicode scalar value
+            计数 1..500，必须含至少一个非冻结 White_Space scalar；拒绝
+            C0/C1、U+2028/U+2029 和无效 scalar；合法首尾空白原样保留。
     ApiKeyUpdateRequest:
       type: object
       additionalProperties: false
@@ -5989,6 +6018,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            按 Unicode scalar value 计数 1..100；必须包含至少一个不属于冻结
+            Unicode White_Space 集合的 scalar；拒绝 C0/C1、U+2028/U+2029
+            和无效 scalar；合法首尾空白原样保留。
         status:
           type: string
           enum: [active, disabled]
@@ -6021,6 +6055,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            按 Unicode scalar value 计数 1..100；必须包含至少一个不属于冻结
+            Unicode White_Space 集合的 scalar；拒绝 C0/C1、U+2028/U+2029
+            和无效 scalar；合法首尾空白原样保留。
         status:
           type: string
           enum: [active, disabled]
@@ -6042,8 +6081,11 @@ components:
           type: string
           minLength: 1
           maxLength: 500
-          pattern: '.*\S.*'
-          description: 管理员代理修改目标用户 API Key 的强制审计理由
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$'
+          description: |
+            管理员代理修改目标用户 API Key 的强制审计理由；按 Unicode scalar
+            value 计数 1..500，必须含至少一个非冻结 White_Space scalar；
+            拒绝 C0/C1、U+2028/U+2029 和无效 scalar；合法首尾空白原样保留。
     ApiKeyPage:
       type: object
       additionalProperties: false

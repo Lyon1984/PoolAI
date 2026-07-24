@@ -8,6 +8,7 @@ Only unresolved decisions, risks, or blockers belong here. The full M0-M7 delive
 
 ## Later implementation risk
 
+- ADR 0008/精确十一诊断 OpenAPI window 与 forward migration 0009 已分别取得 `@Lyon1984` 的永久批准证据，但真实 PostgreSQL 18 Testcontainers 在本地因无可用 Docker daemon 尚未执行；这现在还包括 M1-E5 update/revoke/rotate 原子重放及“先等行锁、再采样数据库时间”的并发回归。PR/CI 必须完成空库 0001..0009、函数/constraint/ACL、Unicode 边界和上述 runtime 持久化验证。任何获准的远程执行前还必须只读预检既有 `api_keys.name/revoke_reason`，因为 0009 对不合规旧行会原子失败且不会自动 trim/改写；当前签核不授权远程 migration 或数据修复。
 - Before implementing the public AuditLog query surface, resolve how the internal `auditor` actor fact is represented without adding a response enum value to the frozen OpenAPI v1 contract; use a deliberately versioned public contract or an explicitly approved compatible representation rather than silently widening `AuditActorType`.
 - OpenAPI freezes a minimum 24-hour idempotency retention window, but the Operations-owned maximum retention and cleanup policy for completed records that contain encrypted TOTP setup/recovery responses is not yet frozen. Define it before introducing cleanup or envelope-key retirement so secret replay remains available for the promised window without retaining replayable secret material indefinitely.
 - Before M4, [`NormalizedUpstreamResult`](../../src/Modules/PoolAI.Modules.Gateway.Abstractions/NormalizedUpstreamResult.cs) Token fields must move beyond `long` to the frozen lossless Token representation and enforce the OpenAI safe-integer output boundary; the current abstraction cannot represent abnormal 78-digit upstream evidence.

@@ -399,6 +399,8 @@ public sealed class PasswordResetEmailEndToEndTests(
         configuration["Auth:TOTP:RecoveryCodePepper"] = SecretBase64();
         configuration["Auth:Login:IpFailuresPerMinute"] = "20";
         configuration["Auth:Login:RateLimitScopePepper"] = SecretBase64();
+        configuration["ApiKeys:CurrentPepperVersion"] = "7";
+        configuration["ApiKeys:CurrentPepper"] = SecretBase64();
         configuration["Idempotency:RequestHashPepper"] = SecretBase64();
         configuration["Secrets:Envelope:CurrentKeyId"] = "email-e2e-k1";
         configuration["Secrets:Envelope:CurrentKey"] = envelopeKey;

@@ -30,6 +30,7 @@ public static class DependencyInjection
         AddModuleMarkerAndWorkerStore(services);
         services.AddSingleton(IdentityOptions.FromConfiguration(configuration));
         services.AddSingleton(TokenHashOptions.FromConfiguration(configuration));
+        services.AddSingleton(ApiKeyHashOptions.FromConfiguration(configuration));
         services.AddSingleton(EnvelopeKeyRingOptions.FromConfiguration(configuration));
         services.AddSingleton(PasswordResetRateLimitOptions.FromConfiguration(configuration));
         services.AddSingleton(LoginFailureRateLimitOptions.FromConfiguration(configuration));
@@ -43,6 +44,8 @@ public static class DependencyInjection
             IdentityServiceFactory.CreateRepository);
         services.AddSingleton<IIdentitySessionRepository>(
             IdentityServiceFactory.CreateSessionRepository);
+        services.AddSingleton<IApiKeyRepository>(
+            IdentityServiceFactory.CreateApiKeyRepository);
         services.AddSingleton<IUserStatusReader>(
             IdentityServiceFactory.CreateUserStatusReader);
         services.AddSingleton<IVersionedPasswordHasher, VersionedPasswordHasher>();
@@ -52,6 +55,9 @@ public static class DependencyInjection
         services.AddSingleton<IRefreshCredentialHasher>(static serviceProvider =>
             new RefreshCredentialHasher(
                 serviceProvider.GetRequiredService<RefreshTokenHashOptions>()));
+        services.AddSingleton<IApiKeyCredentialService>(static serviceProvider =>
+            new ApiKeyCredentialService(
+                serviceProvider.GetRequiredService<ApiKeyHashOptions>()));
         services.AddSingleton<IOneTimeChallengeHasher>(static serviceProvider =>
             new OneTimeChallengeHasher(
                 serviceProvider.GetRequiredService<TokenHashOptions>()));
@@ -66,6 +72,9 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<EnvelopeKeyRingOptions>()));
         services.AddSingleton<ITotpSetupResponseEnvelope>(static serviceProvider =>
             new TotpSetupResponseEnvelopeV1(
+                serviceProvider.GetRequiredService<EnvelopeKeyRingOptions>()));
+        services.AddSingleton<IApiKeyCreateResponseEnvelope>(static serviceProvider =>
+            new ApiKeyCreateResponseEnvelopeV1(
                 serviceProvider.GetRequiredService<EnvelopeKeyRingOptions>()));
         services.AddSingleton<ITotpRecoveryCodeGenerator>(static serviceProvider =>
             new TotpRecoveryCodeGenerator(
@@ -116,6 +125,37 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<IdentityUseCaseService>());
         services.AddSingleton<ICompletePasswordResetUseCase>(static serviceProvider =>
             serviceProvider.GetRequiredService<IdentityUseCaseService>());
+        services.AddSingleton(static serviceProvider => new ApiKeyUseCaseService(
+            serviceProvider.GetRequiredService<IApiKeyRepository>(),
+            serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.ICommandIdempotencyStore>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IAuditAppender>(),
+            serviceProvider.GetRequiredService<IApiKeyCredentialService>(),
+            serviceProvider.GetRequiredService<IApiKeyCreateResponseEnvelope>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IOperationalEventWriter>(),
+            serviceProvider.GetRequiredService<IdentityPolicy>()));
+        services.AddSingleton<IApiKeyControlPlaneReader>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyCreateIdempotencyPreflight>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyIssuer>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyMutationIdempotencyPreflight>(
+            static serviceProvider =>
+                serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton<IApiKeyMutationOwner>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyUseCaseService>());
+        services.AddSingleton(static serviceProvider => new ApiKeyAuthenticationService(
+            serviceProvider.GetRequiredService<IApiKeyRepository>(),
+            serviceProvider.GetRequiredService<IApiKeyCredentialService>()));
+        services.AddSingleton<IApiKeyAuthenticator>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyAuthenticationService>());
+        services.AddSingleton<ApiKeyCreatedOutcomeValidator>();
+        services.AddSingleton<IApiKeyCreatedOutcomeValidator>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ApiKeyCreatedOutcomeValidator>());
         services.AddSingleton(static serviceProvider => new SessionAuthenticationUseCaseService(
             serviceProvider.GetRequiredService<IIdentitySessionRepository>(),
             serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
