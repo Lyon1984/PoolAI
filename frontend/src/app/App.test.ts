@@ -20,6 +20,17 @@ describe('M0 engineering scaffold', () => {
     expect(wrapper.get('h1').text()).toBe('工程基座已就绪')
     expect(wrapper.get('[role="status"]').text()).toContain('TypeScript')
     expect(wrapper.text()).not.toMatch(/注册|支付|购买|余额/u)
+    expect(router.resolve('/register').matched).toHaveLength(0)
+    expect(
+      router.getRoutes().some((route) =>
+        /register|sign-?up/iu.test(`${String(route.name)} ${route.path}`),
+      ),
+    ).toBe(false)
+    expect(
+      wrapper.findAll('a').some((link) =>
+        /register|sign-?up/iu.test(link.attributes('href') ?? ''),
+      ),
+    ).toBe(false)
     wrapper.unmount()
   })
 })

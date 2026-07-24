@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using PoolAI.Application.Orchestration;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Identity.Abstractions;
@@ -21,6 +22,51 @@ namespace PoolAI.EndToEndTests;
 
 public sealed class IdentityAuthorizationTests : IAsyncDisposable
 {
+    private static readonly Dictionary<string, (string Method, string Path, string[] Roles)>
+        ManualSubscriptionEndpoints = new(StringComparer.Ordinal)
+        {
+            ["adminAssignSubscription"] = (
+                "POST",
+                "/api/v1/admin/subscriptions",
+                ["admin", "operator"]),
+            ["adminCreateSubscriptionTemplate"] = (
+                "POST",
+                "/api/v1/admin/subscription-templates",
+                ["admin", "operator"]),
+            ["adminGetSubscription"] = (
+                "GET",
+                "/api/v1/admin/subscriptions/{subscriptionId}",
+                ["admin", "auditor", "operator"]),
+            ["adminGetSubscriptionTemplate"] = (
+                "GET",
+                "/api/v1/admin/subscription-templates/{templateId}",
+                ["admin", "auditor", "operator"]),
+            ["adminListSubscriptionTemplates"] = (
+                "GET",
+                "/api/v1/admin/subscription-templates",
+                ["admin", "auditor", "operator"]),
+            ["adminListSubscriptions"] = (
+                "GET",
+                "/api/v1/admin/subscriptions",
+                ["admin", "auditor", "operator"]),
+            ["adminRetireSubscriptionTemplate"] = (
+                "DELETE",
+                "/api/v1/admin/subscription-templates/{templateId}",
+                ["admin", "operator"]),
+            ["adminUpdateSubscription"] = (
+                "PATCH",
+                "/api/v1/admin/subscriptions/{subscriptionId}",
+                ["admin", "operator"]),
+            ["adminUpdateSubscriptionTemplate"] = (
+                "PATCH",
+                "/api/v1/admin/subscription-templates/{templateId}",
+                ["admin", "operator"]),
+            ["listMySubscriptions"] = (
+                "GET",
+                "/api/v1/me/subscriptions",
+                ["admin", "auditor", "operator", "user"]),
+        };
+
     private readonly PoolAiApiFactory _factory = new();
 
     [Fact]
@@ -256,6 +302,108 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    [Fact]
+    public void NoPurchaseRedeemOrExternalSubscriptionEntrypointsExist()
+    {
+        using HttpClient _ = _factory.CreateClient();
+        EndpointDataSource dataSource = _factory.Services
+            .GetRequiredService<EndpointDataSource>();
+        RouteEndpoint[] endpoints = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(static endpoint => endpoint.RoutePattern.RawText?
+                .StartsWith("/api/v1/", StringComparison.Ordinal) is true)
+            .ToArray();
+
+        RouteEndpoint[] subscriptionEndpoints = endpoints
+            .Where(static endpoint =>
+            {
+                string path = endpoint.RoutePattern.RawText ?? string.Empty;
+                string name = endpoint.Metadata
+                    .GetMetadata<IEndpointNameMetadata>()?.EndpointName
+                    ?? string.Empty;
+                return path.Contains("subscription", StringComparison.OrdinalIgnoreCase)
+                    || name.Contains("subscription", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+        HashSet<string> observed = new(StringComparer.Ordinal);
+        foreach (RouteEndpoint endpoint in subscriptionEndpoints)
+        {
+            AssertManualSubscriptionEndpoint(endpoint, observed);
+        }
+        Assert.Equal(
+            ManualSubscriptionEndpoints.Keys.Order(StringComparer.Ordinal),
+            observed.Order(StringComparer.Ordinal));
+
+        AssertNoForbiddenSubscriptionSurface(endpoints);
+        Assert.DoesNotContain(
+            _factory.Services.GetServices<IHostedService>(),
+            static service => string.Equals(
+                service.GetType().Assembly.GetName().Name,
+                "PoolAI.Modules.SubscriptionAccess",
+                StringComparison.Ordinal));
+    }
+
+    private static void AssertManualSubscriptionEndpoint(
+        RouteEndpoint endpoint,
+        HashSet<string> observed)
+    {
+        string name = Assert.IsType<string>(
+            endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName);
+        Assert.True(ManualSubscriptionEndpoints.TryGetValue(name, out var snapshot));
+        Assert.True(observed.Add(name), $"Duplicate Subscription operation: {name}");
+
+        string method = Assert.Single(
+            endpoint.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods
+            ?? []);
+        Assert.Equal(snapshot.Method, method);
+        Assert.Equal(snapshot.Path, NormalizeRoutePattern(endpoint.RoutePattern.RawText));
+
+        AuthorizationPolicy policy = Assert.Single(
+            endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>());
+        RolesAuthorizationRequirement roles = Assert.Single(
+            policy.Requirements.OfType<RolesAuthorizationRequirement>());
+        Assert.Equal(snapshot.Roles, roles.AllowedRoles.Order(StringComparer.Ordinal));
+        Assert.Contains(
+            policy.Requirements,
+            static requirement => requirement is DenyAnonymousAuthorizationRequirement);
+        Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());
+    }
+
+    private static void AssertNoForbiddenSubscriptionSurface(
+        IEnumerable<RouteEndpoint> endpoints)
+    {
+        string[] forbiddenFragments =
+        [
+            "checkout",
+            "externalSubscription",
+            "purchase",
+            "redeem",
+            "selfSubscribe",
+            "subscribe",
+            "syncEntitlement",
+            "syncSubscription",
+        ];
+        foreach (RouteEndpoint endpoint in endpoints)
+        {
+            string surface = string.Concat(
+                endpoint.RoutePattern.RawText,
+                "|",
+                endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName);
+            foreach (string forbidden in forbiddenFragments)
+            {
+                Assert.DoesNotContain(
+                    forbidden,
+                    surface,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    private static string NormalizeRoutePattern(string? path) =>
+        (path ?? string.Empty)
+            .Replace(":guid", string.Empty, StringComparison.Ordinal)
+            .TrimEnd('/');
 
     private static Dictionary<string, string[]> ImplementedControlPlaneRoles() =>
         new(StringComparer.Ordinal)
