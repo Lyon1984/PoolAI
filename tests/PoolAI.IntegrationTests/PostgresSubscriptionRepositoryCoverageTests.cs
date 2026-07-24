@@ -28,11 +28,12 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
-    public async Task DifferentIdempotencyKeysExtendOneCanonicalSubscriptionAndAuditChain()
+    public async Task AssignmentAndLifecycleMutationsPersistCanonicalAuditChainAtomically()
     {
-        // Governing acceptance: AC-008 requires the production command path to keep
-        // one canonical user+Group row while a later command advances its version
-        // and appends the second durable audit/outbox fact in the same PostgreSQL UoW.
+        // Governing acceptance: DEC-008 and AC-008 require the production command
+        // path to keep one canonical user+Group row through assign, extend,
+        // suspend, resume and revoke while every command atomically advances its
+        // version and appends durable idempotency, audit and outbox facts.
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         EntityId actorId = await SeedUserAsync("ac008-actor", cancellationToken)
             .ConfigureAwait(true);
@@ -73,8 +74,14 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
 
         string assignKey = $"ac008-assign-{suffix}";
         string extendKey = $"ac008-extend-{suffix}";
+        string suspendKey = $"ac008-suspend-{suffix}";
+        string resumeKey = $"ac008-resume-{suffix}";
+        string revokeKey = $"ac008-revoke-{suffix}";
         EntityId assignRequestId = EntityId.New();
         EntityId extendRequestId = EntityId.New();
+        EntityId suspendRequestId = EntityId.New();
+        EntityId resumeRequestId = EntityId.New();
+        EntityId revokeRequestId = EntityId.New();
         DateTimeOffset startsAt = TimeProvider.System.GetUtcNow().AddMinutes(-1);
         DateTimeOffset expiresAt = startsAt.AddDays(30);
         Result<SubscriptionCommandOutcome<SubscriptionView>> assigned =
@@ -122,10 +129,120 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
         Assert.Equal("\"v2\"", extended.Value.ETag);
         Assert.Equal(extendedExpiry, extended.Value.Value.ExpiresAt);
 
+        Result<SubscriptionCommandOutcome<SubscriptionView>> suspended =
+            await updateSubscription.ExecuteAsync(
+                new UpdateSubscriptionCommand(
+                    suspendRequestId,
+                    actor,
+                    suspendKey,
+                    assigned.Value.Value.Id,
+                    ExpectedVersion: 2,
+                    StartsAtSpecified: false,
+                    StartsAt: null,
+                    ExpiresAtSpecified: false,
+                    ExpiresAt: null,
+                    StatusSpecified: true,
+                    Status: SubscriptionLifecycle.Suspended,
+                    Reason: "suspend canonical assignment",
+                    IpAddress: "192.0.2.80",
+                    UserAgent: "ac008-integration"),
+                cancellationToken).ConfigureAwait(true);
+        Assert.True(suspended.IsSuccess, suspended.Error.Description);
+        Assert.Equal(3, suspended.Value.Value.Version);
+        Assert.Equal(
+            SubscriptionEffectiveLifecycle.Suspended,
+            suspended.Value.Value.EffectiveStatus);
+
+        Result<SubscriptionCommandOutcome<SubscriptionView>> resumed =
+            await updateSubscription.ExecuteAsync(
+                new UpdateSubscriptionCommand(
+                    resumeRequestId,
+                    actor,
+                    resumeKey,
+                    assigned.Value.Value.Id,
+                    ExpectedVersion: 3,
+                    StartsAtSpecified: false,
+                    StartsAt: null,
+                    ExpiresAtSpecified: false,
+                    ExpiresAt: null,
+                    StatusSpecified: true,
+                    Status: SubscriptionLifecycle.Active,
+                    Reason: "resume canonical assignment",
+                    IpAddress: "192.0.2.80",
+                    UserAgent: "ac008-integration"),
+                cancellationToken).ConfigureAwait(true);
+        Assert.True(resumed.IsSuccess, resumed.Error.Description);
+        Assert.Equal(4, resumed.Value.Value.Version);
+        Assert.Equal(
+            SubscriptionEffectiveLifecycle.Active,
+            resumed.Value.Value.EffectiveStatus);
+
+        EntityId rolledBackRequestId = EntityId.New();
+        string rolledBackKey = $"ac008-before-commit-{suffix}";
+        FailBeforeCommitUnitOfWorkFactory faultFactory = new(
+            new PostgresUnitOfWorkFactory(
+                fixture.ApiServices.GetRequiredService<NpgsqlDataSource>()));
+        await using (ServiceProvider faultServices = BuildSubscriptionServices(faultFactory))
+        {
+            IUpdateSubscriptionUseCase faultedUpdate = faultServices
+                .GetRequiredService<IUpdateSubscriptionUseCase>();
+            faultFactory.FailNextCommit();
+            await Assert.ThrowsAsync<InjectedBeforeCommitFaultException>(
+                () => faultedUpdate.ExecuteAsync(
+                    new UpdateSubscriptionCommand(
+                        rolledBackRequestId,
+                        actor,
+                        rolledBackKey,
+                        assigned.Value.Value.Id,
+                        ExpectedVersion: 4,
+                        StartsAtSpecified: false,
+                        StartsAt: null,
+                        ExpiresAtSpecified: true,
+                        ExpiresAt: extendedExpiry.AddDays(1),
+                        StatusSpecified: false,
+                        Status: null,
+                        Reason: "must roll back before commit",
+                        IpAddress: "192.0.2.80",
+                        UserAgent: "ac008-integration"),
+                    cancellationToken).AsTask()).ConfigureAwait(true);
+        }
+        await AssertSubscriptionFaultRolledBackAsync(
+            assigned.Value.Value.Id,
+            rolledBackRequestId,
+            rolledBackKey,
+            expectedVersion: 4,
+            expectedExpiry: extendedExpiry,
+            cancellationToken).ConfigureAwait(true);
+
+        Result<SubscriptionCommandOutcome<SubscriptionView>> revoked =
+            await updateSubscription.ExecuteAsync(
+                new UpdateSubscriptionCommand(
+                    revokeRequestId,
+                    actor,
+                    revokeKey,
+                    assigned.Value.Value.Id,
+                    ExpectedVersion: 4,
+                    StartsAtSpecified: false,
+                    StartsAt: null,
+                    ExpiresAtSpecified: false,
+                    ExpiresAt: null,
+                    StatusSpecified: true,
+                    Status: SubscriptionLifecycle.Revoked,
+                    Reason: "revoke canonical assignment",
+                    IpAddress: "192.0.2.80",
+                    UserAgent: "ac008-integration"),
+                cancellationToken).ConfigureAwait(true);
+        Assert.True(revoked.IsSuccess, revoked.Error.Description);
+        Assert.Equal(5, revoked.Value.Value.Version);
+        Assert.Equal(
+            SubscriptionEffectiveLifecycle.Revoked,
+            revoked.Value.Value.EffectiveStatus);
+
         using (NpgsqlCommand canonical = fixture.AdministratorDataSource.CreateCommand())
         {
             canonical.CommandText = """
-                SELECT id, version, expires_at
+                SELECT id, version, expires_at, status,
+                       template_id, template_name_snapshot, assigned_by
                 FROM public.subscriptions
                 WHERE user_id = $1 AND group_id = $2;
                 """;
@@ -135,44 +252,103 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(true);
             Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
             Assert.Equal(assigned.Value.Value.Id.Value, reader.GetGuid(0));
-            Assert.Equal(2L, reader.GetInt64(1));
+            Assert.Equal(5L, reader.GetInt64(1));
             Assert.Equal(extendedExpiry, reader.GetFieldValue<DateTimeOffset>(2));
+            Assert.Equal("revoked", reader.GetString(3));
+            Assert.Equal(templateId.Value, reader.GetGuid(4));
+            Assert.Equal(templateResult.Value.Value.Name, reader.GetString(5));
+            Assert.Equal(actorId.Value, reader.GetGuid(6));
             Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
         }
 
-        Dictionary<string, (Guid RequestId, long? BeforeVersion, long AfterVersion)> audits = [];
+        List<SubscriptionAuditSnapshot> audits = [];
         using (NpgsqlCommand audit = fixture.AdministratorDataSource.CreateCommand())
         {
             audit.CommandText = """
                 SELECT action,
                        request_id,
+                       actor_user_id,
+                       reason,
                        (before_state ->> 'version')::bigint,
-                       (after_state ->> 'version')::bigint
+                       (after_state ->> 'version')::bigint,
+                       before_state ->> 'status',
+                       after_state ->> 'status'
                 FROM public.audit_logs
-                WHERE target_type = 'subscription' AND target_id = $1;
+                WHERE target_type = 'subscription' AND target_id = $1
+                ORDER BY (after_state ->> 'version')::bigint;
                 """;
             audit.Parameters.AddWithValue(assigned.Value.Value.Id.Value);
             using NpgsqlDataReader reader = await audit
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(true);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(true))
             {
-                Assert.True(audits.TryAdd(
+                audits.Add(new SubscriptionAuditSnapshot(
                     reader.GetString(0),
-                    (
-                        reader.GetGuid(1),
-                        reader.IsDBNull(2) ? null : reader.GetInt64(2),
-                        reader.GetInt64(3))));
+                    reader.GetGuid(1),
+                    reader.GetGuid(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.GetString(7)));
             }
         }
-        Assert.Equal(2, audits.Count);
-        Assert.Equal(assignRequestId.Value,
-            audits["subscription_access.subscription.assigned"].RequestId);
-        Assert.Null(audits["subscription_access.subscription.assigned"].BeforeVersion);
-        Assert.Equal(1, audits["subscription_access.subscription.assigned"].AfterVersion);
-        Assert.Equal(extendRequestId.Value,
-            audits["subscription_access.subscription.updated"].RequestId);
-        Assert.Equal(1, audits["subscription_access.subscription.updated"].BeforeVersion);
-        Assert.Equal(2, audits["subscription_access.subscription.updated"].AfterVersion);
+        Assert.Equal(5, audits.Count);
+        Assert.Equal(
+            new SubscriptionAuditSnapshot(
+                "subscription_access.subscription.assigned",
+                assignRequestId.Value,
+                actorId.Value,
+                "initial canonical assignment",
+                null,
+                1,
+                null,
+                "active"),
+            audits[0]);
+        Assert.Equal(
+            new SubscriptionAuditSnapshot(
+                "subscription_access.subscription.updated",
+                extendRequestId.Value,
+                actorId.Value,
+                "extend canonical assignment",
+                1,
+                2,
+                "active",
+                "active"),
+            audits[1]);
+        Assert.Equal(
+            new SubscriptionAuditSnapshot(
+                "subscription_access.subscription.updated",
+                suspendRequestId.Value,
+                actorId.Value,
+                "suspend canonical assignment",
+                2,
+                3,
+                "active",
+                "suspended"),
+            audits[2]);
+        Assert.Equal(
+            new SubscriptionAuditSnapshot(
+                "subscription_access.subscription.updated",
+                resumeRequestId.Value,
+                actorId.Value,
+                "resume canonical assignment",
+                3,
+                4,
+                "suspended",
+                "active"),
+            audits[3]);
+        Assert.Equal(
+            new SubscriptionAuditSnapshot(
+                "subscription_access.subscription.updated",
+                revokeRequestId.Value,
+                actorId.Value,
+                "revoke canonical assignment",
+                4,
+                5,
+                "active",
+                "revoked"),
+            audits[4]);
 
         Dictionary<string, (string Status, int ResponseStatus, Guid ResourceId)> idempotency = [];
         using (NpgsqlCommand records = fixture.AdministratorDataSource.CreateCommand())
@@ -180,10 +356,13 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             records.CommandText = """
                 SELECT idempotency_key, status, response_status, resource_id
                 FROM public.idempotency_records
-                WHERE idempotency_key = $1 OR idempotency_key = $2;
+                WHERE idempotency_key IN ($1, $2, $3, $4, $5);
                 """;
             records.Parameters.AddWithValue(assignKey);
             records.Parameters.AddWithValue(extendKey);
+            records.Parameters.AddWithValue(suspendKey);
+            records.Parameters.AddWithValue(resumeKey);
+            records.Parameters.AddWithValue(revokeKey);
             using NpgsqlDataReader reader = await records
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(true);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(true))
@@ -193,9 +372,12 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
                     (reader.GetString(1), reader.GetInt32(2), reader.GetGuid(3))));
             }
         }
-        Assert.Equal(2, idempotency.Count);
+        Assert.Equal(5, idempotency.Count);
         Assert.Equal(("completed", 201, assigned.Value.Value.Id.Value), idempotency[assignKey]);
         Assert.Equal(("completed", 200, assigned.Value.Value.Id.Value), idempotency[extendKey]);
+        Assert.Equal(("completed", 200, assigned.Value.Value.Id.Value), idempotency[suspendKey]);
+        Assert.Equal(("completed", 200, assigned.Value.Value.Id.Value), idempotency[resumeKey]);
+        Assert.Equal(("completed", 200, assigned.Value.Value.Id.Value), idempotency[revokeKey]);
 
         using (NpgsqlCommand outbox = fixture.AdministratorDataSource.CreateCommand())
         {
@@ -216,6 +398,18 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             Assert.Equal("subscription_updated", reader.GetString(0));
             Assert.Equal(2L, reader.GetInt64(1));
             Assert.Equal(extendRequestId.Value, reader.GetGuid(2));
+            Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+            Assert.Equal("subscription_updated", reader.GetString(0));
+            Assert.Equal(3L, reader.GetInt64(1));
+            Assert.Equal(suspendRequestId.Value, reader.GetGuid(2));
+            Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+            Assert.Equal("subscription_updated", reader.GetString(0));
+            Assert.Equal(4L, reader.GetInt64(1));
+            Assert.Equal(resumeRequestId.Value, reader.GetGuid(2));
+            Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+            Assert.Equal("subscription_updated", reader.GetString(0));
+            Assert.Equal(5L, reader.GetInt64(1));
+            Assert.Equal(revokeRequestId.Value, reader.GetGuid(2));
             Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
         }
     }
@@ -1046,7 +1240,48 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             (SubscriptionLifecycle)int.MaxValue));
     }
 
-    private ServiceProvider BuildSubscriptionServices()
+    private async ValueTask AssertSubscriptionFaultRolledBackAsync(
+        EntityId subscriptionId,
+        EntityId requestId,
+        string idempotencyKey,
+        long expectedVersion,
+        DateTimeOffset expectedExpiry,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT
+                (SELECT count(*)
+                 FROM public.subscriptions
+                 WHERE id = $1
+                   AND status = 'active'
+                   AND version = $2
+                   AND expires_at = $3),
+                (SELECT count(*)
+                 FROM public.audit_logs
+                 WHERE request_id = $4),
+                (SELECT count(*)
+                 FROM public.outbox_messages
+                 WHERE correlation_id = $4),
+                (SELECT count(*)
+                 FROM public.idempotency_records
+                 WHERE idempotency_key = $5);
+            """);
+        command.Parameters.AddWithValue(subscriptionId.Value);
+        command.Parameters.AddWithValue(expectedVersion);
+        command.Parameters.AddWithValue(expectedExpiry);
+        command.Parameters.AddWithValue(requestId.Value);
+        command.Parameters.AddWithValue(idempotencyKey);
+        using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(true);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
+        Assert.Equal(1, reader.GetInt64(0));
+        Assert.Equal(0, reader.GetInt64(1));
+        Assert.Equal(0, reader.GetInt64(2));
+        Assert.Equal(0, reader.GetInt64(3));
+    }
+
+    private ServiceProvider BuildSubscriptionServices(
+        IUnitOfWorkFactory? unitOfWorkFactory = null)
     {
         string connectionString = fixture.ApiServices
             .GetRequiredService<IConfiguration>()["Data:Postgres:ConnectionString"]
@@ -1070,6 +1305,11 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             new PostgresIdentitySessionReader(
                 provider.GetRequiredService<NpgsqlDataSource>()));
         services.AddSubscriptionAccessModule(configuration);
+        if (unitOfWorkFactory is not null)
+        {
+            services.AddSingleton(unitOfWorkFactory);
+        }
+
         return services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateOnBuild = true,
@@ -1312,6 +1552,53 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             () => method.Invoke(null, arguments));
         return Assert.IsAssignableFrom<Exception>(invocation.InnerException);
     }
+
+    private sealed class FailBeforeCommitUnitOfWorkFactory(IUnitOfWorkFactory inner)
+        : IUnitOfWorkFactory
+    {
+        private int failNextCommit;
+
+        internal void FailNextCommit() => Interlocked.Exchange(ref failNextCommit, 1);
+
+        public async ValueTask<IUnitOfWork> BeginAsync(CancellationToken cancellationToken) =>
+            new FailBeforeCommitUnitOfWork(
+                await inner.BeginAsync(cancellationToken).ConfigureAwait(false),
+                this);
+
+        private bool ConsumeFailure() =>
+            Interlocked.Exchange(ref failNextCommit, 0) == 1;
+
+        private sealed class FailBeforeCommitUnitOfWork(
+            IUnitOfWork innerUnitOfWork,
+            FailBeforeCommitUnitOfWorkFactory owner) : IUnitOfWork
+        {
+            public IUnitOfWorkContext Context => innerUnitOfWork.Context;
+
+            public ValueTask CommitAsync(CancellationToken cancellationToken)
+            {
+                if (owner.ConsumeFailure())
+                {
+                    throw new InjectedBeforeCommitFaultException();
+                }
+
+                return innerUnitOfWork.CommitAsync(cancellationToken);
+            }
+
+            public ValueTask DisposeAsync() => innerUnitOfWork.DisposeAsync();
+        }
+    }
+
+    private sealed class InjectedBeforeCommitFaultException : Exception;
+
+    private sealed record SubscriptionAuditSnapshot(
+        string Action,
+        Guid RequestId,
+        Guid ActorUserId,
+        string Reason,
+        long? BeforeVersion,
+        long AfterVersion,
+        string? BeforeStatus,
+        string AfterStatus);
 
     private sealed record SubscriptionPersistenceSnapshot(
         string Status,

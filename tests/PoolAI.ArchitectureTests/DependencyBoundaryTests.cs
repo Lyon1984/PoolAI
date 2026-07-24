@@ -60,6 +60,21 @@ public sealed partial class DependencyBoundaryTests
     }
 
     [Fact]
+    public void FrontendExposesNoRegistrationRoute()
+    {
+        string router = File.ReadAllText(Path.Combine(
+            RepositoryRoot.Find(),
+            "frontend",
+            "src",
+            "router",
+            "index.ts"));
+
+        Assert.DoesNotContain("register", router, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sign-up", router, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("signup", router, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ForbiddenScopeGuardExemptsOnlyItsMarkedLine()
     {
         const string Guarded = "\"Billing\", // poolai-forbidden-scope-guard";
