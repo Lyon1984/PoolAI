@@ -234,6 +234,20 @@ for (const dependency of ["postgres", "redis", "mock-upstream", "mock-smtp"]) {
     `${dependency} must declare an explicit Compose healthcheck.`,
   );
 }
+const expectedPostgresHealthcheck = [
+  "CMD-SHELL",
+  'test "$$(cat /proc/1/comm)" = postgres && pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"',
+];
+check(
+  JSON.stringify(services.postgres?.healthcheck?.test)
+    === JSON.stringify(expectedPostgresHealthcheck),
+  "PostgreSQL healthcheck must wait for the final PID 1 postgres server before reporting healthy.",
+);
+check(
+  services.postgres?.init !== true
+    && (services.postgres?.entrypoint === null || services.postgres?.entrypoint === undefined),
+  "PostgreSQL must preserve the reviewed image entrypoint as PID 1 for its final-server health gate.",
+);
 
 check(
   configuration.networks?.runtime?.internal === true,
