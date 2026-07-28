@@ -2,4 +2,6 @@ minimumReleaseAgeExclude:
   - '@vitejs/plugin-vue@6.0.8'
 
 overrides:
+  '@vue/test-utils@2.4.11>js-beautify': '-'
+  'minimatch@10.2.5>brace-expansion': 5.0.8
   'fast-uri@': 3.1.4
