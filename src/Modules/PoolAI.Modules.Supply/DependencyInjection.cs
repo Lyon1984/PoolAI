@@ -24,7 +24,7 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
         AddModuleMarker(services);
-        services.AddSingleton(new AccountControlPlanePolicy(
+        services.AddSingleton(_ => new AccountControlPlanePolicy(
             ReadRequestHashPepper(configuration)));
         services.AddSingleton(
             AccountCredentialEnvelopeOptions.FromConfiguration(configuration));

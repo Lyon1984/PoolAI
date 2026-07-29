@@ -46,23 +46,36 @@ public sealed class SupplyAccountCredentialRewrapWorkerTests
     [Theory]
     [InlineData("not-base64", "Idempotency:RequestHashPepper is invalid.")]
     [InlineData("AQID", "Idempotency:RequestHashPepper must contain at least 256 bits.")]
-    public void SupplyRegistrationRejectsInvalidRequestHashPepper(
+    public void SupplyControlPlaneResolutionRejectsInvalidRequestHashPepper(
         string requestHashPepper,
         string expectedMessage)
     {
-        IConfiguration configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>(
-                StringComparer.Ordinal)
-            {
-                ["Idempotency:RequestHashPepper"] = requestHashPepper,
-            })
-            .Build();
+        IConfiguration configuration = SupplyConfiguration(enabled: false);
+        configuration["Idempotency:RequestHashPepper"] = requestHashPepper;
+        ServiceCollection services = new();
+        services.AddSupplyModule(configuration);
+        using ServiceProvider provider = services.BuildServiceProvider();
 
         InvalidOperationException exception =
             Assert.Throws<InvalidOperationException>(() =>
-                new ServiceCollection().AddSupplyModule(configuration));
+                provider.GetRequiredService<AccountControlPlanePolicy>());
 
         Assert.Equal(expectedMessage, exception.Message);
+    }
+
+    [Fact]
+    public void WorkerSupplyRegistrationDoesNotReadApiOnlyRequestHashPepper()
+    {
+        IConfiguration configuration = SupplyConfiguration(enabled: false);
+        configuration["Idempotency:RequestHashPepper"] = null;
+        ServiceCollection services = new();
+
+        IServiceCollection returned = services.AddSupplyModule(configuration);
+
+        Assert.Same(services, returned);
+        using ServiceProvider provider = services.BuildServiceProvider();
+        Assert.Throws<InvalidOperationException>(() =>
+            provider.GetRequiredService<AccountControlPlanePolicy>());
     }
 
     [Fact]
