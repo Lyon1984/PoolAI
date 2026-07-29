@@ -13,6 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/PoolAI.BuildingBlocks/PoolAI.BuildingBlocks.csproj" />
+    <ProjectReference Include="../../src/PoolAI.Infrastructure.Secrets/PoolAI.Infrastructure.Secrets.csproj" />
     <ProjectReference Include="../../src/PoolAI.Application.Orchestration/PoolAI.Application.Orchestration.csproj" />
     <ProjectReference Include="../../src/Modules/PoolAI.Modules.Identity/PoolAI.Modules.Identity.csproj" />
     <ProjectReference Include="../../src/Modules/PoolAI.Modules.SubscriptionAccess/PoolAI.Modules.SubscriptionAccess.csproj" />

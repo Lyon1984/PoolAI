@@ -53,9 +53,10 @@ Release 1 明确不引入：
 - `PoolAI.Api`、`PoolAI.Worker`、`PoolAI.Migrator` 是 Composition Root/Host，不是业务 context。
 - `PoolAI.Contracts`、`PoolAI.BuildingBlocks`、`PoolAI.Database.Migrations` 是共享技术资产，不得放入业务规则、业务枚举或可变领域对象。
 - 按 [`ADR 0002`](adr/0002-introduce-shared-postgres-transaction-runtime.md)，`PoolAI.Infrastructure.Postgres` 是无业务所有权的共享技术 Infrastructure：只承载 Host-local `NpgsqlDataSource`、显式 UoW/context、专用连接的 session advisory lock 与技术诊断，不拥有表、业务 SQL、Repository、Entity、Migration 或业务 Worker。
+- [`ADR 0009`](adr/0009-introduce-shared-secrets-envelope-runtime.md) 当前仅为待签核候选：若获接受，`PoolAI.Infrastructure.Secrets` 是无业务所有权、只依赖 BCL 的共享技术 Infrastructure，仅承载严格 Envelope v1 解析/序列化、AEAD、精确 `kid` keyring 与 authenticated rewrap mechanics；它不拥有配置加载、日志/告警、业务 AAD、存储/CAS、轮换编排、备份恢复或 runbook。
 - `PoolAI.Adapters.OpenAI` 是外部协议 Anti-Corruption Layer，不是上游供应或 Gateway context 的一部分。
 
-`PoolAI.BuildingBlocks` 只允许 Result、强类型 ID 基础、时钟/事务相关的最小且 vendor-neutral 技术原语。任何只被一个 context 使用的概念必须留在该 context；跨 context 共享业务枚举属于违规。Npgsql/EF 类型、连接、事务与 concrete PostgreSQL context 不得进入 BuildingBlocks。
+`PoolAI.BuildingBlocks` 只允许 Result、强类型 ID 基础、时钟/事务相关的最小且 vendor-neutral 技术原语。任何只被一个 context 使用的概念必须留在该 context；跨 context 共享业务枚举属于违规。Npgsql/EF 类型、连接、事务、concrete PostgreSQL context、keyring 与 Envelope/AEAD 实现不得进入 BuildingBlocks。
 
 ### 2.2 Context Map
 
@@ -108,15 +109,16 @@ Account/Channel 退役前置条件只读取 Supply 自有事实，不查询 Grou
 
 | 逻辑层/项目 | 可以依赖 | 不得依赖 |
 |---|---|---|
-| Module Domain | BCL 与本模块最小 Domain primitives；必要时引用最小 BuildingBlocks | Application、Infrastructure、Endpoints、ASP.NET Core、EF/Npgsql、`PoolAI.Infrastructure.Postgres`、Redis、SMTP、HTTP Adapter、其他模块 |
-| Module Application | 本模块 Domain、本模块 Application Ports、其他模块 `*.Abstractions`、最小 BuildingBlocks | 本模块/其他模块 Infrastructure、Endpoints、DbContext、EF/Npgsql、`PoolAI.Infrastructure.Postgres`、Redis/SMTP 实现、ASP.NET transport |
-| Module Infrastructure | 本模块 Application Ports 与 Domain、必要的 EF/Npgsql/Redis/SMTP/加密实现；可引用 `PoolAI.Infrastructure.Postgres` | Endpoints、其他模块实现或其 DbContext/Entity；不得把共享 PostgreSQL runtime 当业务 SQL/Repository hub |
-| Module Endpoints | 本模块 Application use case、`PoolAI.Contracts`、ASP.NET Core transport | `PoolAI.Infrastructure.Postgres`、DbContext、Npgsql/SQL、Redis、Infrastructure 实现、Domain Repository |
-| `*.Abstractions` | BCL、最小 BuildingBlocks | 模块实现、Infrastructure、`PoolAI.Infrastructure.Postgres`、Contracts、EF/Npgsql、外部 SDK |
-| `PoolAI.Application.Orchestration` | 模块 `*.Abstractions` | 任一模块实现、Domain、Infrastructure、`PoolAI.Infrastructure.Postgres`、DbContext/Npgsql、外部 SDK、Endpoint |
+| Module Domain | BCL 与本模块最小 Domain primitives；必要时引用最小 BuildingBlocks | Application、Infrastructure、Endpoints、ASP.NET Core、EF/Npgsql、`PoolAI.Infrastructure.Postgres`、`PoolAI.Infrastructure.Secrets`、Redis、SMTP、HTTP Adapter、其他模块 |
+| Module Application | 本模块 Domain、本模块 Application Ports、其他模块 `*.Abstractions`、最小 BuildingBlocks | 本模块/其他模块 Infrastructure、Endpoints、DbContext、EF/Npgsql、`PoolAI.Infrastructure.Postgres`、`PoolAI.Infrastructure.Secrets`、Redis/SMTP 实现、ASP.NET transport |
+| Module Infrastructure | 本模块 Application Ports 与 Domain、必要的 EF/Npgsql/Redis/SMTP/加密实现；可引用 `PoolAI.Infrastructure.Postgres`；ADR 0009 获接受后仅 Identity/Supply Infrastructure 可引用 `PoolAI.Infrastructure.Secrets` | Endpoints、其他模块实现或其 DbContext/Entity；不得把共享 PostgreSQL runtime 当业务 SQL/Repository hub，也不得把 Secrets runtime 当配置/日志/业务 AAD/存储 hub |
+| Module Endpoints | 本模块 Application use case、`PoolAI.Contracts`、ASP.NET Core transport | `PoolAI.Infrastructure.Postgres`、`PoolAI.Infrastructure.Secrets`、DbContext、Npgsql/SQL、Redis、Infrastructure 实现、Domain Repository |
+| `*.Abstractions` | BCL、最小 BuildingBlocks | 模块实现、Infrastructure、`PoolAI.Infrastructure.Postgres`、`PoolAI.Infrastructure.Secrets`、Contracts、EF/Npgsql、外部 SDK |
+| `PoolAI.Application.Orchestration` | 模块 `*.Abstractions` | 任一模块实现、Domain、Infrastructure、`PoolAI.Infrastructure.Postgres`、`PoolAI.Infrastructure.Secrets`、DbContext/Npgsql、外部 SDK、Endpoint |
 | `PoolAI.Infrastructure.Postgres` | `PoolAI.BuildingBlocks`、Npgsql 与无业务规则的配置/诊断依赖 | 业务模块/Abstractions、Contracts、EF Entity、业务表 SQL/Repository/Migration、Endpoint |
-| Gateway Adapter | `Gateway.Abstractions`、BCL/必要 HTTP SDK | 模块实现、DbContext、Redis、quota/Subscription 事务、Endpoint |
-| Host Composition Root | 本 Host 允许加载的模块实现、Adapter、配置/观测基础设施；Api/Worker 可注册 `PoolAI.Infrastructure.Postgres` | 业务规则、SQL/Redis 业务操作、跨 Host ServiceProvider；Migrator 不得注册 runtime application UoW |
+| `PoolAI.Infrastructure.Secrets`（ADR 0009 待签核） | 仅 BCL；仓库统一 `PrivateAssets=all` analyzer 只能提供 build-time 规则且不得进入 compile/runtime/native graph | 所有项目/framework/compile/runtime NuGet 引用、项目专属 source generator、业务模块类型、BuildingBlocks、Contracts、配置/日志/业务 AAD/存储/CAS/轮换编排、ASP.NET/EF/Npgsql/Redis/外部 SDK |
+| Gateway Adapter | `Gateway.Abstractions`、BCL/必要 HTTP SDK | 模块实现、`PoolAI.Infrastructure.Secrets`、DbContext、Redis、quota/Subscription 事务、Endpoint |
+| Host Composition Root | 本 Host 允许加载的模块实现、Adapter、配置/观测基础设施；Api/Worker 可注册 `PoolAI.Infrastructure.Postgres` | 业务规则、SQL/Redis 业务操作、跨 Host ServiceProvider、直接引用/注册 `PoolAI.Infrastructure.Secrets`；Migrator 不得注册 runtime application UoW 或加载 Secrets runtime |
 
 Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序集，也必须按 namespace 依赖图执行；“在同一项目所以可以引用”不是例外。若 Architecture Test 无法可靠阻断反向引用，应把逻辑层拆成独立项目，而不是放宽依赖规则。
 
@@ -127,6 +129,7 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 - Port 使用领域 ID、Value Object、Command Result 或最小 Snapshot；不得暴露 `DbConnection`、`DbTransaction`、`DbContext`、EF Entry、HTTP request/response 或厂商 SDK 类型。
 - `IUnitOfWorkFactory.BeginAsync(...)`、`IUnitOfWork` 与 `IUnitOfWorkContext` 位于 vendor-neutral BuildingBlocks；`IUnitOfWork` 暴露独立 `Context` 并独占 commit/dispose capability，不能实现或继承 `IUnitOfWorkContext`。Handler 只把 `unitOfWork.Context` 传给 Repository/Appender。
 - 模块 Infrastructure adapter 可以把该中立 context type-check 为 `PoolAI.Infrastructure.Postgres` 提供的 concrete PostgreSQL transaction capability，以复用既有 connection/transaction；不匹配必须在任何写入前 fail-closed，禁止 fallback 新 connection/transaction。该 concrete capability 不能反向出现在 Port 签名。
+- ADR 0009 获接受后，Identity/Supply Infrastructure adapter 可以调用 BCL-only `PoolAI.Infrastructure.Secrets` 的 generic Envelope v1 mechanics；模块负责从已验证配置构造 immutable keyring、定义并校验业务 purpose/entity/field AAD、持久化/CAS 与安全告警。共享 core 不读取配置、不记录日志、不决定业务 AAD、不访问存储，也不编排轮换/恢复。
 - 外部协议变化只进入 Adapter 和 Gateway 规范化映射；Domain/Application 不使用 OpenAI DTO 作为自己的模型。
 - `CancellationToken` 沿端口传播，但数据库 commit、断连后有界 drain 等必须使用已冻结的独立生命周期规则，不能让 transport cancellation 破坏核销。
 
@@ -136,11 +139,11 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 
 | Host | 唯一 Composition Root | 允许组合 | 明确禁止 |
 |---|---|---|---|
-| Api | `PoolAI.Api/Program.cs` | Api 所需模块、`PoolAI.Application.Orchestration`、`PoolAI.Infrastructure.Postgres` runtime、OpenAI Adapter、HTTP/观测基础设施 | Worker loop、DDL runner、在 Program 中编写业务规则 |
-| Worker | `PoolAI.Worker/Program.cs` | `PoolAI.Infrastructure.Postgres` runtime/session lock、email/outbox、reservation、Supply health、Usage projection、告警等 Worker 能力 | 公开 Endpoint、协议 Adapter、Api ServiceProvider、DDL runner |
-| Migrator | `PoolAI.Migrator/Program.cs` | Database.Migrations、migration-specific lock/history/checksum、受限 bootstrap writer | runtime application UoW、Redis、Gateway、Worker loop、运行时模块业务服务 |
+| Api | `PoolAI.Api/Program.cs` | Api 所需模块、`PoolAI.Application.Orchestration`、`PoolAI.Infrastructure.Postgres` runtime、OpenAI Adapter、HTTP/观测基础设施 | Worker loop、DDL runner、直接引用/注册 `PoolAI.Infrastructure.Secrets`、在 Program 中编写业务规则 |
+| Worker | `PoolAI.Worker/Program.cs` | `PoolAI.Infrastructure.Postgres` runtime/session lock、email/outbox、reservation、Supply health、Usage projection、告警等 Worker 能力 | 公开 Endpoint、协议 Adapter、Api ServiceProvider、DDL runner、直接引用/注册 `PoolAI.Infrastructure.Secrets` |
+| Migrator | `PoolAI.Migrator/Program.cs` | Database.Migrations、migration-specific lock/history/checksum、受限 bootstrap writer | runtime application UoW、Redis、Gateway、Worker loop、运行时模块业务服务、`PoolAI.Infrastructure.Secrets` 或任何 Account secret 解密/重包裹路径 |
 
-模块通过显式 `AddIdentityModule()`、`AddGroupQuotaModule()` 等扩展注册。Api/Worker 在各自 Host 根部显式注册独立的 PostgreSQL data source/UoW runtime；不得跨进程共享 data source、connection、UoW 或根 `IServiceProvider`。注册扩展只做 binding、Options 校验和健康检查注册，不解析服务、不执行数据库写入、不启动后台循环，也不得调用 `BuildServiceProvider()`。对象图只能在对应 Host 根部闭合；测试可以建立测试专用 Composition Root，但生产模块不得感知它。Migrator 仍只有 migration-specific 数据路径，不以共享 runtime application UoW 取得 Schema 所有权。
+模块通过显式 `AddIdentityModule()`、`AddGroupQuotaModule()` 等扩展注册。Api/Worker 在各自 Host 根部显式注册独立的 PostgreSQL data source/UoW runtime；不得跨进程共享 data source、connection、UoW 或根 `IServiceProvider`。ADR 0009 若获接受，Identity/Supply 的模块注册边界可把 Host 已验证的 secret-provider 配置转换为模块 Infrastructure 使用的 immutable keyring，但 Api/Worker 项目本身不得直接引用、注册或解析 `PoolAI.Infrastructure.Secrets`。注册扩展只做 binding、Options 校验和健康检查注册，不解析服务、不执行数据库写入、不启动后台循环，也不得调用 `BuildServiceProvider()`。对象图只能在对应 Host 根部闭合；测试可以建立测试专用 Composition Root，但生产模块不得感知它。Migrator 仍只有 migration-specific 数据路径，不以共享 runtime application UoW 取得 Schema 所有权，也不得加载 Secrets runtime。
 
 ## 5. Aggregate 与 Repository 目录
 
@@ -269,17 +272,18 @@ Decorator 的固定外层顺序为：request correlation/observability → admis
 `PoolAI.ArchitectureTests` 必须至少阻断：
 
 1. 模块实现引用其他模块实现、Entity、DbContext、Endpoint，或 `*.Abstractions` 之间形成环。
-2. Domain/Application/Infrastructure/Endpoints 违反第 3.1 节依赖矩阵；尤其是 Domain/Application/Endpoints/Abstractions/Orchestration 引用 EF/Npgsql/`PoolAI.Infrastructure.Postgres`，或 Endpoint 引用 Infrastructure/DbContext。
+2. Domain/Application/Infrastructure/Endpoints 违反第 3.1 节依赖矩阵；尤其是 Domain/Application/Endpoints/Abstractions/Orchestration 引用 EF/Npgsql/`PoolAI.Infrastructure.Postgres`/`PoolAI.Infrastructure.Secrets`，非 Identity/Supply Infrastructure 使用 Secrets runtime，或 Endpoint 引用 Infrastructure/DbContext。
 3. `PoolAI.Application.Orchestration` 引用模块实现、Domain、Infrastructure、数据库/Redis/HTTP SDK，或声明 DbContext/Repository/持久化 Entity。
 4. Group activation Endpoint 绕过 `GroupActivationOrchestrator` 直接调用 activation mutation port。
 5. Adapter 引用业务模块实现、数据库、Redis、Subscription 或 quota transaction。
 6. 出现通用 `IRepository<T>`、通用 SQL executor/callback、跨模块 `IQueryable`、God DbContext、`TransactionScope`/ambient/`AsyncLocal` transaction lookup、静态/全局 connection registry、静态 ServiceProvider 或注册扩展中的 `BuildServiceProvider()`。
-7. Api/Worker/Migrator 彼此引用可执行项目，或加载超出各自 Composition Root 白名单的模块/loop/Adapter；尤其是 Api/Worker 未各自注册 Host-local PostgreSQL runtime，或 Migrator 注册 runtime application UoW/业务模块。
+7. Api/Worker/Migrator 彼此引用可执行项目，或加载超出各自 Composition Root 白名单的模块/loop/Adapter；尤其是 Api/Worker 未各自注册 Host-local PostgreSQL runtime、任一 Host 直接引用/注册 `PoolAI.Infrastructure.Secrets`，或 Migrator 注册 runtime application UoW/业务模块/Secrets runtime。
 8. 只有 GroupQuota Infrastructure 能写 `groups`、quota、Reservation、`usage_attempts`、`usage_attempt_adjustments`；只有 Supply 能写 `group_supply_configurations/group_accounts`。Supply 写不得改变 Group version/ETag，GroupQuota 写不得改变 Supply version/ETag；Usage 对结算事实没有写路径，只能写自己的投影/watermark，并须经 Operations 的事务内 `IInboxReceiptAppender` 登记通用 Inbox。
 9. Integration Event payload 引用 Domain/EF Entity、缺少显式 schema version，或消费者没有 inbox/checkpoint 幂等路径。
 10. Repository 内调用 commit/`SaveChanges`，`IUnitOfWork` 实现/继承 `IUnitOfWorkContext`，Appender/Store 可取得 commit/dispose capability，UoW/context 跨 Command 复用或终态后仍可使用，context 不匹配时另开 fallback transaction，或 Command Handler/UoW 在外部 HTTP、SMTP、Redis 等调用期间保持数据库事务。
 11. 新建 Payment/Billing/Pricing/Balance/Redeem/Affiliate/个人 quota 模块或类型。
 12. 除 ADR 0006 登记的三个完整 family 外出现跨 Context SQL/DbContext 直读：Family A 仅含 `poolai_quota_reserve` 的 canonical admission 读取以及 `poolai_quota_settle`、`poolai_quota_mark_dispatched`、`poolai_quota_adjust_usage` 的 Account/Channel `id + provider` route-identity 行锁；Family B 仅含 `poolai_validate_group_activation` 的点时 Supply readiness guard；Family C 仅含 `poolai_group_update` 与五条 SubscriptionAccess mutation 的双向 lifecycle fence。任一例外读取超出固定 function/table/field 白名单、跨 Context 写入、引入 dynamic/general executor，或 Family A/C 未遵守登记锁序和等待后 DB clock 重检。ADR 0006 仍为 `Proposed` 或缺少 `@Lyon1984` 永久签核证据时，还必须阻断以该候选 registry 宣称 M1-E4 architecture sign-off/release-ready。
+13. ADR 0009 未获永久签核时，以其候选边界宣称 implementation/release-ready；获接受并落地后，`PoolAI.Infrastructure.Secrets` 出现非 BCL 依赖、被 Identity/Supply 的非 Infrastructure namespace 或其他生产项目/Host/Migrator 使用，或包含配置/日志/业务 AAD/存储/CAS/轮换编排。
 
 静态架构测试之外，Integration Test 必须用真实 PostgreSQL 角色证明表写 owner、Group/Supply 独立 ETag、Supply 多行替换的单调 version、activation evidence、同一 physical connection/transaction 内的业务事实 + idempotency/audit/outbox、context mismatch fail-closed 且无第二事务、`usage_attempts` append-only、重复投递幂等、Worker dedicated session advisory lock 在 dispose/断连后的释放接管，以及 Group activation 并发版本冲突。Contract Test 必须覆盖 Integration Event envelope/schema version；故障测试必须覆盖 readiness 观察前后竞态、commit 前失败全部回滚、commit 后 Supply 失效不改写 Group 且新 attempt 强读拒绝，以及投递失败可重试。
 

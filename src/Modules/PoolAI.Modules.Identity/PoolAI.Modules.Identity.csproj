@@ -9,6 +9,7 @@
     <ProjectReference Include="../../PoolAI.BuildingBlocks/PoolAI.BuildingBlocks.csproj" />
     <ProjectReference Include="../../PoolAI.Contracts/PoolAI.Contracts.csproj" />
     <ProjectReference Include="../../PoolAI.Infrastructure.Postgres/PoolAI.Infrastructure.Postgres.csproj" />
+    <ProjectReference Include="../../PoolAI.Infrastructure.Secrets/PoolAI.Infrastructure.Secrets.csproj" />
     <ProjectReference Include="../PoolAI.Modules.Identity.Abstractions/PoolAI.Modules.Identity.Abstractions.csproj" />
     <ProjectReference Include="../PoolAI.Modules.Operations.Abstractions/PoolAI.Modules.Operations.Abstractions.csproj" />
   </ItemGroup>

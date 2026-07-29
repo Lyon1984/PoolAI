@@ -17,7 +17,7 @@ public sealed class RepositoryLayoutTests
             "*.csproj",
             SearchOption.AllDirectories);
 
-        Assert.Equal(25, productionProjects.Length);
+        Assert.Equal(26, productionProjects.Length);
         Assert.Equal(6, testProjects.Length);
     }
 
@@ -115,6 +115,7 @@ public sealed class RepositoryLayoutTests
             ["PoolAI.Contracts"] = [],
             ["PoolAI.BuildingBlocks"] = [],
             ["PoolAI.Infrastructure.Postgres"] = ["PoolAI.BuildingBlocks"],
+            ["PoolAI.Infrastructure.Secrets"] = [],
             ["PoolAI.Database.Migrations"] = [],
             ["PoolAI.Modules.Identity.Abstractions"] = ["PoolAI.BuildingBlocks"],
             ["PoolAI.Modules.SubscriptionAccess.Abstractions"] = ["PoolAI.BuildingBlocks"],
@@ -129,6 +130,7 @@ public sealed class RepositoryLayoutTests
                 "PoolAI.BuildingBlocks",
                 "PoolAI.Contracts",
                 "PoolAI.Infrastructure.Postgres",
+                "PoolAI.Infrastructure.Secrets",
                 "PoolAI.Modules.Identity.Abstractions",
                 "PoolAI.Modules.Operations.Abstractions",
             ],
@@ -154,6 +156,7 @@ public sealed class RepositoryLayoutTests
             [
                 "PoolAI.BuildingBlocks",
                 "PoolAI.Contracts",
+                "PoolAI.Infrastructure.Secrets",
                 "PoolAI.Modules.Supply.Abstractions",
                 "PoolAI.Modules.Operations.Abstractions",
             ],

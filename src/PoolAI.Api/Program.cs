@@ -40,7 +40,7 @@ builder.Services
     .AddIdentityModule(builder.Configuration)
     .AddSubscriptionAccessModule(builder.Configuration)
     .AddGroupQuotaModule()
-    .AddSupplyModule()
+    .AddSupplyModule(builder.Configuration)
     .AddRoutingModule()
     .AddUsageModule()
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)

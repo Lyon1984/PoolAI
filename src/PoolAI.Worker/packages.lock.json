@@ -112,14 +112,6 @@
           "Microsoft.Extensions.Primitives": "10.0.10"
         }
       },
-      "Microsoft.Extensions.Configuration.Abstractions": {
-        "type": "Transitive",
-        "resolved": "10.0.10",
-        "contentHash": "5Vnd2I75DmZCVEjSynIdJ/0EGafgnLQwgR3t2C2/fkjx/nRG+cLwxLLdInoHeCEpkD5K4Ov/g9ZCRYrl4TRsaA==",
-        "dependencies": {
-          "Microsoft.Extensions.Primitives": "10.0.10"
-        }
-      },
       "Microsoft.Extensions.Configuration.CommandLine": {
         "type": "Transitive",
         "resolved": "10.0.10",
@@ -374,6 +366,9 @@
           "PoolAI.BuildingBlocks": "[1.0.0, )"
         }
       },
+      "poolai.infrastructure.secrets": {
+        "type": "Project"
+      },
       "poolai.modules.groupquota": {
         "type": "Project",
         "dependencies": {
@@ -398,6 +393,7 @@
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
           "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Infrastructure.Secrets": "[1.0.0, )",
           "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
           "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )"
         }
@@ -430,9 +426,11 @@
       "poolai.modules.supply": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.Extensions.Configuration.Abstractions": "[10.0.10, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.10, )",
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Secrets": "[1.0.0, )",
           "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
           "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )"
         }
@@ -459,6 +457,15 @@
         "type": "Project",
         "dependencies": {
           "PoolAI.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "Microsoft.Extensions.Configuration.Abstractions": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.10, )",
+        "resolved": "10.0.10",
+        "contentHash": "5Vnd2I75DmZCVEjSynIdJ/0EGafgnLQwgR3t2C2/fkjx/nRG+cLwxLLdInoHeCEpkD5K4Ov/g9ZCRYrl4TRsaA==",
+        "dependencies": {
+          "Microsoft.Extensions.Primitives": "10.0.10"
         }
       },
       "Microsoft.Extensions.DependencyInjection": {

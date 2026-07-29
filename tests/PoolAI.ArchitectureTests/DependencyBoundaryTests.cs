@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using System.Xml.Linq;
 
 namespace PoolAI.ArchitectureTests;
@@ -326,6 +327,228 @@ public sealed partial class DependencyBoundaryTests
         AssertApprovedPostgresRuntimePackages(runtimeRoot);
         AssertPostgresRuntimeRegistration(runtimeRoot);
     }
+
+    [Fact]
+    public void SharedSecretsRuntimeIsBclOnlyAndUsedOnlyByOwningInfrastructure()
+    {
+        string root = RepositoryRoot.Find();
+        string runtimeRoot = Path.Combine(
+            root,
+            "src",
+            "PoolAI.Infrastructure.Secrets");
+        AssertSecretsRuntimeProjectIsBclOnly(runtimeRoot);
+        AssertSecretsRuntimeEffectiveGraphIsBclOnly(runtimeRoot);
+        AssertSecretsRuntimeHasNoFrameworkOrBusinessPolicy(runtimeRoot);
+        AssertOnlyOwningInfrastructureConsumesSecrets(root);
+        AssertHostsDoNotConsumeSecretsDirectly(root);
+        AssertSupplyCredentialUsesDisposableLease(root);
+    }
+
+    private static void AssertSecretsRuntimeProjectIsBclOnly(string runtimeRoot)
+    {
+        string project = File.ReadAllText(Path.Combine(
+            runtimeRoot,
+            "PoolAI.Infrastructure.Secrets.csproj"));
+        Assert.DoesNotContain("PackageReference", project, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProjectReference", project, StringComparison.Ordinal);
+    }
+
+    private static void AssertSecretsRuntimeEffectiveGraphIsBclOnly(string runtimeRoot)
+    {
+        using JsonDocument assets = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            runtimeRoot,
+            "obj",
+            "project.assets.json")));
+        JsonElement target = assets.RootElement
+            .GetProperty("targets")
+            .GetProperty("net10.0");
+        string[] effectivePackages = target
+            .EnumerateObject()
+            .Select(static dependency =>
+                dependency.Name[..dependency.Name.IndexOf('/')])
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            [
+                "Meziantou.Analyzer",
+                "Microsoft.CodeAnalysis.BannedApiAnalyzers",
+            ],
+            effectivePackages);
+        foreach (JsonProperty dependency in target.EnumerateObject())
+        {
+            Assert.False(dependency.Value.TryGetProperty("compile", out _));
+            Assert.False(dependency.Value.TryGetProperty("runtime", out _));
+            Assert.False(dependency.Value.TryGetProperty("native", out _));
+        }
+
+        JsonElement projectReferences = assets.RootElement
+            .GetProperty("project")
+            .GetProperty("restore")
+            .GetProperty("frameworks")
+            .GetProperty("net10.0")
+            .GetProperty("projectReferences");
+        Assert.Empty(projectReferences.EnumerateObject());
+
+        string configuration = new DirectoryInfo(AppContext.BaseDirectory)
+            .Parent!
+            .Name;
+        using JsonDocument runtimeGraph = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            runtimeRoot,
+            "bin",
+            configuration,
+            "net10.0",
+            "PoolAI.Infrastructure.Secrets.deps.json")));
+        JsonProperty runtimeLibrary = Assert.Single(runtimeGraph.RootElement
+            .GetProperty("libraries")
+            .EnumerateObject());
+        Assert.StartsWith(
+            "PoolAI.Infrastructure.Secrets/",
+            runtimeLibrary.Name,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            "project",
+            runtimeLibrary.Value.GetProperty("type").GetString());
+    }
+
+    private static void AssertSecretsRuntimeHasNoFrameworkOrBusinessPolicy(string runtimeRoot)
+    {
+        string runtimeSource = string.Join(
+            Environment.NewLine,
+            Directory
+                .GetFiles(runtimeRoot, "*.cs", SearchOption.AllDirectories)
+                .Where(static path => !IsGeneratedBuildPath(path))
+                .Select(File.ReadAllText));
+        string[] forbiddenRuntimeDependencies =
+        [
+            "Microsoft.Extensions",
+            "Npgsql",
+            "EntityFrameworkCore",
+            "IConfiguration",
+            "ILogger",
+            "account-credential",
+            "email-delivery-secret",
+            "idempotency-response",
+            "totp-secret",
+        ];
+        foreach (string forbidden in forbiddenRuntimeDependencies)
+        {
+            Assert.DoesNotContain(forbidden, runtimeSource, StringComparison.Ordinal);
+        }
+    }
+
+    private static void AssertOnlyOwningInfrastructureConsumesSecrets(string root)
+    {
+        string modulesRoot = Path.Combine(root, "src", "Modules");
+        string[] consumers = Directory
+            .GetFiles(modulesRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(static path => !IsGeneratedBuildPath(path))
+            .Where(path => File.ReadAllText(path).Contains(
+                "PoolAI.Infrastructure.Secrets",
+                StringComparison.Ordinal))
+            .ToArray();
+        Assert.NotEmpty(consumers);
+        foreach (string consumer in consumers)
+        {
+            string relative = Path.GetRelativePath(modulesRoot, consumer);
+            Assert.True(
+                relative.StartsWith(
+                    "PoolAI.Modules.Identity",
+                    StringComparison.Ordinal)
+                || relative.StartsWith(
+                    "PoolAI.Modules.Supply",
+                    StringComparison.Ordinal),
+                $"Unexpected shared Secrets consumer: {relative}");
+            string declaredNamespace = ReadFileScopedNamespace(
+                File.ReadAllText(consumer),
+                relative);
+            Assert.True(
+                declaredNamespace.StartsWith(
+                    "PoolAI.Modules.Identity.Infrastructure",
+                    StringComparison.Ordinal)
+                || declaredNamespace.StartsWith(
+                    "PoolAI.Modules.Supply.Infrastructure",
+                    StringComparison.Ordinal),
+                $"Shared Secrets consumer is outside an owning Infrastructure namespace: "
+                + $"{declaredNamespace} ({relative})");
+        }
+    }
+
+    private static string ReadFileScopedNamespace(string source, string relativePath)
+    {
+        string? declaration = source
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(static line => line.Trim())
+            .FirstOrDefault(static line => line.StartsWith(
+                "namespace ",
+                StringComparison.Ordinal));
+        Assert.NotNull(declaration);
+        Assert.EndsWith(";", declaration, StringComparison.Ordinal);
+        string result = declaration["namespace ".Length..^1].Trim();
+        Assert.False(
+            string.IsNullOrWhiteSpace(result),
+            $"Shared Secrets consumer has no namespace: {relativePath}");
+        return result;
+    }
+
+    private static void AssertSupplyCredentialUsesDisposableLease(string root)
+    {
+        string ports = Path.Combine(
+            root,
+            "src",
+            "Modules",
+            "PoolAI.Modules.Supply",
+            "Application",
+            "Ports");
+        string protector = File.ReadAllText(Path.Combine(
+            ports,
+            "IAccountCredentialProtector.cs"));
+        string lease = File.ReadAllText(Path.Combine(
+            ports,
+            "AccountCredentialLease.cs"));
+
+        Assert.Contains(
+            "ValueTask<AccountCredentialLease> UnprotectAsync(",
+            protector,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ValueTask<string>",
+            protector,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AccountCredentialLease : IDisposable",
+            lease,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CryptographicOperations.ZeroMemory",
+            lease,
+            StringComparison.Ordinal);
+    }
+
+    private static void AssertHostsDoNotConsumeSecretsDirectly(string root)
+    {
+        foreach (string host in new[] { "PoolAI.Api", "PoolAI.Worker", "PoolAI.Migrator" })
+        {
+            string hostRoot = Path.Combine(root, "src", host);
+            string hostSource = string.Join(
+                Environment.NewLine,
+                Directory
+                    .GetFiles(hostRoot, "*.cs", SearchOption.AllDirectories)
+                    .Where(static path => !IsGeneratedBuildPath(path))
+                    .Select(File.ReadAllText));
+            Assert.DoesNotContain(
+                "PoolAI.Infrastructure.Secrets",
+                hostSource,
+                StringComparison.Ordinal);
+        }
+    }
+
+    private static bool IsGeneratedBuildPath(string path) =>
+        path.Contains(
+            $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+            StringComparison.Ordinal)
+        || path.Contains(
+            $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+            StringComparison.Ordinal);
 
     private static void AssertNoAmbientOrGenericPostgresConstructs(string source)
     {

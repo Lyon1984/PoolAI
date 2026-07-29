@@ -165,26 +165,58 @@ public sealed class IdentitySessionSecurityFailureCoverageTests
         AeadEnvelopeV1 envelope = new(keyRing);
         byte[] plaintext = "sensitive-value"u8.ToArray();
 
-        JsonElement encrypted = envelope.Encrypt(plaintext, "poolai|test|aad");
-        Assert.Equal(plaintext, envelope.Decrypt(encrypted, "poolai|test|aad"));
+        const string aad =
+            "poolai|v1|test-purpose|test-entity|test-id|test-field";
+        JsonElement encrypted = envelope.Encrypt(plaintext, aad);
+        Assert.Equal(plaintext, envelope.Decrypt(encrypted, aad));
 
         Assert.Throws<ArgumentNullException>(() => new AeadEnvelopeV1(null!));
-        Assert.Throws<ArgumentException>(() => envelope.Encrypt(Array.Empty<byte>(), "poolai|test|aad"));
+        Assert.Throws<ArgumentException>(() => envelope.Encrypt(Array.Empty<byte>(), aad));
         Assert.Throws<ArgumentException>(() => envelope.Encrypt(plaintext, " "));
         Assert.Throws<ArgumentException>(() => envelope.Decrypt(encrypted, string.Empty));
-        Assert.Throws<CryptographicException>(() => envelope.Decrypt(encrypted, "poolai|test|other"));
+        Assert.Throws<CryptographicException>(() => envelope.Decrypt(
+            encrypted,
+            "poolai|v1|test-purpose|test-entity|test-id|other-field"));
 
         byte[] otherKey = Enumerable.Repeat((byte)0x22, 32).ToArray();
         AeadEnvelopeV1 otherEnvelope = new(KeyRing("identity-k2", otherKey));
         Assert.Throws<CryptographicException>(() => otherEnvelope.Decrypt(
             encrypted,
-            "poolai|test|aad"));
+            aad));
 
         JsonElement tampered = WithProperty(
             encrypted,
             "ciphertext",
             FlipFirstBase64UrlCharacter(encrypted.GetProperty("ciphertext").GetString()!));
-        Assert.Throws<CryptographicException>(() => envelope.Decrypt(tampered, "poolai|test|aad"));
+        Assert.Throws<CryptographicException>(() => envelope.Decrypt(tampered, aad));
+    }
+
+    [Fact]
+    public void AeadEnvelopeDecryptsPreExtractionIdentityFixture()
+    {
+        // Captured from the pre-extraction implementation at
+        // e09b7ecbf856bdec46888e8a1e985ea910f9b8ba with deterministic test material.
+        const string LegacyEnvelope = """
+            {"v":1,"alg":"A256GCM\u002BA256GCM-v1","kid":"identity-fixture-k1","wrapped_dek":"EOWM3U4RnYl2v81Gy7Wy9SDpcurHq5djbUmeTu_6oV4","wrap_nonce":"yVb3nWneGBICUuuv","wrap_tag":"uI2X7FO-mz5Y7kh5KqGUkw","ciphertext":"1YYUyE-E4lKgf8ktYbl2eoGNJ2bLy8D3po7OkHs6xsQ","nonce":"E26-shHmadMRV5wO","tag":"hy20MBpCJDASPx5xHT5QWw"}
+            """;
+        const string Aad =
+            "poolai|v1|email-delivery-secret|email-outbox|019c13e8-9a5b-7b87-a63f-6e55a2785dc1|recipient_envelope";
+        using JsonDocument document = JsonDocument.Parse(LegacyEnvelope);
+        byte[] key = Enumerable.Repeat((byte)0x11, 32).ToArray();
+        AeadEnvelopeV1 envelope = new(KeyRing("identity-fixture-k1", key));
+
+        byte[] plaintext = envelope.Decrypt(document.RootElement, Aad);
+        try
+        {
+            Assert.Equal(
+                "legacy-identity-envelope-fixture"u8.ToArray(),
+                plaintext);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+            CryptographicOperations.ZeroMemory(key);
+        }
     }
 
     [Theory]
@@ -199,14 +231,16 @@ public sealed class IdentitySessionSecurityFailureCoverageTests
 
         Assert.Throws<CryptographicException>(() => envelope.Decrypt(
             document.RootElement,
-            "poolai|test|aad"));
+            "poolai|v1|test-purpose|test-entity|test-id|test-field"));
     }
 
     [Fact]
     public void AeadEnvelopeRejectsInvalidFrozenFieldsAndLengths()
     {
         AeadEnvelopeV1 envelope = new(KeyRing("identity-k1", new byte[32]));
-        JsonElement encrypted = envelope.Encrypt("payload"u8, "poolai|test|aad");
+        const string aad =
+            "poolai|v1|test-purpose|test-entity|test-id|test-field";
+        JsonElement encrypted = envelope.Encrypt("payload"u8, aad);
         List<JsonElement> malformed =
         [
             WithoutProperty(encrypted, "tag"),
@@ -225,7 +259,7 @@ public sealed class IdentitySessionSecurityFailureCoverageTests
 
         foreach (JsonElement value in malformed)
         {
-            Assert.Throws<CryptographicException>(() => envelope.Decrypt(value, "poolai|test|aad"));
+            Assert.Throws<CryptographicException>(() => envelope.Decrypt(value, aad));
         }
     }
 
@@ -242,7 +276,6 @@ public sealed class IdentitySessionSecurityFailureCoverageTests
                 ["Secrets:Envelope:DecryptKeyRing:identity-k1"] = encoded,
             }));
         Assert.Equal("identity-k1", parsed.CurrentKeyId);
-        Assert.Equal(key, parsed.CurrentKey);
 
         Assert.Throws<InvalidOperationException>(() => EnvelopeKeyRingOptions.FromConfiguration(
             Configuration(new Dictionary<string, string?>(StringComparer.Ordinal)
