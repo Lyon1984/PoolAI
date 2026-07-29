@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply;
+using PoolAI.Modules.Supply.Application;
 using PoolAI.Modules.Supply.Application.Ports;
 using PoolAI.Modules.Supply.Infrastructure.Workers;
 using PoolAI.Modules.Supply.Worker;
@@ -40,6 +41,37 @@ public sealed class SupplyAccountCredentialRewrapWorkerTests
             services,
             static descriptor =>
                 descriptor.ImplementationType == typeof(AccountCredentialRewrapService));
+    }
+
+    [Theory]
+    [InlineData("not-base64", "Idempotency:RequestHashPepper is invalid.")]
+    [InlineData("AQID", "Idempotency:RequestHashPepper must contain at least 256 bits.")]
+    public void SupplyRegistrationRejectsInvalidRequestHashPepper(
+        string requestHashPepper,
+        string expectedMessage)
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>(
+                StringComparer.Ordinal)
+            {
+                ["Idempotency:RequestHashPepper"] = requestHashPepper,
+            })
+            .Build();
+
+        InvalidOperationException exception =
+            Assert.Throws<InvalidOperationException>(() =>
+                new ServiceCollection().AddSupplyModule(configuration));
+
+        Assert.Equal(expectedMessage, exception.Message);
+    }
+
+    [Fact]
+    public void AccountControlPlanePolicyRejectsWeakRequestHashPepper()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new AccountControlPlanePolicy(null!));
+        Assert.Throws<ArgumentException>(() =>
+            new AccountControlPlanePolicy(new byte[31]));
     }
 
     [Fact]

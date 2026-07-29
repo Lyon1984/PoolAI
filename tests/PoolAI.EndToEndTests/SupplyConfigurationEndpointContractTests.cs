@@ -729,6 +729,206 @@ public sealed class SupplyConfigurationEndpointContractTests
     }
 
     [Fact]
+    public async Task ChannelValidationFailuresAndProjectionBranchesRemainFrozen()
+    {
+        await using SupplyApiFactory factory = new();
+        using HttpClient auditor = AuthenticatedClient(factory, "auditor");
+
+        using (HttpResponseMessage badLimit = await auditor.GetAsync(
+                   "/api/v1/admin/channels?limit=0",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                badLimit,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/limit").ConfigureAwait(true);
+        }
+
+        factory.UseCases.ListChannelResult = Result.Failure<ChannelPage>(
+            "dependency_unavailable",
+            "synthetic Channel list dependency");
+        using (HttpResponseMessage failedList = await auditor.GetAsync(
+                   "/api/v1/admin/channels",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                failedList,
+                HttpStatusCode.ServiceUnavailable,
+                "dependency_unavailable",
+                expectedRetryable: true).ConfigureAwait(true);
+        }
+
+        using (HttpResponseMessage emptyId = await auditor.GetAsync(
+                   $"/api/v1/admin/channels/{Guid.Empty:D}",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                emptyId,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/channelId").ConfigureAwait(true);
+        }
+
+        factory.UseCases.GetChannelResult = Result.Failure<ChannelView>(
+            "resource_not_found",
+            "synthetic missing Channel");
+        using (HttpResponseMessage failedGet = await auditor.GetAsync(
+                   $"/api/v1/admin/channels/{ChannelId.Value:D}",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                failedGet,
+                HttpStatusCode.NotFound,
+                "resource_not_found").ConfigureAwait(true);
+        }
+
+        using HttpClient admin = AuthenticatedClient(factory, "admin");
+        using (HttpRequestMessage invalidCreate = JsonCommand(
+                   HttpMethod.Post,
+                   "/api/v1/admin/channels",
+                   new
+                   {
+                       name = "",
+                       provider = "openai",
+                       capabilities = (object?)null,
+                       model_mappings = (object?)null,
+                   },
+                   idempotencyKey: "invalid-channel-create"))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   invalidCreate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/name").ConfigureAwait(true);
+        }
+
+        factory.UseCases.CreateChannelResult =
+            Result.Failure<SupplyCommandOutcome<ChannelView>>(
+                "resource_conflict",
+                "synthetic create conflict");
+        using (HttpRequestMessage failedCreate = JsonCommand(
+                   HttpMethod.Post,
+                   "/api/v1/admin/channels",
+                   ValidChannelCreate(),
+                   idempotencyKey: "failed-channel-create"))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   failedCreate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.Conflict,
+                "resource_conflict").ConfigureAwait(true);
+        }
+
+        using (HttpRequestMessage emptyUpdateId = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/channels/{Guid.Empty:D}",
+                   new { name = "Renamed" },
+                   "application/merge-patch+json",
+                   "empty-channel-id",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   emptyUpdateId,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/channelId").ConfigureAwait(true);
+        }
+
+        using (HttpRequestMessage emptyUpdate = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/channels/{ChannelId.Value:D}",
+                   new Dictionary<string, object?>(StringComparer.Ordinal),
+                   "application/merge-patch+json",
+                   "empty-channel-update",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   emptyUpdate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/").ConfigureAwait(true);
+        }
+
+        using (HttpRequestMessage invalidUpdate = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/channels/{ChannelId.Value:D}",
+                   new
+                   {
+                       name = "",
+                       status = "retired",
+                       capabilities = (object?)null,
+                       model_mappings = new object?[] { null },
+                       reason = " ",
+                   },
+                   "application/merge-patch+json",
+                   "invalid-channel-update",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   invalidUpdate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/status").ConfigureAwait(true);
+        }
+
+        factory.UseCases.UpdateChannelResult =
+            Result.Failure<SupplyCommandOutcome<ChannelView>>(
+                "version_conflict",
+                "synthetic stale Channel",
+                etag: "\"v8\"");
+        using (HttpRequestMessage failedUpdate = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/channels/{ChannelId.Value:D}",
+                   new { name = "Valid rename" },
+                   "application/merge-patch+json",
+                   "failed-channel-update",
+                   "\"v7\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   failedUpdate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.PreconditionFailed,
+                "version_conflict",
+                expectedRetryable: true).ConfigureAwait(true);
+            Assert.Equal("\"v8\"", response.Headers.ETag?.Tag);
+        }
+
+        factory.UseCases.ListChannelResult = Result.Success(new ChannelPage(
+            [
+                ChannelViewOf(
+                    ChannelLifecycle.Retired,
+                    version: 9,
+                    provider: UpstreamProvider.OpenAi),
+            ],
+            NextCursor: null,
+            HasMore: false));
+        using HttpClient projectionAuditor = AuthenticatedClient(
+            factory,
+            "auditor");
+        using HttpResponseMessage projected = await projectionAuditor.GetAsync(
+            "/api/v1/admin/channels",
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, projected.StatusCode);
+    }
+
+    [Fact]
     public async Task ChannelRetirementReferenceConflictMapsFrozenError()
     {
         await using SupplyApiFactory factory = new();
@@ -786,10 +986,11 @@ public sealed class SupplyConfigurationEndpointContractTests
 
     private static ChannelView ChannelViewOf(
         ChannelLifecycle lifecycle,
-        long version) => new(
+        long version,
+        UpstreamProvider provider = UpstreamProvider.OpenAiCompatible) => new(
         ChannelId,
         "Primary",
-        UpstreamProvider.OpenAiCompatible,
+        provider,
         lifecycle,
         new ChannelCapabilitiesSnapshot(
             Responses: true,

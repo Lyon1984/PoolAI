@@ -9,7 +9,7 @@ using PoolAI.Modules.Supply.Domain;
 
 namespace PoolAI.UnitTests;
 
-public sealed class AccountControlPlaneServiceTests
+public sealed partial class AccountControlPlaneServiceTests
 {
     private const string Credential = "account-secret-value-0001";
     private static readonly DateTimeOffset Now = new(
@@ -384,13 +384,23 @@ public sealed class AccountControlPlaneServiceTests
 
         internal AccountResource? GetResult { get; set; }
 
+        internal int CreateCalls { get; private set; }
+
+        internal AccountCreateWrite? LastCreate { get; private set; }
+
         internal Func<AccountCreateWrite, AccountMutationResult>? CreateFactory { get; set; }
 
         internal Queue<AccountMutationResult> UpdateResults { get; } = [];
 
         internal Queue<AccountMutationResult> RetireResults { get; } = [];
 
+        internal int UpdateCalls { get; private set; }
+
         internal AccountUpdateWrite? LastUpdate { get; private set; }
+
+        internal int RetireCalls { get; private set; }
+
+        internal AccountRetireWrite? LastRetire { get; private set; }
 
         public ValueTask<AccountSlice> ListAsync(
             AccountCursor? cursor,
@@ -416,6 +426,8 @@ public sealed class AccountControlPlaneServiceTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            CreateCalls++;
+            LastCreate = write;
             return ValueTask.FromResult(
                 CreateFactory?.Invoke(write)
                 ?? new AccountMutationResult(
@@ -431,6 +443,7 @@ public sealed class AccountControlPlaneServiceTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            UpdateCalls++;
             LastUpdate = write;
             return ValueTask.FromResult(UpdateResults.Dequeue());
         }
@@ -441,20 +454,24 @@ public sealed class AccountControlPlaneServiceTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RetireCalls++;
+            LastRetire = write;
             return ValueTask.FromResult(RetireResults.Dequeue());
         }
     }
 
     private sealed class FakeCredentialProtector : IAccountCredentialProtector
     {
-        public AccountCredentialProtection Protect(
-            string credential,
-            EntityId accountId) => new(
+        internal AccountCredentialProtection Protection { get; set; } = new(
             JsonSerializer.SerializeToElement(new
             {
                 ciphertext = "opaque-ciphertext",
             }),
             "test-envelope-key");
+
+        public AccountCredentialProtection Protect(
+            string credential,
+            EntityId accountId) => Protection;
 
         public ValueTask<AccountCredentialLease> UnprotectAsync(
             JsonElement envelope,
@@ -502,6 +519,12 @@ public sealed class AccountControlPlaneServiceTests
 
     private sealed class RecordingIdempotencyStore : ICommandIdempotencyStore
     {
+        internal CommandIdempotencyAcquireResult? AcquireResult { get; set; }
+
+        internal bool CompleteResult { get; set; } = true;
+
+        internal List<CommandIdempotencyRequest> Requests { get; } = [];
+
         internal List<CommandIdempotencyCompletion> Completions { get; } = [];
 
         public ValueTask<CommandIdempotencyAcquireResult> AcquireAsync(
@@ -510,13 +533,16 @@ public sealed class AccountControlPlaneServiceTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(CommandIdempotencyAcquireResult.Acquired(
-                new CommandIdempotencyLease(
-                    request.Scope,
-                    request.Key,
-                    request.Owner,
-                    Generation: 1,
-                    Version: 1)));
+            Requests.Add(request);
+            return ValueTask.FromResult(
+                AcquireResult
+                ?? CommandIdempotencyAcquireResult.Acquired(
+                    new CommandIdempotencyLease(
+                        request.Scope,
+                        request.Key,
+                        request.Owner,
+                        Generation: 1,
+                        Version: 1)));
         }
 
         public ValueTask<bool> HeartbeatAsync(
@@ -532,7 +558,7 @@ public sealed class AccountControlPlaneServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Completions.Add(completion);
-            return ValueTask.FromResult(true);
+            return ValueTask.FromResult(CompleteResult);
         }
     }
 

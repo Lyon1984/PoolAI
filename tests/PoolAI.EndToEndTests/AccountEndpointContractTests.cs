@@ -390,6 +390,246 @@ public sealed class AccountEndpointContractTests
     }
 
     [Fact]
+    public async Task AccountValidationFailuresAndProjectionBranchesRemainFrozen()
+    {
+        await using AccountApiFactory factory = new();
+        using HttpClient auditor = AuthenticatedClient(factory, "auditor");
+
+        using (HttpResponseMessage badLimit = await auditor.GetAsync(
+                   "/api/v1/admin/accounts?limit=101",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                badLimit,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/limit");
+        }
+
+        factory.UseCases.ListResult = Result.Failure<AccountPage>(
+            "dependency_unavailable",
+            "synthetic list dependency failure");
+        using (HttpResponseMessage failedList = await auditor.GetAsync(
+                   "/api/v1/admin/accounts",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                failedList,
+                HttpStatusCode.ServiceUnavailable,
+                "dependency_unavailable",
+                expectedRetryable: true);
+        }
+
+        using (HttpResponseMessage emptyId = await auditor.GetAsync(
+                   $"/api/v1/admin/accounts/{Guid.Empty:D}",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                emptyId,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/accountId");
+        }
+
+        factory.UseCases.GetResult = Result.Failure<AccountView>(
+            "resource_not_found",
+            "synthetic missing Account");
+        using (HttpResponseMessage failedGet = await auditor.GetAsync(
+                   $"/api/v1/admin/accounts/{AccountId.Value:D}",
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                failedGet,
+                HttpStatusCode.NotFound,
+                "resource_not_found");
+        }
+
+        using HttpClient admin = AuthenticatedClient(factory, "admin");
+        using (HttpRequestMessage invalidCreate = JsonCommand(
+                   HttpMethod.Post,
+                   "/api/v1/admin/accounts",
+                   new
+                   {
+                       name = "",
+                       provider = "openai",
+                       base_url = (string?)null,
+                       credential = "short",
+                       max_concurrency = 0,
+                       priority = 100001,
+                       weight = 0,
+                   },
+                   idempotencyKey: "invalid-create"))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   invalidCreate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/credential");
+        }
+
+        factory.UseCases.CreateResult =
+            Result.Failure<AccountCommandOutcome<AccountView>>(
+                "resource_conflict",
+                "synthetic create conflict");
+        using (HttpRequestMessage failedCreate = JsonCommand(
+                   HttpMethod.Post,
+                   "/api/v1/admin/accounts",
+                   ValidCreateBody(),
+                   idempotencyKey: "failed-create"))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   failedCreate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.Conflict,
+                "resource_conflict");
+        }
+
+        using (HttpRequestMessage emptyUpdateId = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/accounts/{Guid.Empty:D}",
+                   new { name = "Renamed" },
+                   "application/merge-patch+json",
+                   "empty-update-id",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   emptyUpdateId,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.BadRequest,
+                "invalid_request",
+                "/accountId");
+        }
+
+        using (HttpRequestMessage emptyUpdate = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/accounts/{AccountId.Value:D}",
+                   new Dictionary<string, object?>(StringComparer.Ordinal),
+                   "application/merge-patch+json",
+                   "empty-update",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   emptyUpdate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/");
+        }
+
+        using (HttpRequestMessage invalidUpdate = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/accounts/{AccountId.Value:D}",
+                   new
+                   {
+                       name = "",
+                       base_url = (string?)null,
+                       credential = "short",
+                       status = "retired",
+                       max_concurrency = 0,
+                       priority = 100001,
+                       weight = 0,
+                   },
+                   "application/merge-patch+json",
+                   "invalid-update",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   invalidUpdate,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/status");
+        }
+
+        using (HttpRequestMessage invalidReason = JsonCommand(
+                   HttpMethod.Patch,
+                   $"/api/v1/admin/accounts/{AccountId.Value:D}",
+                   new { status = "active", reason = " " },
+                   "application/merge-patch+json",
+                   "invalid-reason",
+                   "\"v1\""))
+        using (HttpResponseMessage response = await admin.SendAsync(
+                   invalidReason,
+                   TestContext.Current.CancellationToken))
+        {
+            await AssertProblemAsync(
+                response,
+                HttpStatusCode.UnprocessableEntity,
+                "validation_failed",
+                "/reason");
+        }
+
+        factory.UseCases.ListResult = Result.Success(new AccountPage(
+            [
+                View(
+                    10,
+                    "sha256:100000000000",
+                    UpstreamProvider.OpenAi,
+                    AccountLifecycle.Active,
+                    AccountHealth.Healthy),
+                View(
+                    11,
+                    "sha256:110000000000",
+                    status: AccountLifecycle.Disabled,
+                    health: AccountHealth.Degraded),
+                View(
+                    12,
+                    "sha256:120000000000",
+                    status: AccountLifecycle.Retired,
+                    health: AccountHealth.Cooling),
+                View(
+                    13,
+                    "sha256:130000000000",
+                    health: AccountHealth.Unhealthy),
+            ],
+            NextCursor: null,
+            HasMore: false));
+        using HttpClient projectionAuditor = AuthenticatedClient(
+            factory,
+            "auditor");
+        using (HttpResponseMessage projected = await projectionAuditor.GetAsync(
+                   "/api/v1/admin/accounts",
+                   TestContext.Current.CancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, projected.StatusCode);
+        }
+
+        factory.UseCases.RetireResult =
+            Result.Failure<AccountCommandOutcome>(
+                "account_in_use",
+                "synthetic active binding");
+        using HttpClient retireAdmin = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage failedRetire = new(
+            HttpMethod.Delete,
+            $"/api/v1/admin/accounts/{AccountId.Value:D}");
+        failedRetire.Headers.TryAddWithoutValidation(
+            "Idempotency-Key",
+            "failed-retire");
+        failedRetire.Headers.TryAddWithoutValidation("If-Match", "\"v1\"");
+        failedRetire.Headers.TryAddWithoutValidation(
+            "X-Change-Reason",
+            "coverage conflict");
+        using HttpResponseMessage retireResponse = await retireAdmin.SendAsync(
+            failedRetire,
+            TestContext.Current.CancellationToken);
+        await AssertProblemAsync(
+            retireResponse,
+            HttpStatusCode.Conflict,
+            "account_in_use");
+    }
+
+    [Fact]
     public async Task InvalidBaseUrlReturnsSafeValidationProblemBeforeUseCase()
     {
         using RecordingActivityListener traces = new();
@@ -476,15 +716,20 @@ public sealed class AccountEndpointContractTests
         Assert.True(added);
     }
 
-    private static AccountView View(long version, string prefix) => new(
+    private static AccountView View(
+        long version,
+        string prefix,
+        UpstreamProvider provider = UpstreamProvider.OpenAiCompatible,
+        AccountLifecycle status = AccountLifecycle.Disabled,
+        AccountHealth health = AccountHealth.Unknown) => new(
         AccountId,
         "Primary",
-        UpstreamProvider.OpenAiCompatible,
+        provider,
         new Uri("https://EXAMPLE.com/v1", UriKind.Absolute),
         prefix,
-        AccountLifecycle.Disabled,
+        status,
         new AccountHealthView(
-            AccountHealth.Unknown,
+            health,
             RetryAt: null,
             LastCheckedAt: null),
         ActiveLeases: 0,
@@ -578,7 +823,8 @@ public sealed class AccountEndpointContractTests
         HttpResponseMessage response,
         HttpStatusCode status,
         string code,
-        string? pointer = null)
+        string? pointer = null,
+        bool expectedRetryable = false)
     {
         Assert.Equal(status, response.StatusCode);
         Assert.Equal(
@@ -589,7 +835,9 @@ public sealed class AccountEndpointContractTests
                 TestContext.Current.CancellationToken).ConfigureAwait(false));
         JsonElement problem = document.RootElement;
         Assert.Equal(code, problem.GetProperty("code").GetString());
-        Assert.False(problem.GetProperty("retryable").GetBoolean());
+        Assert.Equal(
+            expectedRetryable,
+            problem.GetProperty("retryable").GetBoolean());
         Assert.True(Guid.TryParse(
             problem.GetProperty("request_id").GetString(),
             out _));
