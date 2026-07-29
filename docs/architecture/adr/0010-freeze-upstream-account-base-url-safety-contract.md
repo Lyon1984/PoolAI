@@ -43,8 +43,10 @@ therefore require one exact compatibility window.
   scalar values;
 - the scheme spelling is lowercase `https`, except that lowercase `http` is
   allowed only with the exact host `localhost`, `127.0.0.1`, or `[::1]`;
-- a non-loopback HTTPS host is ASCII DNS/IPv4 syntax or a bracketed IPv6
-  literal; an internationalized DNS name must be supplied as ASCII punycode;
+- a non-loopback HTTPS authority uses the frozen ASCII URI reg-name/IP-literal
+  syntactic subset or a bracketed IPv6-shaped literal; an internationalized DNS
+  name must be supplied as ASCII punycode, while host/address validity remains a
+  separate Application and connection-time check;
 - an explicit port, when present, is the canonical decimal range `1..65535`
   without leading zeroes;
 - an optional absolute path is allowed so OpenAI-compatible deployments may
@@ -59,6 +61,14 @@ The .NET Supply boundary validates `Uri.OriginalString`, and the forward
 database validator applies the same bounded grammar. Public response DTOs never
 contain the Account credential.
 
+### Failure projection
+
+An invalid public `base_url` is projected through the existing
+`422 validation_failed` contract with `retryable=false`, no `Retry-After`, and
+one safe `errors["/base_url"]` entry. The rejected URL, authority, userinfo, or
+other submitted text must never be copied into Problem Details, field errors,
+logs, audit, metrics, or trace attributes. No new stable error code is added.
+
 ### SSRF boundary
 
 This decision closes the M2-E2 stored-URL and control-plane injection surface.
@@ -67,11 +77,13 @@ rebinding, a DNS name resolving to a private address, redirects, or a
 time-of-check/time-of-use change.
 
 Any later health probe or Gateway transport that opens a network connection
-must re-read the current Supply configuration, resolve and classify every
-address at connection time, apply the deployment egress policy, disable
-automatic cross-policy redirects, and repeat the check for an allowed redirect.
-That connection-time policy belongs to the milestone that introduces the
-outbound call; it cannot be inferred from this stored-URL approval.
+must do so outside every PostgreSQL Unit of Work, re-read the current Supply
+configuration, resolve and classify every address including IPv4-mapped IPv6 at
+connection time, connect only to a vetted address under the non-runtime-mutable
+deployment egress policy, disable automatic redirects by default, and repeat
+the complete check before any allowed redirect hop. That connection-time policy
+belongs to the milestone that introduces the outbound call; it cannot be
+inferred from this stored-URL approval.
 
 ### Provider and ownership invariants
 
@@ -116,8 +128,8 @@ rewrite.
 
 ## Consequences
 
-- Six existing v1 input/response schema locations are tightened through one
-  exact, non-reusable compatibility window.
+- Three existing v1 input/response schema locations produce six tightening
+  diagnostics through one exact, non-reusable compatibility window.
 - Account CRUD has one deterministic URL rule across contract, Domain,
   Application, and PostgreSQL.
 - Local mock upstreams remain possible through the three exact loopback HTTP
