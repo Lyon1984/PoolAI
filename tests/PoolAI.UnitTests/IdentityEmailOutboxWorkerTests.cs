@@ -356,7 +356,9 @@ public sealed class IdentityEmailOutboxWorkerTests
     [Fact]
     public async Task SmtpGreetingTimeoutIsClassifiedAsTransientTimeout()
     {
-        EmailTransportResult result = await SendAgainstGreetingAsync([]);
+        EmailTransportResult result = await SendAgainstGreetingAsync(
+            [],
+            smtpTimeout: TimeSpan.FromMilliseconds(250));
 
         Assert.Equal(EmailTransportDisposition.TransientFailure, result.Disposition);
         Assert.Equal(EmailDeliveryFailureClass.Timeout, result.FailureClass);
@@ -901,7 +903,8 @@ public sealed class IdentityEmailOutboxWorkerTests
 
     private static async Task<EmailTransportResult> SendAgainstGreetingAsync(
         byte[] greeting,
-        SmtpSecurityMode smtpSecurity = SmtpSecurityMode.StartTls)
+        SmtpSecurityMode smtpSecurity = SmtpSecurityMode.StartTls,
+        TimeSpan? smtpTimeout = null)
     {
         using TcpListener listener = new(IPAddress.Loopback, 0);
         listener.Start();
@@ -918,7 +921,9 @@ public sealed class IdentityEmailOutboxWorkerTests
             SmtpEmailTransport transport = new(CreateOptions(
                 smtpHost: "localhost",
                 smtpPort: port,
-                smtpTimeout: TimeSpan.FromMilliseconds(250),
+                // These probes prove SMTP reply/TLS classification, not timeout behavior.
+                // Keep enough budget for a loaded CI runner; the timeout test overrides it.
+                smtpTimeout: smtpTimeout ?? TimeSpan.FromSeconds(5),
                 smtpSecurity: smtpSecurity));
             EmailTransportResult result = await transport.SendAsync(
                 new EmailTransportMessage(
