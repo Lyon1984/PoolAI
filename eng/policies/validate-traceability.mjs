@@ -2519,7 +2519,14 @@ let compiledTestInventory = null
 if (compiledTests) {
   const discovery = spawnSync(
     'dotnet',
-    ['test', 'PoolAI.sln', '--no-build', '--list-tests'],
+    [
+      'test',
+      'PoolAI.sln',
+      '--no-build',
+      '--list-tests',
+      // Exact-name evidence must not depend on parallel projects interleaving stdout.
+      '--maxcpucount:1',
+    ],
     {
       cwd: root,
       encoding: 'utf8',
