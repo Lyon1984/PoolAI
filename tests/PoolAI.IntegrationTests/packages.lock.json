@@ -335,6 +335,9 @@
           "PoolAI.BuildingBlocks": "[1.0.0, )"
         }
       },
+      "poolai.infrastructure.secrets": {
+        "type": "Project"
+      },
       "poolai.modules.gateway": {
         "type": "Project",
         "dependencies": {
@@ -380,6 +383,7 @@
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
           "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Infrastructure.Secrets": "[1.0.0, )",
           "PoolAI.Modules.Identity.Abstractions": "[1.0.0, )",
           "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )"
         }
@@ -444,8 +448,11 @@
       "poolai.modules.supply": {
         "type": "Project",
         "dependencies": {
+          "Npgsql": "[10.0.3, )",
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
+          "PoolAI.Infrastructure.Postgres": "[1.0.0, )",
+          "PoolAI.Infrastructure.Secrets": "[1.0.0, )",
           "PoolAI.Modules.Operations.Abstractions": "[1.0.0, )",
           "PoolAI.Modules.Supply.Abstractions": "[1.0.0, )"
         }

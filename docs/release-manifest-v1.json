@@ -8,8 +8,8 @@
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 9,
-    "maximum_compatible_version": 9,
+    "minimum_compatible_version": 10,
+    "maximum_compatible_version": 10,
     "migrations": [
       {
         "version": 1,
@@ -64,6 +64,12 @@
         "name": "0009_identity_api_key_text_validation_m1_e5.sql",
         "source": "docs/database/0009_identity_api_key_text_validation_m1_e5.sql",
         "sha256": "d09cb5e7f1054e7dc1870253fd0da5bf4a1eca6b94328c41cdae544e98bb2270"
+      },
+      {
+        "version": 10,
+        "name": "0010_supply_account_credentials_m2_e1.sql",
+        "source": "docs/database/0010_supply_account_credentials_m2_e1.sql",
+        "sha256": "0de4b5e38ab8dee9f7d5b222e729947e825934241f2c9b8ae2598f89267174c0"
       }
     ]
   },

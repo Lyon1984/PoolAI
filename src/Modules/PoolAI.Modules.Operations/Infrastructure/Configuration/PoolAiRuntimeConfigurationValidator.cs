@@ -62,6 +62,13 @@ public static class PoolAiRuntimeConfigurationValidator
         ValidateDataStores(validation, isProduction, environmentName);
         ValidateEmail(validation, isProduction);
         string[] envelopeRingKeyPaths = ValidateEnvelope(validation);
+        if (hostProfile is HostProfile.Worker)
+        {
+            ValidateAccountCredentialRewrap(
+                validation,
+                envelopeRingKeyPaths.Length);
+        }
+
         if (hostProfile is HostProfile.Api)
         {
             validation.RequireDistinctBase64Secrets(
@@ -419,6 +426,26 @@ public static class PoolAiRuntimeConfigurationValidator
         return children.Select(static child => child.Path).ToArray();
     }
 
+    private static void ValidateAccountCredentialRewrap(
+        Validation validation,
+        int envelopeRingKeyCount)
+    {
+        bool enabled = validation.Boolean(
+            "Secrets:Envelope:Rewrap:Enabled",
+            false);
+        validation.Range("Secrets:Envelope:Rewrap:BatchSize", 100, 1, 1000);
+        validation.Range("Secrets:Envelope:Rewrap:MaxAttempts", 3, 1, 10);
+        validation.Range(
+            "Secrets:Envelope:Rewrap:RetryDelaySeconds",
+            5,
+            1,
+            60);
+        if (enabled && envelopeRingKeyCount < 2)
+        {
+            validation.Invalid("Secrets:Envelope:DecryptKeyRing");
+        }
+    }
+
     private static void ValidateOutbox(Validation validation)
     {
         validation.Range("Outbox:MaxAttempts", 12, 1, 50);
@@ -773,6 +800,23 @@ public static class PoolAiRuntimeConfigurationValidator
             if (value < minimum || value > maximum)
             {
                 Invalid(key);
+            }
+
+            return value;
+        }
+
+        public bool Boolean(string key, bool defaultValue)
+        {
+            string? configured = Configuration[key];
+            if (configured is null)
+            {
+                return defaultValue;
+            }
+
+            if (!bool.TryParse(configured, out bool value))
+            {
+                Invalid(key);
+                return defaultValue;
             }
 
             return value;

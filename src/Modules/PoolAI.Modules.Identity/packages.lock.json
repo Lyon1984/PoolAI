@@ -33,6 +33,9 @@
           "PoolAI.BuildingBlocks": "[1.0.0, )"
         }
       },
+      "poolai.infrastructure.secrets": {
+        "type": "Project"
+      },
       "poolai.modules.identity.abstractions": {
         "type": "Project",
         "dependencies": {

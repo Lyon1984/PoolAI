@@ -27,7 +27,8 @@ builder.Services
     .AddIdentityModule()
     .AddIdentityEmailOutboxWorker(builder.Configuration)
     .AddGroupQuotaModule()
-    .AddSupplyModule()
+    .AddSupplyModule(builder.Configuration)
+    .AddSupplyCredentialRewrapWorker(builder.Configuration)
     .AddUsageModule()
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddPoolAiObservability(builder.Configuration);

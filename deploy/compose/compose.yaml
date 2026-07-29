@@ -41,6 +41,7 @@ x-common-app-environment: &common-app-environment
   Secrets__Envelope__CurrentKeyId: local-compose-v1
   Secrets__Envelope__SchemaVersion: "1"
   Secrets__Envelope__Algorithm: A256GCM+A256GCM-v1
+  Secrets__Envelope__Rewrap__Enabled: "false"
   Outbox__MaxAttempts: "12"
   Outbox__PollSeconds: "1"
   Outbox__ClaimSeconds: "30"

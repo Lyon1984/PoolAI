@@ -20,6 +20,9 @@ public static class WorkerJobs
     public static WorkerJobIdentity SupplyHealth { get; } =
         new("poolai:r1:worker:supply-health:v1");
 
+    public static WorkerJobIdentity AccountCredentialRewrap { get; } =
+        new("poolai:r1:worker:account-credential-rewrap:v1");
+
     public static WorkerJobIdentity OperationsAlerts { get; } =
         new("poolai:r1:worker:operations-alerts:v1");
 }

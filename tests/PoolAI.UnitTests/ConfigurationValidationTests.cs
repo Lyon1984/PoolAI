@@ -613,6 +613,94 @@ public sealed class ConfigurationValidationTests
             exception.InvalidKeys);
     }
 
+    [Theory]
+    [InlineData("Secrets:Envelope:Rewrap:Enabled", "not-a-boolean")]
+    [InlineData("Secrets:Envelope:Rewrap:BatchSize", "0")]
+    [InlineData("Secrets:Envelope:Rewrap:BatchSize", "1001")]
+    [InlineData("Secrets:Envelope:Rewrap:MaxAttempts", "0")]
+    [InlineData("Secrets:Envelope:Rewrap:MaxAttempts", "11")]
+    [InlineData("Secrets:Envelope:Rewrap:RetryDelaySeconds", "0")]
+    [InlineData("Secrets:Envelope:Rewrap:RetryDelaySeconds", "61")]
+    public void WorkerCredentialRewrapConfigurationFailsClosed(
+        string key,
+        string value)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values[key] = value;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production",
+                    PoolAiRuntimeConfigurationValidator.HostProfile.Worker));
+
+        Assert.Contains(key, exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EnabledWorkerCredentialRewrapRequiresAHistoricalEnvelopeKey()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Secrets:Envelope:Rewrap:Enabled"] = "true";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production",
+                    PoolAiRuntimeConfigurationValidator.HostProfile.Worker));
+
+        Assert.Contains(
+            "Secrets:Envelope:DecryptKeyRing",
+            exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("false")]
+    public void DisabledWorkerCredentialRewrapAllowsOnlyTheCurrentEnvelopeKey(
+        string? enabled)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        if (enabled is not null)
+        {
+            values["Secrets:Envelope:Rewrap:Enabled"] = enabled;
+        }
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production",
+            PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
+    }
+
+    [Fact]
+    public void EnabledWorkerCredentialRewrapAcceptsTwoDistinctEnvelopeKeys()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Secrets:Envelope:Rewrap:Enabled"] = "true";
+        values["Secrets:Envelope:DecryptKeyRing:retired-kek"] =
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production",
+            PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
+    }
+
     [Fact]
     public void WorkerProfileDoesNotRequireApiAuthenticationConfiguration()
     {
