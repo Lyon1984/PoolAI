@@ -10,6 +10,7 @@
 - Approved security-evidence run: [30446932286](https://github.com/Lyon1984/PoolAI/actions/runs/30446932286)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: [Issue #44 approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117402125)
+- Independent database evidence: [Issue #44 migration 0010 approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117955336)
 
 ## Context
 
@@ -136,9 +137,9 @@ authorizes remote configuration mutation, a database write, or key deletion.
 
 ### Supply persistence and maintenance-CAS boundary
 
-The following architecture boundary is accepted, while its database bytes
-remain a separately governed candidate that requires independent database
-approval:
+The following architecture boundary is accepted. Its database bytes remain
+separately governed and are now frozen by the independent
+[migration 0010 database approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117955336):
 
 1. Supply owns Account credential creation, replacement, selection, and
    maintenance rewrap. Its Application ports remain internal and vendor-neutral;
@@ -245,8 +246,11 @@ database entry points, plus a default-disabled Worker registration. It changes
 no OpenAPI document or Envelope v1 bytes and does not authorize a remote
 migration, configuration rollout, rewrap, restore, retirement, deployment, or
 key operation. The migration SQL, checksum, manifest window, owner/ACL surface,
-and PostgreSQL evidence require their own permanent database approval; approval
-of this ADR cannot substitute for it.
+and PostgreSQL evidence received their own permanent database approval at
+candidate `6278efb09a308a011fc9c7c6175a269fba9faedd`, SQL SHA-256
+`0de4b5e38ab8dee9f7d5b222e729947e825934241f2c9b8ae2598f89267174c0`, and
+manifest `10..10`. Approval of this ADR did not substitute for that independent
+approval, and neither approval authorizes a remote or key operation.
 
 Before release, extraction from Identity is rollbackable by removing the new
 project references and restoring the internal implementation in one atomic
@@ -271,7 +275,7 @@ or remove a key still referenced by live data or backups.
 - Tests and diagnostics must never snapshot plaintext, KEKs, DEKs, serialized
   production envelopes, or private host configuration.
 
-The candidate's threat analysis is explicit about what is proved locally and
+The reviewed decision's threat analysis is explicit about what is proved locally and
 what remains a release gate:
 
 | Threat | Required control | Current evidence or remaining gate |
@@ -280,16 +284,18 @@ what remains a release gate:
 | Envelope copied across purpose/entity/field | rebuild canonical AAD from trusted business context and authenticate both AEAD layers | unit/integration tests cover wrong purpose, Account, and field |
 | parser/resource abuse or downgrade | exact field set, bounded canonical base64url, fixed lengths and size, fixed `v/alg`, no legacy fallback | strict negative unit tests and Architecture Tests cover the shared runtime |
 | tag/ciphertext/DEK tampering | authenticate the wrapped DEK and content before decrypt, inspect, or rewrap; expose only stable redacted failure classes | unit/integration tamper tests and Supply alert-payload tests |
-| stale rewrap overwrites credential replacement | owning-module CAS on the non-public credential revision; human replacement and maintenance rewrap both advance it once; zero-row update rereads instead of overwriting | the forward migration, production Supply selector/CAS, bounded reread and crash/retry integration are candidate evidence; database approval and an authorized execution remain required |
+| stale rewrap overwrites credential replacement | owning-module CAS on the non-public credential revision; human replacement and maintenance rewrap both advance it once; zero-row update rereads instead of overwriting | the independently approved forward migration, production Supply selector/CAS, bounded reread and crash/retry integration are repository evidence; an authorized remote execution remains required |
 | backup cannot decrypt after rotation | inventory every retained backup, restore in isolation with the required historical ring, and validate exact trusted AAD | local serialization/restore behavior is covered; physical PostgreSQL/PITR and RPO/RTO evidence remain M6-E4 |
 | historical key removed too early | require zero live references, expired or proven retained backups, DR agreement, observation window, and separate retirement approval | the reviewed runbook defines the gate; an executed retirement record is not claimed |
 | plaintext/key material leaks through failures | zero temporary byte buffers where supported; exclude secret values, `kid`, AAD, and envelopes from failure payloads/logs/traces | Supply event tests cover redaction; production observability verification remains required |
 
 ## Contract and test evidence
 
-The architecture approval reviewed the candidate assets below. Independently
-governed database approval and physical restore evidence are not implied by the
-ADR's `Accepted` status and remain gates for M2-E1 or release completion.
+The architecture approval reviewed the candidate assets below. The separately
+governed database gate is now satisfied by the
+[migration 0010 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117955336);
+physical PostgreSQL/PITR restore evidence is not implied by either approval and
+remains an M6-E4/release gate. Neither approval by itself marks M2-E1 complete.
 
 - `docs/architecture/adr/README.md`
 - `docs/architecture/design-pattern-baseline.md`
@@ -304,15 +310,20 @@ ADR's `Accepted` status and remain gates for M2-E1 or release completion.
   failures
 - real PostgreSQL integration tests for Supply persistence, concurrent CAS
   rewrap, crash/retry behavior, and no plaintext in database/log/trace output
-- a separately governed forward migration candidate proving the internal
+- a separately governed and independently approved forward migration proving the internal
   credential revision, exact function owner/search path/ACL, rewrap
   content-preservation guard, and denial of direct API/Worker envelope writes;
-  its independent database approval remains required before M2-E1 completion
+  the permanent database approval binds candidate
+  `6278efb09a308a011fc9c7c6175a269fba9faedd`, SQL SHA-256
+  `0de4b5e38ab8dee9f7d5b222e729947e825934241f2c9b8ae2598f89267174c0`,
+  and manifest `10..10`
 - the operator-reviewed
   [`ops/runbooks/secret-envelope-key-rotation-and-restore.md`](../../../ops/runbooks/secret-envelope-key-rotation-and-restore.md)
   for key rotation, inventory, backup restore, rollback, and AC-044 evidence
 
 The permanent `@Lyon1984` Issue #44 approval accepts this architecture only.
-It does not approve migration 0010, remote database execution, PR readiness or
-merge, deployment, rotation, rewrap, restore, historical-key removal, M2-E1
-completion, M2 Exit, or any release or production acceptance.
+It did not approve migration 0010; that migration was later frozen by the
+separate permanent database approval above. Neither approval authorizes remote
+database execution, PR readiness or merge, deployment, rotation, rewrap,
+restore, historical-key removal, Issue #15 closure, M2-E1 completion, M2 Exit,
+or any release or production acceptance.

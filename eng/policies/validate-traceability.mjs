@@ -121,7 +121,7 @@ const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
 const adr0006AllowedCurrentStateReferenceDigests = new Set([
   'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
   'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
-  '40567e0eaa9ade58302cc2576b85ae3c5e8ceb77c98cf5d4d7c4d4d48b592393',
+  '60de75d8cedf5c55f86f1f2bb6279c8f29a6c6fcb63c6297640dba2721162319',
   '767059d288ec3cecac50236643f645135beb9c66647f7bd0c4c184d1ed4a9261',
 ])
 // Accepted bases may predate a reviewed current-state refresh. Historical

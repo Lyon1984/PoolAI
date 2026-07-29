@@ -11,12 +11,14 @@ transformation, Supply-owned Account create/replace persistence, a primary-key
 selector, an internal credential-revision CAS, and a default-disabled Worker
 command. ADR 0009 is now Accepted through the permanent
 [`@Lyon1984` Issue #44 architecture approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117402125),
-but forward migration 0010 remains independently unsigned and the candidate
-has not been authorized against a remote environment. Until the database
-approval and a separately authorized remote change window are both recorded,
-stop after local isolated validation: do not enable the Worker, run the
-migration remotely, execute a manual SQL rewrite/decrypt-and-re-encrypt loop,
-or use an ad hoc production script.
+and forward migration 0010 is separately frozen through the permanent
+[`@Lyon1984` Issue #44 database approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117955336).
+Neither approval is a remote change window or key-management authorization.
+Until both a separately authorized remote change window and the required
+key-management approval are recorded, stop after local isolated validation:
+do not enable the Worker, run the migration remotely, execute a manual SQL
+rewrite/decrypt-and-re-encrypt loop, retire a historical key, or use an ad hoc
+production script.
 
 ## Invariants
 
