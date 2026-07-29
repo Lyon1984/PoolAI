@@ -1,12 +1,15 @@
 # ADR 0009: Introduce a shared BCL-only secrets-envelope runtime
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-29
-- Decider: PoolAI architecture and security owner (`@Lyon1984`); this candidate has not been signed
+- Decider: PoolAI architecture and security owner (`@Lyon1984`)
 - Relates to: DEC-042, AC-044, [M2-E1 Issue #15](https://github.com/Lyon1984/PoolAI/issues/15), and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Base Git commit: `e09b7ecbf856bdec46888e8a1e985ea910f9b8ba`
+- Approved candidate head: `f6caccc00d5c2708f4378dcc15beb9f79543f8c1`
+- Approved quality-gate run: [30446932289](https://github.com/Lyon1984/PoolAI/actions/runs/30446932289)
+- Approved security-evidence run: [30446932286](https://github.com/Lyon1984/PoolAI/actions/runs/30446932286)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending**
+- Approval evidence: [Issue #44 approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5117402125)
 
 ## Context
 
@@ -33,11 +36,11 @@ The missing boundary is a small technical runtime shared only by the
 Infrastructure adapters that own reversible-secret use cases. It is not a
 bounded context, configuration provider, secret store, or operational workflow.
 
-## Decision candidate
+## Decision
 
-This section has no architectural effect while this ADR remains `Proposed`.
-Candidate source and tests may be developed for review, but merge, release,
-key operations, or sign-off evidence must not treat this candidate as accepted.
+The permanent Issue #44 approval accepts the following exact architectural
+boundary. It does not authorize the separately governed database migration,
+remote execution, merge, release, or key operations.
 
 ### Shared technical project
 
@@ -131,10 +134,11 @@ environment, prove all required `kid` values decrypt with exact AAD, and only
 then authorize historical-key removal. Neither this ADR nor the shared core
 authorizes remote configuration mutation, a database write, or key deletion.
 
-### Supply persistence and maintenance-CAS candidate
+### Supply persistence and maintenance-CAS boundary
 
-The following is review material while this ADR remains `Proposed`, and its
-database bytes require a separate database approval:
+The following architecture boundary is accepted, while its database bytes
+remain a separately governed candidate that requires independent database
+approval:
 
 1. Supply owns Account credential creation, replacement, selection, and
    maintenance rewrap. Its Application ports remain internal and vendor-neutral;
@@ -281,7 +285,11 @@ what remains a release gate:
 | historical key removed too early | require zero live references, expired or proven retained backups, DR agreement, observation window, and separate retirement approval | the reviewed runbook defines the gate; an executed retirement record is not claimed |
 | plaintext/key material leaks through failures | zero temporary byte buffers where supported; exclude secret values, `kid`, AAD, and envelopes from failure payloads/logs/traces | Supply event tests cover redaction; production observability verification remains required |
 
-## Contract and test updates required before acceptance
+## Contract and test evidence
+
+The architecture approval reviewed the candidate assets below. Independently
+governed database approval and physical restore evidence are not implied by the
+ADR's `Accepted` status and remain gates for M2-E1 or release completion.
 
 - `docs/architecture/adr/README.md`
 - `docs/architecture/design-pattern-baseline.md`
@@ -296,14 +304,15 @@ what remains a release gate:
   failures
 - real PostgreSQL integration tests for Supply persistence, concurrent CAS
   rewrap, crash/retry behavior, and no plaintext in database/log/trace output
-- a separately approved forward migration proving the internal credential
-  revision, exact function owner/search path/ACL, rewrap content-preservation
-  guard, and denial of direct API/Worker envelope writes
+- a separately governed forward migration candidate proving the internal
+  credential revision, exact function owner/search path/ACL, rewrap
+  content-preservation guard, and denial of direct API/Worker envelope writes;
+  its independent database approval remains required before M2-E1 completion
 - the operator-reviewed
   [`ops/runbooks/secret-envelope-key-rotation-and-restore.md`](../../../ops/runbooks/secret-envelope-key-rotation-and-restore.md)
   for key rotation, inventory, backup restore, rollback, and AC-044 evidence
 
-Until `@Lyon1984` publishes a permanent approval comment in Issue #44 and that
-evidence is linked here, this ADR remains `Proposed`; its documentation changes
-and candidate source are review material, not authorization to merge, deploy,
-rotate, rewrap, restore, remove any key, or claim the architecture accepted.
+The permanent `@Lyon1984` Issue #44 approval accepts this architecture only.
+It does not approve migration 0010, remote database execution, PR readiness or
+merge, deployment, rotation, rewrap, restore, historical-key removal, M2-E1
+completion, M2 Exit, or any release or production acceptance.
