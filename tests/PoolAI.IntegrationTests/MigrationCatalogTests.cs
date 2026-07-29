@@ -13,7 +13,7 @@ public sealed class MigrationCatalogTests
             .LoadAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(
-            [1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L],
+            [1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L],
             catalog.Assets.Select(asset => asset.Version));
         foreach (MigrationAsset asset in catalog.Assets)
         {

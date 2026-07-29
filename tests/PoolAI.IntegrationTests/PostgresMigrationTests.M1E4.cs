@@ -442,10 +442,11 @@ public sealed partial class PostgresMigrationTests
             seedSupply.CommandText = """
                 RESET ROLE;
                 INSERT INTO public.channels (
-                    id, provider, name, model_rules, status
+                    id, provider, name, model_rules, capabilities, status
                 ) VALUES (
                     '01900000-0000-7000-8000-000000000714',
                     'openai', 'M1-E4 Channel', '{"gpt-test":"gpt-test"}'::jsonb,
+                    '{"responses":true,"chat_completions":true,"function_tools":true,"streaming":true}'::jsonb,
                     'active'
                 );
                 INSERT INTO public.accounts (
