@@ -10,7 +10,11 @@ import {
   validateResponsesSse,
 } from './fixtures.mjs'
 import { generateCSharp, generateTypeScript, generateTypeScriptErrors } from './generator.mjs'
-import { API_KEY_TEXT_PATTERN, validateOpenApi } from './openapi.mjs'
+import {
+  API_KEY_TEXT_PATTERN,
+  UPSTREAM_BASE_URL_PATTERN,
+  validateOpenApi,
+} from './openapi.mjs'
 import { scanSqlP0001Codes, validateSqlErrorMapping } from './sql-errors.mjs'
 
 function expectFailure(action, expectedMessage) {
@@ -200,6 +204,55 @@ export async function runSelfTests({
   negative(
     () => validateContract(sharedApiKeyRevokeReason),
     'revokeMyApiKey must reference #/components/parameters/ApiKeyChangeReason exactly once',
+  )
+
+  const upstreamBaseUrlInputs = [
+    ['Account', 'base_url'],
+    ['AccountCreateRequest', 'base_url'],
+    ['AccountUpdateRequest', 'base_url'],
+  ].map(([schemaName, propertyName]) => ({
+    label: `#/components/schemas/${schemaName}/properties/${propertyName}`,
+    schema: openApi.components.schemas[schemaName].properties[propertyName],
+  }))
+  for (const input of upstreamBaseUrlInputs) {
+    invariant(
+      input.schema.pattern === UPSTREAM_BASE_URL_PATTERN &&
+        input.schema.maxLength === 2048,
+      `${input.label} self-test is not bound to the exact upstream Base URL contract.`,
+    )
+    for (const valid of [
+      'https://api.openai.com/v1',
+      'https://compatible.example.test:8443/openai/v1',
+      'https://127.0.0.1/v1',
+      'https://[2001:db8::1]:443/v1',
+      'http://localhost:8080/v1',
+      'http://127.0.0.1/v1',
+      'http://[::1]:11434/v1',
+    ]) {
+      validateSchema.validateInline(input.schema, valid, input.label)
+    }
+    for (const invalid of [
+      'http://api.openai.com/v1',
+      'http://localhost.example.test/v1',
+      'https://user:secret@example.test/v1',
+      'https://example.test/v1?tenant=one',
+      'https://example.test/v1#fragment',
+      'https://example.test:0/v1',
+      'https://example.test:65536/v1',
+      'https://example.test/' + 'a'.repeat(2048),
+    ]) {
+      negative(
+        () => validateSchema.validateInline(input.schema, invalid, input.label),
+        `${input.label} validation failed`,
+      )
+    }
+  }
+
+  const driftedUpstreamBaseUrl = structuredClone(openApi)
+  delete driftedUpstreamBaseUrl.components.schemas.AccountCreateRequest.properties.base_url.pattern
+  negative(
+    () => validateContract(driftedUpstreamBaseUrl),
+    '#/components/schemas/AccountCreateRequest/properties/base_url must use the exact upstream Base URL safety contract',
   )
 
   const unreferencedInvalidSchema = structuredClone(openApi)
