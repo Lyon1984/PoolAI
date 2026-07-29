@@ -48,6 +48,8 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
             Enumerable.Repeat((byte)0x63, SecretEnvelopeKeyRing.KeySize)
                 .ToArray());
         ConfigurationManager configuration = new();
+        configuration["Idempotency:RequestHashPepper"] =
+            Convert.ToBase64String(Enumerable.Repeat((byte)0x64, 32).ToArray());
         configuration["Secrets:Envelope:CurrentKeyId"] = CurrentKeyId;
         configuration["Secrets:Envelope:CurrentKey"] = key;
         configuration[$"Secrets:Envelope:DecryptKeyRing:{CurrentKeyId}"] = key;

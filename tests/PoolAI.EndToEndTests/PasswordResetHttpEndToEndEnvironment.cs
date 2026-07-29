@@ -499,12 +499,23 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
                         services,
                         descriptor =>
                             descriptor.ServiceType == typeof(IGroupSupplyReadiness));
+                    Func<IServiceProvider, object>? readinessFactory =
+                        productionReadiness.ImplementationFactory;
+                    Assert.NotNull(readinessFactory);
+                    Assert.Equal(ServiceLifetime.Singleton, productionReadiness.Lifetime);
+                    using NpgsqlDataSource probeDataSource =
+                        NpgsqlDataSource.Create(m1ExitSupplyConnectionString);
+                    using ServiceProvider probeProvider = new ServiceCollection()
+                        .AddSingleton(probeDataSource)
+                        .BuildServiceProvider();
+                    object productionInstance = Assert.IsAssignableFrom<object>(
+                        readinessFactory(probeProvider));
                     Assert.Equal(
                         "PoolAI.Modules.Supply.Infrastructure.Persistence.PostgresGroupSupplyReadiness",
-                        productionReadiness.ImplementationType?.FullName);
+                        productionInstance.GetType().FullName);
                     Assert.Equal(
                         "PoolAI.Modules.Supply",
-                        productionReadiness.ImplementationType?.Assembly.GetName().Name);
+                        productionInstance.GetType().Assembly.GetName().Name);
                     services.RemoveAll<IGroupSupplyReadiness>();
                     services.AddSingleton<IGroupSupplyReadiness>(
                         new M1ExitPostgresSupplyReadiness(m1ExitSupplyConnectionString));

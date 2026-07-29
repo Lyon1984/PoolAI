@@ -20,7 +20,7 @@ public sealed class SupplyControlPlanePostgresRuntimeTests(
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
-    public async Task CanonicalConfigurationDrivesReadinessCandidatesAndModels()
+    public async Task CanonicalConfigurationDrivesReadinessCandidatesAndModelsWithoutMutatingGroupVersion()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         EntityId groupId = EntityId.New();
@@ -30,6 +30,10 @@ public sealed class SupplyControlPlanePostgresRuntimeTests(
             groupId,
             accountId,
             cancellationToken).ConfigureAwait(true);
+        long groupVersionBefore = await ReadGroupVersionAsync(
+            groupId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(1, groupVersionBefore);
 
         NpgsqlDataSource dataSource =
             _fixture.ApiServices.GetRequiredService<NpgsqlDataSource>();
@@ -179,6 +183,27 @@ public sealed class SupplyControlPlanePostgresRuntimeTests(
         Assert.Empty((await models.GetModelsAsync(
             groupId,
             cancellationToken).ConfigureAwait(true)).Value);
+        Assert.Equal(
+            groupVersionBefore,
+            await ReadGroupVersionAsync(
+                groupId,
+                cancellationToken).ConfigureAwait(true));
+    }
+
+    private async ValueTask<long> ReadGroupVersionAsync(
+        EntityId groupId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command =
+            _fixture.AdministratorDataSource.CreateCommand("""
+                SELECT version
+                FROM public.groups
+                WHERE id = $1;
+                """);
+        command.Parameters.AddWithValue(groupId.Value);
+        return Assert.IsType<long>(
+            await command.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false));
     }
 
     private async ValueTask<T> CommitAsync<T>(

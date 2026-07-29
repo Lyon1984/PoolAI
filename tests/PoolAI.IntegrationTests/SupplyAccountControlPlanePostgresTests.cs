@@ -21,7 +21,7 @@ public sealed class SupplyAccountControlPlanePostgresTests(
 {
     [Fact]
     [Trait("Category", "PostgreSQL")]
-    public async Task AccountCrudUsesNarrowFunctionsAndNeverReadsCredentialPlaintext()
+    public async Task ProviderIsExplicitImmutableAndCredentialsAreNeverReadable()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         NpgsqlDataSource dataSource =

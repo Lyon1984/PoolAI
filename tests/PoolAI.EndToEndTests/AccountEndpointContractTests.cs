@@ -1,5 +1,6 @@
 #pragma warning disable MA0051 // HTTP contract scenarios keep their complete request protocol visible.
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -21,6 +22,8 @@ public sealed class AccountEndpointContractTests
 {
     private const string CreateCredential = "account-create-secret-0001";
     private const string UpdateCredential = "account-update-secret-0002";
+    private const string TraceScopeSource =
+        "PoolAI.Tests.AccountEndpointContract";
     private static readonly EntityId ActorId = new(Guid.Parse(
         "019bd5e8-30e0-7d4c-a7f2-bb1db0634180"));
     private static readonly EntityId AccountId = new(Guid.Parse(
@@ -32,8 +35,13 @@ public sealed class AccountEndpointContractTests
     [Fact]
     public async Task AccountCredentialsAreNeverReturnedOrLogged()
     {
+        using RecordingActivityListener traces = new();
+        using Activity traceScope = Assert.IsType<Activity>(
+            traces.StartScope(nameof(AccountCredentialsAreNeverReturnedOrLogged)));
+        string traceId = traceScope.TraceId.ToHexString();
         await using AccountApiFactory factory = new();
         using HttpClient admin = AuthenticatedClient(factory, "admin");
+        PropagateTrace(admin, traceScope.TraceId);
         factory.UseCases.CreateResult = Result.Success(new AccountCommandOutcome<AccountView>(
             StatusCodes.Status201Created,
             IsReplay: false,
@@ -78,6 +86,7 @@ public sealed class AccountEndpointContractTests
         factory.UseCases.GetResult = Result.Success(
             View(version: 2, prefix: "sha256:222222222222"));
         using HttpClient auditor = AuthenticatedClient(factory, "auditor");
+        PropagateTrace(auditor, traceScope.TraceId);
         using HttpResponseMessage get = await auditor.GetAsync(
             $"/api/v1/admin/accounts/{AccountId.Value:D}",
             TestContext.Current.CancellationToken);
@@ -117,6 +126,7 @@ public sealed class AccountEndpointContractTests
                 View(version: 4, prefix: "sha256:444444444444"),
                 "\"v4\""));
         using HttpClient updateAdmin = AuthenticatedClient(factory, "admin");
+        PropagateTrace(updateAdmin, traceScope.TraceId);
         using HttpRequestMessage update = JsonCommand(
             HttpMethod.Patch,
             $"/api/v1/admin/accounts/{AccountId.Value:D}",
@@ -165,6 +175,35 @@ public sealed class AccountEndpointContractTests
 
         string logs = string.Join('\n', factory.Logs.Messages);
         AssertSecretFree(logs, CreateCredential, UpdateCredential);
+        RecordedActivity[] requestTraces = traces.Snapshots
+            .Where(snapshot => string.Equals(
+                snapshot.TraceId,
+                traceId,
+                StringComparison.Ordinal))
+            .ToArray();
+        Assert.Contains(
+            requestTraces,
+            static snapshot =>
+                snapshot.SourceName.StartsWith(
+                    "Microsoft.AspNetCore",
+                    StringComparison.Ordinal)
+                && snapshot.Payload.Contains(
+                    "POST /api/v1/admin/accounts",
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            requestTraces,
+            static snapshot =>
+                snapshot.SourceName.StartsWith(
+                    "Microsoft.AspNetCore",
+                    StringComparison.Ordinal)
+                && snapshot.Payload.Contains(
+                    "PATCH /api/v1/admin/accounts/",
+                    StringComparison.Ordinal));
+        AssertSecretFree(
+            string.Join('\n', requestTraces.Select(
+                static snapshot => snapshot.Payload)),
+            CreateCredential,
+            UpdateCredential);
     }
 
     [Fact]
@@ -353,8 +392,13 @@ public sealed class AccountEndpointContractTests
     [Fact]
     public async Task InvalidBaseUrlReturnsSafeValidationProblemBeforeUseCase()
     {
+        using RecordingActivityListener traces = new();
+        using Activity traceScope = Assert.IsType<Activity>(
+            traces.StartScope(nameof(InvalidBaseUrlReturnsSafeValidationProblemBeforeUseCase)));
+        string traceId = traceScope.TraceId.ToHexString();
         await using AccountApiFactory factory = new();
         using HttpClient client = AuthenticatedClient(factory, "admin");
+        PropagateTrace(client, traceScope.TraceId);
         const string submittedUrl = "https://bad-.example/private-marker";
         const string submittedCredential = "invalid-url-secret-0003";
         using HttpRequestMessage request = JsonCommand(
@@ -382,6 +426,32 @@ public sealed class AccountEndpointContractTests
         string body = await response.Content.ReadAsStringAsync(
             TestContext.Current.CancellationToken);
         AssertSecretFree(body, submittedUrl, submittedCredential, "private-marker");
+        AssertSecretFree(
+            string.Join('\n', factory.Logs.Messages),
+            submittedUrl,
+            submittedCredential,
+            "private-marker");
+        RecordedActivity[] requestTraces = traces.Snapshots
+            .Where(snapshot => string.Equals(
+                snapshot.TraceId,
+                traceId,
+                StringComparison.Ordinal))
+            .ToArray();
+        Assert.Contains(
+            requestTraces,
+            static snapshot =>
+                snapshot.SourceName.StartsWith(
+                    "Microsoft.AspNetCore",
+                    StringComparison.Ordinal)
+                && snapshot.Payload.Contains(
+                    "POST /api/v1/admin/accounts",
+                    StringComparison.Ordinal));
+        AssertSecretFree(
+            string.Join('\n', requestTraces.Select(
+                static snapshot => snapshot.Payload)),
+            submittedUrl,
+            submittedCredential,
+            "private-marker");
         Assert.Equal(0, factory.UseCases.CreateCalls);
     }
 
@@ -393,6 +463,18 @@ public sealed class AccountEndpointContractTests
         credential = CreateCredential,
         max_concurrency = 4,
     };
+
+    private static void PropagateTrace(
+        HttpClient client,
+        ActivityTraceId traceId)
+    {
+        bool added = client.DefaultRequestHeaders.TryAddWithoutValidation(
+            "traceparent",
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"00-{traceId.ToHexString()}-{ActivitySpanId.CreateRandom().ToHexString()}-01"));
+        Assert.True(added);
+    }
 
     private static AccountView View(long version, string prefix) => new(
         AccountId,
@@ -671,10 +753,86 @@ public sealed class AccountEndpointContractTests
                 messages.Enqueue(formatter(state, exception));
                 if (exception is not null)
                 {
-                    messages.Enqueue(exception.GetType().Name);
+                    messages.Enqueue(exception.ToString());
                 }
             }
         }
     }
+
+    private sealed class RecordingActivityListener : IDisposable
+    {
+        private readonly ActivityListener _listener;
+        private readonly ActivitySource _scopeSource;
+
+        internal RecordingActivityListener()
+        {
+            _listener = new ActivityListener
+            {
+                ShouldListenTo = static source =>
+                    source.Name.StartsWith(
+                        "Microsoft.AspNetCore",
+                        StringComparison.Ordinal)
+                    || source.Name.StartsWith(
+                        "System.Net.Http",
+                        StringComparison.Ordinal)
+                    || string.Equals(
+                        source.Name,
+                        TraceScopeSource,
+                        StringComparison.Ordinal),
+                Sample = static (
+                    ref ActivityCreationOptions<ActivityContext> _) =>
+                        ActivitySamplingResult.AllDataAndRecorded,
+                SampleUsingParentId = static (
+                    ref ActivityCreationOptions<string> _) =>
+                        ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStopped = Capture,
+            };
+            ActivitySource.AddActivityListener(_listener);
+            _scopeSource = new ActivitySource(TraceScopeSource);
+        }
+
+        internal ConcurrentQueue<RecordedActivity> Snapshots { get; } = new();
+
+        internal Activity? StartScope(string name) =>
+            _scopeSource.StartActivity(name, ActivityKind.Internal);
+
+        public void Dispose()
+        {
+            _scopeSource.Dispose();
+            _listener.Dispose();
+        }
+
+        private void Capture(Activity activity)
+        {
+            IEnumerable<string> tags = activity.TagObjects.Select(
+                static tag => $"{tag.Key}={tag.Value}");
+            IEnumerable<string> baggage = activity.Baggage.Select(
+                static item => $"baggage:{item.Key}={item.Value}");
+            IEnumerable<string> events = activity.Events.SelectMany(
+                static activityEvent => activityEvent.Tags.Select(
+                    tag => $"event:{activityEvent.Name}:{tag.Key}={tag.Value}"));
+            IEnumerable<string> links = activity.Links.SelectMany(
+                static link => link.Tags?.Select(
+                    tag => $"link:{tag.Key}={tag.Value}")
+                    ?? []);
+            Snapshots.Enqueue(new RecordedActivity(
+                activity.TraceId.ToHexString(),
+                activity.Source.Name,
+                string.Join(
+                    '\n',
+                    new[]
+                    {
+                        activity.Source.Name,
+                        activity.OperationName,
+                        activity.DisplayName,
+                        activity.StatusDescription ?? string.Empty,
+                    }.Concat(tags).Concat(baggage).Concat(events).Concat(links))));
+        }
+    }
+
+    private sealed record RecordedActivity(
+        string TraceId,
+        string SourceName,
+        string Payload);
 }
 #pragma warning restore MA0051

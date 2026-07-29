@@ -311,10 +311,17 @@ public sealed class M1ExitPublicApiEndToEndTests
 
         using (NpgsqlCommand channel = new("""
             INSERT INTO public.channels (
-                id, provider, name, model_rules, status
+                id, provider, name, model_rules, capabilities, status
             ) VALUES (
                 $1, 'openai_compatible', 'M1 Exit channel',
-                pg_catalog.jsonb_build_object('gpt-test', true), 'active'
+                pg_catalog.jsonb_build_object('gpt-test', 'gpt-test'),
+                '{
+                  "responses": true,
+                  "chat_completions": true,
+                  "function_tools": true,
+                  "streaming": true
+                }'::jsonb,
+                'active'
             );
             """, connection, transaction))
         {

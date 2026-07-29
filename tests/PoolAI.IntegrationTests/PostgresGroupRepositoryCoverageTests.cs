@@ -846,9 +846,11 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
             channel.Transaction = transaction;
             channel.CommandText = """
             INSERT INTO public.channels (
-                id, provider, name, model_rules, status
+                id, provider, name, model_rules, capabilities, status
             ) VALUES (
-                $1, 'openai', $2, '{"gpt-test":"gpt-test"}'::jsonb, 'active'
+                $1, 'openai', $2, '{"gpt-test":"gpt-test"}'::jsonb,
+                '{"responses":true,"chat_completions":true,"function_tools":true,"streaming":true}'::jsonb,
+                'active'
             );
             """;
             channel.Parameters.AddWithValue(channelId.Value);
