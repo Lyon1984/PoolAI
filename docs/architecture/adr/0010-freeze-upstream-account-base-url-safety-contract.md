@@ -9,7 +9,7 @@
 - Base OpenAPI SHA-256: `1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141`
 - Target OpenAPI SHA-256: `6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5121040005)
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5121063532)
 - Allowed diagnostic: `#/components/schemas/Account/properties/base_url/maxLength: maxLength tightened from <none> to 2048`
 - Allowed diagnostic: `#/components/schemas/Account/properties/base_url/pattern: pattern changed from <none> to ^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$`
 - Allowed diagnostic: `#/components/schemas/AccountCreateRequest/properties/base_url/maxLength: maxLength tightened from <none> to 2048`
