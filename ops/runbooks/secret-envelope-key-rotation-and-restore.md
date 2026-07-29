@@ -6,7 +6,15 @@ This runbook governs reversible PoolAI Envelope v1 secrets, including Supply-own
 
 It does not authorize a production change. Every execution needs an approved change window, an explicitly named environment, separate key-management authorization, a recent recoverable backup, and a recorded rollback owner.
 
-The current M2-E1 candidate provides strict Envelope v1 cryptographic transformation and a Supply Account-credential adapter. It does **not** yet provide the production record selector, database CAS writer, background command, or least-privileged execution identity. Until those parts and ADR 0009 are approved and verified, stop after planning or isolated test validation: do not run a manual SQL rewrite, decrypt-and-re-encrypt loop, or ad hoc production script.
+The current M2-E1 review candidate provides strict Envelope v1 cryptographic
+transformation, Supply-owned Account create/replace persistence, a primary-key
+selector, an internal credential-revision CAS, and a default-disabled Worker
+command. ADR 0009 and the forward database migration are still unsigned, and
+the candidate has not been authorized against a remote environment. Until both
+approvals and their exact evidence are recorded, stop after local isolated
+validation: do not enable the Worker, run the migration remotely, execute a
+manual SQL rewrite/decrypt-and-re-encrypt loop, or use an ad hoc production
+script.
 
 ## Invariants
 
@@ -18,6 +26,14 @@ The current M2-E1 candidate provides strict Envelope v1 cryptographic transforma
 - The current key and every historical key referenced by live rows or any retained backup stay in every required reader keyring.
 - Api and Worker must receive the same validated keyring generation before `current` changes. Migrator never loads keys and never decrypts or rewraps application data.
 - No transaction spans secret-provider access, process restart, backoff, alert delivery, or backup/restore work.
+- `accounts.credential_revision` is the maintenance CAS token. Human
+  replacement advances both it and the public Account version; maintenance
+  rewrap advances only credential revision and leaves public version,
+  `updated_at`, prefix/hint, health, cooldown, and lifecycle unchanged.
+- The maintenance database guard requires content `ciphertext`, `nonce`, and
+  `tag` to remain unchanged. The Worker role cannot directly update the
+  envelope or credential revision, and the NOLOGIN function owner cannot read
+  the stored envelope.
 - Logs, metrics, traces, audit payloads, tickets, and evidence never include key material, plaintext, a full envelope, authentication data, or private configuration.
 
 ## Required roles and evidence
@@ -38,7 +54,9 @@ The security reviewer and database operator must be different approval steps eve
 
 ## Phase 0 — preflight
 
-1. Verify the exact release containing the approved Envelope implementation and CAS workflow.
+1. Verify the exact release containing the approved Envelope implementation,
+   separately approved forward migration, internal credential revision, exact
+   function ACLs, and CAS workflow.
 2. Verify all required readers reject missing, mismatched, duplicate, or ambiguous current/history key configuration at startup.
 3. Prove the new key exists in the approved secret provider and is exactly 256 bits without printing, exporting, hashing into logs, or otherwise exposing it.
 4. Inventory live Envelope rows by parsed, bounded `kid` only. Treat malformed documents as security failures; do not repair them during rotation.
@@ -69,18 +87,29 @@ Rollback before rewrap: restore the old current-key selection while retaining bo
 
 This phase may run only through the reviewed Supply-owned workflow. It must:
 
-1. claim a bounded batch without holding a transaction during cryptography or backoff;
-2. read `account_id`, the complete stored envelope, and a concurrency token or exact old-envelope fingerprint;
+1. acquire the dedicated PostgreSQL session advisory lock and select a bounded
+   primary-key keyset batch without holding a transaction during cryptography
+   or backoff;
+2. read `account_id`, the complete stored envelope, and
+   `credential_revision`; scan every retained Account rather than filtering
+   rows by database-parsed `kid`;
 3. rebuild Account AAD from the trusted `account_id`;
 4. authenticate and rewrap with the current key;
 5. verify that `ciphertext`, `nonce`, and `tag` are byte-for-byte unchanged;
-6. open one short PostgreSQL Unit of Work and update only `credential_envelope` with compare-and-swap against the record version or exact old envelope;
+6. verify session-lock ownership, then open one short PostgreSQL Unit of Work
+   and update only `credential_envelope` plus
+   `credential_revision = credential_revision + 1`, comparing the exact
+   expected credential revision;
 7. commit once; a zero-row update is a concurrency miss and must be reread, not overwritten;
 8. clear temporary buffers, emit only aggregate counts, and use bounded retry/backoff outside the transaction.
 
 Stop the batch on any authentication failure, unknown key/version/algorithm, malformed document, unexpected plaintext decode, CAS error-rate threshold, alert-delivery failure, or database dependency failure. Preserve the row unchanged for investigation.
 
-Crash/retry must be safe: an already-current envelope is a no-op, while a concurrently replaced credential wins its CAS and is never overwritten by stale rewrap output.
+Crash/retry must be safe: an already-current envelope is authenticated and then
+is a no-op; a crash after commit is rediscovered as that no-op; a concurrently
+replaced credential advances credential revision and wins over stale rewrap
+output. A CAS miss ends the short transaction, rereads the new snapshot, and
+permits at most the reviewed fixed number of recomputations.
 
 Rollback after rewrap: keep both keys available and switch the old key back to current if new writes must stop. Do not attempt to reverse already rewrapped rows merely to make their `kid` uniform.
 

@@ -481,6 +481,7 @@ public sealed class PostgresQuotaCrashCompensationTests
         CrashScenario scenario,
         CancellationToken cancellationToken)
     {
+        await InsertAccountAsync(scenario, cancellationToken).ConfigureAwait(false);
         IUnitOfWork unitOfWork = await ApiFactory()
             .BeginAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -527,7 +528,6 @@ public sealed class PostgresQuotaCrashCompensationTests
         CancellationToken cancellationToken)
     {
         await InsertGroupAsync(session, scenario, cancellationToken).ConfigureAwait(false);
-        await InsertAccountAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         await InsertChannelAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         using (NpgsqlCommand configuration = session.CreateCommand("""
                    INSERT INTO public.group_supply_configurations (group_id, channel_id)
@@ -575,29 +575,61 @@ public sealed class PostgresQuotaCrashCompensationTests
                 .ConfigureAwait(false)));
     }
 
-    private static async ValueTask InsertAccountAsync(
-        PostgresTransactionSession session,
+    private async ValueTask InsertAccountAsync(
         CrashScenario scenario,
         CancellationToken cancellationToken)
     {
-        using NpgsqlCommand command = session.CreateCommand("""
-            INSERT INTO public.accounts (
-                id, provider, name, auth_type, upstream_base_url,
-                credential_envelope, credential_prefix, status,
-                last_health_at, last_health_status
-            ) VALUES (
-                $1, 'openai', $2, 'api_key', 'https://example.test/v1',
-                '{"v":1,"alg":"A256GCM+A256GCM-v1","kid":"test-kek-v1",
-                  "wrapped_dek":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                  "wrap_nonce":"AAAAAAAAAAAAAAAA","wrap_tag":"AAAAAAAAAAAAAAAAAAAAAA",
-                  "ciphertext":"YWNyYXNo","nonce":"AQEBAQEBAQEBAQEB",
-                  "tag":"AgICAgICAgICAgICAgICAg"}'::jsonb,
-                'sk-ac39', 'active', clock_timestamp(), 'healthy'
-            );
-            """);
-        command.Parameters.AddWithValue(scenario.AccountId);
-        command.Parameters.AddWithValue(scenario.AccountName);
-        await AssertSingleRowAsync(command, cancellationToken).ConfigureAwait(false);
+        // M2-E1 revokes the API role's direct Account INSERT. This quota test
+        // seeds through the production create ABI, then uses its administrator
+        // fixture connection only to model the not-yet-implemented M2-E2
+        // lifecycle/health transition required by the admission scenario.
+        using NpgsqlConnection connection = await _fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        NpgsqlTransaction transaction = await connection
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable transactionLease =
+            transaction.ConfigureAwait(false);
+        using (NpgsqlCommand create = connection.CreateCommand())
+        {
+            create.Transaction = transaction;
+            create.CommandText = """
+                SELECT disposition
+                FROM public.poolai_supply_create_account(
+                    $1, 'openai', $2, 'https://example.test/v1',
+                    '{"v":1,"alg":"A256GCM+A256GCM-v1","kid":"test-kek-v1",
+                      "wrapped_dek":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                      "wrap_nonce":"AAAAAAAAAAAAAAAA","wrap_tag":"AAAAAAAAAAAAAAAAAAAAAA",
+                      "ciphertext":"YWNyYXNo","nonce":"AQEBAQEBAQEBAQEB",
+                      "tag":"AgICAgICAgICAgICAgICAg"}'::jsonb,
+                    'sk-ac39', NULL, 1, 0, 100
+                );
+                """;
+            create.Parameters.AddWithValue(scenario.AccountId);
+            create.Parameters.AddWithValue(scenario.AccountName);
+            Assert.Equal(
+                "created",
+                Assert.IsType<string>(await create
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
+        }
+
+        using (NpgsqlCommand activate = connection.CreateCommand())
+        {
+            activate.Transaction = transaction;
+            activate.CommandText = """
+                UPDATE public.accounts
+                SET status = 'active',
+                    last_health_at = clock_timestamp(),
+                    last_health_status = 'healthy'
+                WHERE id = $1;
+                """;
+            activate.Parameters.AddWithValue(scenario.AccountId);
+            await AssertSingleRowAsync(activate, cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async ValueTask InsertChannelAsync(

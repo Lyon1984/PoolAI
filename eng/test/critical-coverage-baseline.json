@@ -37,12 +37,12 @@
         "/AccountCredentialEnvelopeOptions.cs",
         "/AccountCredentialProtector.cs"
       ],
-      "linesCovered": 1554,
-      "linesValid": 1706,
-      "lineRate": 91.09026963657679,
-      "branchesCovered": 482,
-      "branchesValid": 608,
-      "branchRate": 79.27631578947368
+      "linesCovered": 1587,
+      "linesValid": 1739,
+      "lineRate": 91.25934445083381,
+      "branchesCovered": 492,
+      "branchesValid": 618,
+      "branchRate": 79.6116504854369
     }
   }
 }

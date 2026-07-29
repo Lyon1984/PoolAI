@@ -131,6 +131,60 @@ environment, prove all required `kid` values decrypt with exact AAD, and only
 then authorize historical-key removal. Neither this ADR nor the shared core
 authorizes remote configuration mutation, a database write, or key deletion.
 
+### Supply persistence and maintenance-CAS candidate
+
+The following is review material while this ADR remains `Proposed`, and its
+database bytes require a separate database approval:
+
+1. Supply owns Account credential creation, replacement, selection, and
+   maintenance rewrap. Its Application ports remain internal and vendor-neutral;
+   only Supply Infrastructure contains Npgsql, SQL, Envelope runtime calls, and
+   the concrete Repository.
+2. A forward migration adds a positive, non-public
+   `accounts.credential_revision`. Human credential creation starts both the
+   public Account `version` and the internal credential revision at one. Human
+   replacement advances both exactly once, updates the public timestamp and
+   non-secret prefix/hint, and resets credential-dependent health to `unknown`.
+3. Authenticated maintenance rewrap compares only the internal credential
+   revision and advances it exactly once. It changes only
+   `credential_envelope`; it does not change the public Account `version`,
+   `updated_at`, prefix/hint, lifecycle, cooldown, or health. This prevents a
+   technical KEK change from manufacturing an ETag conflict or racing unrelated
+   health updates.
+4. The existing `poolai_runtime_owner NOLOGIN` may own the fixed
+   `SECURITY DEFINER` create/replace/rewrap entry points and receive only their
+   exact INSERT/UPDATE columns. It remains unable to `SELECT`
+   `accounts.credential_envelope`. `poolai_worker` may read encrypted Account
+   credentials and execute the bounded selector/CAS entry points, but receives
+   no direct envelope or credential-revision UPDATE. `poolai_api` loses direct
+   Account INSERT and credential UPDATE and may execute only the bounded human
+   write entry points. The existing read-only Configuration/binding trigger
+   guards move to fixed-search-path `SECURITY DEFINER` functions owned by the
+   same NOLOGIN role, so they can retain their Account `FOR SHARE` validation
+   without granting API a direct `UPDATE(id)` capability over stable Account
+   identity; PUBLIC/API/Worker cannot execute those trigger functions directly.
+5. A database guard requires an envelope change to advance
+   `credential_revision` exactly once. In maintenance-rewrap mode it also
+   requires `ciphertext`, content `nonce`, and content `tag` to remain unchanged;
+   a Worker cannot use the maintenance entry point as a credential-replacement
+   path.
+6. The selector keyset-pages every retained Account by primary key, including
+   retired rows. It does not filter on the JSON `kid`: every envelope is parsed
+   and authenticated by the strict runtime, so malformed, unknown-key, copied,
+   or tampered current-key rows cannot disappear behind a database expression
+   filter.
+7. `PoolAI.Worker` explicitly opts into a default-disabled, one-shot Supply
+   rewrap service. Supply uses the existing Operations session advisory-lock
+   port only for single-owner liveness. It performs selection, cryptography,
+   lock verification, alert delivery, and retry delay outside transactions;
+   each final CAS has one short PostgreSQL Unit of Work. A miss is reread and
+   may be recomputed only within a fixed bound.
+
+The public Account create/update use cases, authorization, idempotency, audit,
+combined non-secret mutation, and HTTP evidence remain M2-E2 work. In
+particular, the replacement seam in this candidate must not be composed with a
+second generic Account UPDATE that would advance the public version twice.
+
 ## Alternatives considered
 
 ### Keep separate Identity and Supply implementations
@@ -182,8 +236,13 @@ mechanism; modules and Operations retain policy and workflow ownership.
 
 ## Migration and rollback impact
 
-This candidate changes no database schema, OpenAPI document, envelope bytes, or
-deployed configuration. It authorizes no remote migration or key operation.
+This candidate adds a forward-only Account credential revision and bounded
+database entry points, plus a default-disabled Worker registration. It changes
+no OpenAPI document or Envelope v1 bytes and does not authorize a remote
+migration, configuration rollout, rewrap, restore, retirement, deployment, or
+key operation. The migration SQL, checksum, manifest window, owner/ACL surface,
+and PostgreSQL evidence require their own permanent database approval; approval
+of this ADR cannot substitute for it.
 
 Before release, extraction from Identity is rollbackable by removing the new
 project references and restoring the internal implementation in one atomic
@@ -217,7 +276,7 @@ what remains a release gate:
 | Envelope copied across purpose/entity/field | rebuild canonical AAD from trusted business context and authenticate both AEAD layers | unit/integration tests cover wrong purpose, Account, and field |
 | parser/resource abuse or downgrade | exact field set, bounded canonical base64url, fixed lengths and size, fixed `v/alg`, no legacy fallback | strict negative unit tests and Architecture Tests cover the shared runtime |
 | tag/ciphertext/DEK tampering | authenticate the wrapped DEK and content before decrypt, inspect, or rewrap; expose only stable redacted failure classes | unit/integration tamper tests and Supply alert-payload tests |
-| stale rewrap overwrites credential replacement | owning-module compare-and-swap on row version or exact old envelope; zero-row update rereads instead of overwriting | cryptographic rewrap is implemented locally; production Supply selector/CAS/crash-retry integration remains required |
+| stale rewrap overwrites credential replacement | owning-module CAS on the non-public credential revision; human replacement and maintenance rewrap both advance it once; zero-row update rereads instead of overwriting | the forward migration, production Supply selector/CAS, bounded reread and crash/retry integration are candidate evidence; database approval and an authorized execution remain required |
 | backup cannot decrypt after rotation | inventory every retained backup, restore in isolation with the required historical ring, and validate exact trusted AAD | local serialization/restore behavior is covered; physical PostgreSQL/PITR and RPO/RTO evidence remain M6-E4 |
 | historical key removed too early | require zero live references, expired or proven retained backups, DR agreement, observation window, and separate retirement approval | the reviewed runbook defines the gate; an executed retirement record is not claimed |
 | plaintext/key material leaks through failures | zero temporary byte buffers where supported; exclude secret values, `kid`, AAD, and envelopes from failure payloads/logs/traces | Supply event tests cover redaction; production observability verification remains required |
@@ -237,6 +296,9 @@ what remains a release gate:
   failures
 - real PostgreSQL integration tests for Supply persistence, concurrent CAS
   rewrap, crash/retry behavior, and no plaintext in database/log/trace output
+- a separately approved forward migration proving the internal credential
+  revision, exact function owner/search path/ACL, rewrap content-preservation
+  guard, and denial of direct API/Worker envelope writes
 - the operator-reviewed
   [`ops/runbooks/secret-envelope-key-rotation-and-restore.md`](../../../ops/runbooks/secret-envelope-key-rotation-and-restore.md)
   for key rotation, inventory, backup restore, rollback, and AC-044 evidence

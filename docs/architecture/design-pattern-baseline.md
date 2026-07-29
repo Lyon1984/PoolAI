@@ -129,7 +129,7 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 - Port 使用领域 ID、Value Object、Command Result 或最小 Snapshot；不得暴露 `DbConnection`、`DbTransaction`、`DbContext`、EF Entry、HTTP request/response 或厂商 SDK 类型。
 - `IUnitOfWorkFactory.BeginAsync(...)`、`IUnitOfWork` 与 `IUnitOfWorkContext` 位于 vendor-neutral BuildingBlocks；`IUnitOfWork` 暴露独立 `Context` 并独占 commit/dispose capability，不能实现或继承 `IUnitOfWorkContext`。Handler 只把 `unitOfWork.Context` 传给 Repository/Appender。
 - 模块 Infrastructure adapter 可以把该中立 context type-check 为 `PoolAI.Infrastructure.Postgres` 提供的 concrete PostgreSQL transaction capability，以复用既有 connection/transaction；不匹配必须在任何写入前 fail-closed，禁止 fallback 新 connection/transaction。该 concrete capability 不能反向出现在 Port 签名。
-- ADR 0009 获接受后，Identity/Supply Infrastructure adapter 可以调用 BCL-only `PoolAI.Infrastructure.Secrets` 的 generic Envelope v1 mechanics；模块负责从已验证配置构造 immutable keyring、定义并校验业务 purpose/entity/field AAD、持久化/CAS 与安全告警。共享 core 不读取配置、不记录日志、不决定业务 AAD、不访问存储，也不编排轮换/恢复。
+- ADR 0009 获接受后，Identity/Supply Infrastructure adapter 可以调用 BCL-only `PoolAI.Infrastructure.Secrets` 的 generic Envelope v1 mechanics；模块负责从已验证配置构造 immutable keyring、定义并校验业务 purpose/entity/field AAD、持久化/CAS 与安全告警。共享 core 不读取配置、不记录日志、不决定业务 AAD、不访问存储，也不编排轮换/恢复。Account credential 的 selector、create/replace 与 maintenance CAS 只属于 Supply：非公开 `credential_revision` 与公开 Account `version` 分离，维护 rewrap 只推进前者并保持 content ciphertext/nonce/tag 不变；Operations 只提供通用 session advisory lock 与运维事件，不能接收 Envelope 或拥有 Account SQL。
 - 外部协议变化只进入 Adapter 和 Gateway 规范化映射；Domain/Application 不使用 OpenAI DTO 作为自己的模型。
 - `CancellationToken` 沿端口传播，但数据库 commit、断连后有界 drain 等必须使用已冻结的独立生命周期规则，不能让 transport cancellation 破坏核销。
 
@@ -143,7 +143,7 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 | Worker | `PoolAI.Worker/Program.cs` | `PoolAI.Infrastructure.Postgres` runtime/session lock、email/outbox、reservation、Supply health、Usage projection、告警等 Worker 能力 | 公开 Endpoint、协议 Adapter、Api ServiceProvider、DDL runner、直接引用/注册 `PoolAI.Infrastructure.Secrets` |
 | Migrator | `PoolAI.Migrator/Program.cs` | Database.Migrations、migration-specific lock/history/checksum、受限 bootstrap writer | runtime application UoW、Redis、Gateway、Worker loop、运行时模块业务服务、`PoolAI.Infrastructure.Secrets` 或任何 Account secret 解密/重包裹路径 |
 
-模块通过显式 `AddIdentityModule()`、`AddGroupQuotaModule()` 等扩展注册。Api/Worker 在各自 Host 根部显式注册独立的 PostgreSQL data source/UoW runtime；不得跨进程共享 data source、connection、UoW 或根 `IServiceProvider`。ADR 0009 若获接受，Identity/Supply 的模块注册边界可把 Host 已验证的 secret-provider 配置转换为模块 Infrastructure 使用的 immutable keyring，但 Api/Worker 项目本身不得直接引用、注册或解析 `PoolAI.Infrastructure.Secrets`。注册扩展只做 binding、Options 校验和健康检查注册，不解析服务、不执行数据库写入、不启动后台循环，也不得调用 `BuildServiceProvider()`。对象图只能在对应 Host 根部闭合；测试可以建立测试专用 Composition Root，但生产模块不得感知它。Migrator 仍只有 migration-specific 数据路径，不以共享 runtime application UoW 取得 Schema 所有权，也不得加载 Secrets runtime。
+模块通过显式 `AddIdentityModule()`、`AddGroupQuotaModule()` 等扩展注册。Api/Worker 在各自 Host 根部显式注册独立的 PostgreSQL data source/UoW runtime；不得跨进程共享 data source、connection、UoW 或根 `IServiceProvider`。ADR 0009 若获接受，Identity/Supply 的模块注册边界可把 Host 已验证的 secret-provider 配置转换为模块 Infrastructure 使用的 immutable keyring，但 Api/Worker 项目本身不得直接引用、注册或解析 `PoolAI.Infrastructure.Secrets`。通用模块注册扩展只做 binding、Options 校验和健康检查注册，不解析服务、不执行数据库写入、不启动后台循环，也不得调用 `BuildServiceProvider()`；只允许 Worker Composition Root 另行显式调用默认禁用的 Supply credential rewrap Worker 注册，Api 不得调用或解析该 HostedService。对象图只能在对应 Host 根部闭合；测试可以建立测试专用 Composition Root，但生产模块不得感知它。Migrator 仍只有 migration-specific 数据路径，不以共享 runtime application UoW 取得 Schema 所有权，也不得加载 Secrets runtime。
 
 ## 5. Aggregate 与 Repository 目录
 
@@ -166,6 +166,14 @@ Domain/Application/Infrastructure/Endpoints 即使暂时位于同一实现程序
 Routing、Gateway 是策略/应用编排 context，Release 1 没有需要通过 Repository 保存的业务 Aggregate。Usage 是 CQRS 查询 context，只维护可重建投影；Operations 维护 append-only/投递技术事实，不成为业务 Aggregate 的所有者。
 
 `GroupQuotaLedger` 是逻辑一致性边界，不要求把全部历史 Period/Reservation 加载为内存对象图。高并发 reserve/renew/settle/release/expire/adjust/reset 通过 GroupQuota Infrastructure 中的 Npgsql/数据库函数 Repository Adapter 原子执行；这个实现仍然只能通过 `IGroupQuotaLedger` 等 Application Port 暴露，不能从 Endpoint/Gateway 直接调用 SQL。
+
+Account credential 是 Account Aggregate 内的秘密子状态，但密钥维护不是公开
+Account mutation。Supply 使用独立的非公开 `credential_revision` 作为 create、
+human replacement 与 authenticated rewrap 的并发 token：create 固定为 1，
+replacement 同时推进业务 version 与 credential revision，maintenance rewrap 只推进
+credential revision。Selector 是无行锁的主键 keyset Query Port；每行 cryptography
+结束后才允许开启一个短 CAS UoW。CAS miss 必须在事务外重读，且只可基于新快照有界
+重算，不能覆盖并发 credential replacement。
 
 ### 5.2 `usage_attempts` 的唯一所有权
 
@@ -219,6 +227,7 @@ Domain 对象维护自身不变量；Handler 负责用例顺序与跨 Aggregate 
 - 不在数据库事务中等待 Redis lease、调用上游 HTTP/SMTP、发送 SSE 或执行退避。Gateway 一次请求是长应用工作流，其中 reserve、renew、settle/release 各自是短且幂等的 Ledger Command/UoW，不把整个上游生命周期包在一个事务内。
 - `PoolAI.Application.Orchestration` 不创建跨模块 UoW。它按顺序调用各模块端口，并依赖幂等、乐观并发和明确失败结果；Group activation 只有最终 GroupQuota mutation 是写事务。
 - `PoolAI.Infrastructure.Postgres` 只管理 data source/connection/transaction/session-lock 生命周期，不接收任意 SQL delegate，不包含业务表 SQL/Repository/Migration，也不通过 `TransactionScope`、ambient/`AsyncLocal` 或静态/全局 registry 发现“当前事务”。
+- Supply credential rewrap 的 session advisory lock 使用 dedicated connection，只提供单 owner/liveness；最终正确性由 `credential_revision` CAS 保证。selector、Envelope authentication/rewrap、ownership verification、operational-event 写入和 retry delay 都在 UoW 外；每条成功 CAS 只有一个短事务且不修改公开 Account version、timestamp、health、cooldown、prefix 或 hint。
 
 ## 7. Domain Event 与 Integration Event
 
@@ -283,8 +292,8 @@ Decorator 的固定外层顺序为：request correlation/observability → admis
 10. Repository 内调用 commit/`SaveChanges`，`IUnitOfWork` 实现/继承 `IUnitOfWorkContext`，Appender/Store 可取得 commit/dispose capability，UoW/context 跨 Command 复用或终态后仍可使用，context 不匹配时另开 fallback transaction，或 Command Handler/UoW 在外部 HTTP、SMTP、Redis 等调用期间保持数据库事务。
 11. 新建 Payment/Billing/Pricing/Balance/Redeem/Affiliate/个人 quota 模块或类型。
 12. 除 ADR 0006 登记的三个完整 family 外出现跨 Context SQL/DbContext 直读：Family A 仅含 `poolai_quota_reserve` 的 canonical admission 读取以及 `poolai_quota_settle`、`poolai_quota_mark_dispatched`、`poolai_quota_adjust_usage` 的 Account/Channel `id + provider` route-identity 行锁；Family B 仅含 `poolai_validate_group_activation` 的点时 Supply readiness guard；Family C 仅含 `poolai_group_update` 与五条 SubscriptionAccess mutation 的双向 lifecycle fence。任一例外读取超出固定 function/table/field 白名单、跨 Context 写入、引入 dynamic/general executor，或 Family A/C 未遵守登记锁序和等待后 DB clock 重检。ADR 0006 仍为 `Proposed` 或缺少 `@Lyon1984` 永久签核证据时，还必须阻断以该候选 registry 宣称 M1-E4 architecture sign-off/release-ready。
-13. ADR 0009 未获永久签核时，以其候选边界宣称 implementation/release-ready；获接受并落地后，`PoolAI.Infrastructure.Secrets` 出现非 BCL 依赖、被 Identity/Supply 的非 Infrastructure namespace 或其他生产项目/Host/Migrator 使用，或包含配置/日志/业务 AAD/存储/CAS/轮换编排。
+13. ADR 0009 未获永久签核时，以其候选边界宣称 implementation/release-ready；获接受并落地后，`PoolAI.Infrastructure.Secrets` 出现非 BCL 依赖、被 Identity/Supply 的非 Infrastructure namespace 或其他生产项目/Host/Migrator 使用，或包含配置/日志/业务 AAD/存储/CAS/轮换编排；Supply credential Worker 被 Api 注册、Operations 包含 Envelope/Account credential SQL、maintenance rewrap 推进公开 Account version/updated_at/健康，或 cryptography/告警/退避期间持有数据库事务。
 
-静态架构测试之外，Integration Test 必须用真实 PostgreSQL 角色证明表写 owner、Group/Supply 独立 ETag、Supply 多行替换的单调 version、activation evidence、同一 physical connection/transaction 内的业务事实 + idempotency/audit/outbox、context mismatch fail-closed 且无第二事务、`usage_attempts` append-only、重复投递幂等、Worker dedicated session advisory lock 在 dispose/断连后的释放接管，以及 Group activation 并发版本冲突。Contract Test 必须覆盖 Integration Event envelope/schema version；故障测试必须覆盖 readiness 观察前后竞态、commit 前失败全部回滚、commit 后 Supply 失效不改写 Group 且新 attempt 强读拒绝，以及投递失败可重试。
+静态架构测试之外，Integration Test 必须用真实 PostgreSQL 角色证明表写 owner、Group/Supply 独立 ETag、Supply 多行替换的单调 version、activation evidence、同一 physical connection/transaction 内的业务事实 + idempotency/audit/outbox、context mismatch fail-closed 且无第二事务、`usage_attempts` append-only、重复投递幂等、Worker dedicated session advisory lock 在 dispose/断连后的释放接管，以及 Group activation 并发版本冲突。Account credential 还必须证明 API/Worker 不能直接写 envelope/revision、NOLOGIN owner 不能读取 envelope、create/replace/rewrap 函数 ACL 精确、replacement 与 stale rewrap 两种提交顺序下 replacement 不丢失、health 写不使 credential CAS 失效、maintenance rewrap 不改变公开资源，以及日志/trace/audit/错误不含 plaintext、完整 Envelope、`kid` 或 key version。Contract Test 必须覆盖 Integration Event envelope/schema version；故障测试必须覆盖 readiness 观察前后竞态、commit 前失败全部回滚、commit 后 Supply 失效不改写 Group 且新 attempt 强读拒绝，以及投递失败可重试。
 
 以下变化必须先有 ADR：新增/合并/split bounded context、改变表 owner、改变 Context Map 同步方向、跨模块共享事务、增加 Host、改变 Composition Root 加载范围、把读模型用于准入、引入消息代理/微服务/Event Sourcing/Saga，或允许 Generic Repository。
