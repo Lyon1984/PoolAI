@@ -90,14 +90,14 @@
     },
     {
       "id": "m2-e2-upstream-account-base-url-safety",
-      "status": "proposed",
+      "status": "accepted",
       "scope": "openapi-v1-compatibility-window",
       "baseRef": "a2127f2d4a2ed8b0ccdd2b7fd6c62c27fd05eab0",
       "baseOpenApiSha256": "1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141",
       "headOpenApiSha256": "6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb",
       "adr": "docs/architecture/adr/0010-freeze-upstream-account-base-url-safety-contract.md",
       "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
-      "approvalEvidence": null,
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5121040005",
       "allowedFailures": [
         "#/components/schemas/Account/properties/base_url/maxLength: maxLength tightened from <none> to 2048",
         "#/components/schemas/Account/properties/base_url/pattern: pattern changed from <none> to ^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:.]+\\])|http://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\\s?#]*)?$",
