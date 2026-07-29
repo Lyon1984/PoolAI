@@ -5,8 +5,8 @@ using Microsoft.Extensions.Hosting;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply.Abstractions;
+using PoolAI.Modules.Supply.Application;
 using PoolAI.Modules.Supply.Application.Ports;
-using PoolAI.Modules.Supply.Infrastructure;
 using PoolAI.Modules.Supply.Infrastructure.Persistence;
 using PoolAI.Modules.Supply.Infrastructure.Security;
 using PoolAI.Modules.Supply.Infrastructure.Workers;
@@ -16,13 +16,16 @@ namespace PoolAI.Modules.Supply;
 
 public static class DependencyInjection
 {
+#pragma warning disable MA0051 // The module Composition Root intentionally closes the full graph.
     public static IServiceCollection AddSupplyModule(
         this IServiceCollection services,
         IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
-        AddModuleMarkerAndReadiness(services);
+        AddModuleMarker(services);
+        services.AddSingleton(new AccountControlPlanePolicy(
+            ReadRequestHashPepper(configuration)));
         services.AddSingleton(
             AccountCredentialEnvelopeOptions.FromConfiguration(configuration));
         services.AddSingleton<IAccountCredentialProtector>(serviceProvider =>
@@ -32,8 +35,65 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IOperationalEventWriter>()));
         services.TryAddSingleton<IAccountCredentialStore,
             PostgresAccountCredentialStore>();
+        services.AddSupplyInfrastructure();
+        services.AddSingleton(static serviceProvider =>
+            new GroupSupplyCommandCoordinator(
+                serviceProvider.GetRequiredService<ICommandIdempotencyStore>(),
+                serviceProvider.GetRequiredService<IAuditAppender>(),
+                serviceProvider.GetRequiredService<IOutboxAppender>(),
+                serviceProvider.GetRequiredService<AccountControlPlanePolicy>()));
+        services.AddSingleton(static serviceProvider =>
+            new AccountControlPlaneService(
+                serviceProvider.GetRequiredService<IAccountControlPlaneRepository>(),
+                serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+                serviceProvider.GetRequiredService<ICommandIdempotencyStore>(),
+                serviceProvider.GetRequiredService<IAuditAppender>(),
+                serviceProvider.GetRequiredService<IOutboxAppender>(),
+                serviceProvider.GetRequiredService<IAccountCredentialProtector>(),
+                serviceProvider.GetRequiredService<AccountControlPlanePolicy>()));
+        services.AddSingleton(static serviceProvider =>
+            new ChannelControlPlaneService(
+                serviceProvider.GetRequiredService<IChannelControlPlaneRepository>(),
+                serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+                serviceProvider.GetRequiredService<GroupSupplyCommandCoordinator>()));
+        services.AddSingleton(static serviceProvider =>
+            new GroupSupplyControlPlaneService(
+                serviceProvider.GetRequiredService<
+                    IGroupSupplyConfigurationRepository>(),
+                serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+                serviceProvider.GetRequiredService<GroupSupplyCommandCoordinator>()));
+        services.AddSingleton<IListAccountsUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<AccountControlPlaneService>());
+        services.AddSingleton<IGetAccountUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<AccountControlPlaneService>());
+        services.AddSingleton<ICreateAccountUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<AccountControlPlaneService>());
+        services.AddSingleton<IUpdateAccountUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<AccountControlPlaneService>());
+        services.AddSingleton<IRetireAccountUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<AccountControlPlaneService>());
+        services.AddSingleton<IListChannelsUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelControlPlaneService>());
+        services.AddSingleton<IGetChannelUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelControlPlaneService>());
+        services.AddSingleton<ICreateChannelUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelControlPlaneService>());
+        services.AddSingleton<IUpdateChannelUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelControlPlaneService>());
+        services.AddSingleton<IRetireChannelUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<ChannelControlPlaneService>());
+        services.AddSingleton<IGetGroupSupplyConfigurationUseCase>(
+            static serviceProvider => serviceProvider.GetRequiredService<
+                GroupSupplyControlPlaneService>());
+        services.AddSingleton<ICreateGroupSupplyConfigurationUseCase>(
+            static serviceProvider => serviceProvider.GetRequiredService<
+                GroupSupplyControlPlaneService>());
+        services.AddSingleton<IPatchGroupSupplyConfigurationUseCase>(
+            static serviceProvider => serviceProvider.GetRequiredService<
+                GroupSupplyControlPlaneService>());
         return services;
     }
+#pragma warning restore MA0051
 
     public static IServiceCollection AddSupplyCredentialRewrapWorker(
         this IServiceCollection services,
@@ -79,12 +139,35 @@ public static class DependencyInjection
         }
     }
 
-    private static void AddModuleMarkerAndReadiness(IServiceCollection services)
+    private static void AddModuleMarker(IServiceCollection services)
     {
         services.AddSingleton(new ModuleRegistration(
             typeof(DependencyInjection).Assembly.GetName().Name!,
             "Supply",
             HostCapability.Api | HostCapability.Worker));
-        services.TryAddSingleton<IGroupSupplyReadiness, FailClosedGroupSupplyReadiness>();
+    }
+
+    private static byte[] ReadRequestHashPepper(IConfiguration configuration)
+    {
+        byte[] value;
+        try
+        {
+            value = Convert.FromBase64String(
+                configuration["Idempotency:RequestHashPepper"] ?? string.Empty);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidOperationException(
+                "Idempotency:RequestHashPepper is invalid.",
+                exception);
+        }
+
+        if (value.Length < 32)
+        {
+            throw new InvalidOperationException(
+                "Idempotency:RequestHashPepper must contain at least 256 bits.");
+        }
+
+        return value;
     }
 }

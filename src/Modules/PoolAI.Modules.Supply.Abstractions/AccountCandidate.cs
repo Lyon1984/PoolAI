@@ -5,6 +5,14 @@ public sealed record AccountCandidate(
     EntityId ChannelId,
     EntityId AccountId,
     UpstreamProvider Provider,
+    string ClientModel,
+    string UpstreamModel,
+    string UpstreamBaseUrl,
+    ChannelCapabilitiesSnapshot Capabilities,
     AccountHealth Health,
     int ConcurrencyLimit,
-    long ConfigurationVersion);
+    int Priority,
+    int Weight,
+    long ConfigurationVersion,
+    long ChannelVersion,
+    long AccountVersion);

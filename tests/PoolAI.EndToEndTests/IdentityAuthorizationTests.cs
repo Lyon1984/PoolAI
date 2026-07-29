@@ -446,6 +446,19 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
             ["adminGetSubscription"] = ["admin", "auditor", "operator"],
             ["adminAssignSubscription"] = ["admin", "operator"],
             ["adminUpdateSubscription"] = ["admin", "operator"],
+            ["adminListAccounts"] = ["admin", "auditor", "operator"],
+            ["adminGetAccount"] = ["admin", "auditor", "operator"],
+            ["adminCreateAccount"] = ["admin", "operator"],
+            ["adminUpdateAccount"] = ["admin", "operator"],
+            ["adminRetireAccount"] = ["admin", "operator"],
+            ["adminListChannels"] = ["admin", "auditor", "operator"],
+            ["adminGetChannel"] = ["admin", "auditor", "operator"],
+            ["adminCreateChannel"] = ["admin", "operator"],
+            ["adminUpdateChannel"] = ["admin", "operator"],
+            ["adminRetireChannel"] = ["admin", "operator"],
+            ["adminGetGroupSupplyConfiguration"] = ["admin", "auditor", "operator"],
+            ["adminCreateGroupSupplyConfiguration"] = ["admin"],
+            ["adminUpdateGroupSupplyConfiguration"] = ["admin"],
         };
 
     private static string[] AnonymousIdentityOperations() =>

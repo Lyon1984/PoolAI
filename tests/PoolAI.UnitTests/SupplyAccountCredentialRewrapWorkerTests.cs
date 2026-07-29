@@ -1040,6 +1040,8 @@ public sealed class SupplyAccountCredentialRewrapWorkerTests
             Enumerable.Repeat((byte)0x5a, 32).ToArray());
         Dictionary<string, string?> values = new(StringComparer.Ordinal)
         {
+            ["Idempotency:RequestHashPepper"] = Convert.ToBase64String(
+                Enumerable.Repeat((byte)0x5c, 32).ToArray()),
             ["Secrets:Envelope:CurrentKeyId"] = CurrentKeyId,
             ["Secrets:Envelope:CurrentKey"] = currentKey,
             [$"Secrets:Envelope:DecryptKeyRing:{CurrentKeyId}"] = currentKey,

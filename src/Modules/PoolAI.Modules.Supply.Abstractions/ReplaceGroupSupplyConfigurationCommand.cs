@@ -6,4 +6,4 @@ public sealed record ReplaceGroupSupplyConfigurationCommand(
     string IdempotencyKey,
     string Reason,
     EntityId? ChannelId,
-    IReadOnlyList<EntityId> EnabledAccountIds);
+    IReadOnlyList<GroupSupplyAccountBindingSnapshot> AccountBindings);

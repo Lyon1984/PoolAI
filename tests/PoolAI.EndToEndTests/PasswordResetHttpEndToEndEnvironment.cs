@@ -500,7 +500,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
                         descriptor =>
                             descriptor.ServiceType == typeof(IGroupSupplyReadiness));
                     Assert.Equal(
-                        "PoolAI.Modules.Supply.Infrastructure.FailClosedGroupSupplyReadiness",
+                        "PoolAI.Modules.Supply.Infrastructure.Persistence.PostgresGroupSupplyReadiness",
                         productionReadiness.ImplementationType?.FullName);
                     Assert.Equal(
                         "PoolAI.Modules.Supply",

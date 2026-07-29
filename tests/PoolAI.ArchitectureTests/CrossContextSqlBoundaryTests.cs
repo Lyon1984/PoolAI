@@ -546,6 +546,14 @@ public sealed class CrossContextSqlBoundaryTests
             SELECT * FROM information_schema.tables;
             SELECT * FROM jsonb_array_elements('[]'::jsonb) AS item;
             """));
+        const string conflictUpdate = """
+            INSERT INTO public.accounts(id)
+            VALUES (gen_random_uuid())
+            ON CONFLICT (id) DO UPDATE
+            SET status = EXCLUDED.status;
+            """;
+        Assert.Empty(FindInvalidRelations(conflictUpdate));
+        Assert.Equal(["accounts"], ExtractOwnedRelations(conflictUpdate));
 
         Assert.Equal(
             ["poolai_subscription_assign->poolai_group_update"],
@@ -707,6 +715,15 @@ public sealed class CrossContextSqlBoundaryTests
             "SELECT q.group_id FROM public.group_token_quotas AS q, public.accounts AS a;"));
         Assert.True(HasCommaSeparatedRelation(
             "SELECT q . group_id FROM public . group_token_quotas AS q, public . accounts AS a;"));
+        Assert.False(HasCommaSeparatedRelation("""
+            SELECT
+                CASE WHEN account.status = 'active'
+                    THEN pg_catalog.jsonb_build_object('ready', true)
+                    ELSE NULL::jsonb
+                END,
+                account.id
+            FROM public.accounts AS account;
+            """));
 
         const string archiveEscape = """
             IF v_status = 'archived' THEN
@@ -1232,6 +1249,7 @@ public sealed class CrossContextSqlBoundaryTests
                 RegexOptions.CultureInvariant,
                 RegexTimeout)
             .Where(match => !IsTableFunctionReference(normalized, match))
+            .Where(match => !IsOnConflictActionUpdate(normalized, match))
             .Select(match => new RelationReference(
                 match.Groups["schema"].Value,
                 match.Groups["name"].Value))
@@ -1241,6 +1259,33 @@ public sealed class CrossContextSqlBoundaryTests
             .OrderBy(static relation => relation.Schema, StringComparer.Ordinal)
             .ThenBy(static relation => relation.Name, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static bool IsOnConflictActionUpdate(string sql, Match reference)
+    {
+        if (!string.Equals(
+                reference.Groups["verb"].Value,
+                "update",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int tokenEnd = reference.Index - 1;
+        while (tokenEnd >= 0 && char.IsWhiteSpace(sql[tokenEnd]))
+        {
+            tokenEnd--;
+        }
+
+        int tokenStart = tokenEnd;
+        while (tokenStart >= 0
+            && (char.IsLetterOrDigit(sql[tokenStart]) || sql[tokenStart] == '_'))
+        {
+            tokenStart--;
+        }
+
+        return sql.AsSpan(tokenStart + 1, tokenEnd - tokenStart)
+            .Equals("do", StringComparison.Ordinal);
     }
 
     private static bool IsTableFunctionReference(string sql, Match reference)
@@ -1404,7 +1449,7 @@ public sealed class CrossContextSqlBoundaryTests
         StripCommentsAndLiterals(sql),
         @"\b(?:FROM|JOIN)\s+(?:ONLY\s*\(\s*(?:public\.)?[a-z_][a-z0-9_]*\b\s*\)|(?:ONLY\s+)?(?:public\.)?[a-z_][a-z0-9_]*\b)"
         + @"(?:\s+(?:AS\s+)?[a-z_][a-z0-9_]*)?\s*,"
-        + @"|\)\s+(?:AS\s+)?[a-z_][a-z0-9_]*\s*,",
+        + @"|\)\s+(?:AS\s+)?(?!END\b)[a-z_][a-z0-9_]*\s*,",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         RegexTimeout);
 
