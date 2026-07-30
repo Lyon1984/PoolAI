@@ -4,5 +4,7 @@ public sealed record AccountRoute(
     EntityId GroupId,
     EntityId ChannelId,
     EntityId AccountId,
-    string LeaseToken,
-    DateTimeOffset LeaseExpiresAt);
+    DateTimeOffset LeaseExpiresAt,
+    long SupplyConfigurationVersion,
+    long ChannelVersion,
+    long AccountVersion);

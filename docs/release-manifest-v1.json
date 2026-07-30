@@ -84,13 +84,31 @@
     "contract_version": 1,
     "key_schema_version": "r1",
     "contract_source": "docs/runtime/redis-contract.md",
-    "contract_sha256": "6a290604dc2b4117b0c4b2eb2fe37ee74283de277e0a3e42f3a166f741f4175e",
+    "contract_sha256": "c30816c779bddb28d6b2464e7d9ee7e42af86791b96a02fa6c77af352917d887",
     "scripts": [
       {
         "name": "fixed_window_increment",
         "logical_version": 1,
         "source": "docs/runtime/scripts/fixed_window_increment_v1.lua",
         "body_sha256": "1ddacad35d5c5e1fc876fadf4b2cd34f6593fd3716d982504b4f21d27a35ec46"
+      },
+      {
+        "name": "lease_acquire",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/lease_acquire_v1.lua",
+        "body_sha256": "994a8982f7df3dc3e00560bf0118336790cb252b54eff69fca75c570ad9e7d7b"
+      },
+      {
+        "name": "lease_renew",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/lease_renew_v1.lua",
+        "body_sha256": "03aad2c350da6a2700253c2816500540729a0b66db50912e97751e367fdd9b51"
+      },
+      {
+        "name": "lease_release",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/lease_release_v1.lua",
+        "body_sha256": "baa5b875f5033e91baf649273aae81ba91e9793384801300deab110f48bf4e01"
       }
     ]
   }

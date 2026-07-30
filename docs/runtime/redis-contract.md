@@ -12,7 +12,7 @@ Redis 只承载短生命周期协调、限流、粘性和缓存，不是 Subscri
 - ID 统一使用小写、带连字符的 UUID；会话信号先做 HMAC-SHA256，再取 32 个十六进制字符，不能把 prompt、邮箱、原始 API Key、JWT 或 Refresh Token 放进 key/value/log。
 - Account lease 和 Group/登录 RPM 使用 Redis `TIME`，不得使用各节点本地时钟；PostgreSQL reservation/period、Subscription、API Key、一次性 Token 与 Refresh issued/expiry/rotation/revoke 使用数据库时钟，两类截止时间不能互相替代。
 - 所有 Lua 通过 [`../release-manifest-v1.json`](../release-manifest-v1.json) 登记逻辑名称、逻辑版本、权威正文路径和正文 SHA-256，应用启动时加载；Redis 返回的 SHA-1 只是 content-addressed script cache 标识，不能替代清单完整性使用的 SHA-256。遇到 `NOSCRIPT` 只允许重新加载同逻辑版本、同 SHA-256 的正文一次。滚动升级期间新旧脚本的 key 结构和返回数组必须兼容，否则使用新 key version。
-- M0 只建立连接、`TIME`、机器清单和 versioned script registry 测试基座，所以 M0 Exit 时 release manifest 的 `scripts` 是显式空数组；空数组不是省略登记规则。M1-E1 首次加入密码重置所需的 [`fixed_window_increment_v1.lua`](scripts/fixed_window_increment_v1.lua)；后续 M2 复用它实现 Group RPM，并新增 Account lease/breaker 脚本。Lua 正文只能位于 `docs/runtime/scripts/`，且必须与本契约、release manifest 登记和测试原子提交。
+- M0 只建立连接、`TIME`、机器清单和 versioned script registry 测试基座，所以 M0 Exit 时 release manifest 的 `scripts` 是显式空数组；空数组不是省略登记规则。M1-E1 首次加入密码重置所需的 [`fixed_window_increment_v1.lua`](scripts/fixed_window_increment_v1.lua)；M2-E3 复用它交付 Group RPM 协调原语，并新增 Account lease acquire/renew/release 脚本；Gateway 仅从 M4-E1 起在鉴权后的模型 POST 路径调用 Group RPM 原语。后续 M2-E4 再交付 breaker 脚本。Lua 正文只能位于 `docs/runtime/scripts/`，且必须与本契约、release manifest 登记和测试原子提交。
 - Api/Worker readiness 必须校验 Redis server major、`TIME` 返回、配置 key prefix 的 schema version，以及清单中每个脚本在所有可写 primary 上可按正文加载。不得写单一全局 manifest marker：共享 script cache 可以同时保存滚动版本的不同 SHA，额外 SHA 不构成不兼容。应用不得为 readiness 执行 `SCRIPT FLUSH`。
 - Lua 返回固定数组，首项为整数 code，后续项不得因实现语言改变类型。任何非预期 code 都按协调层不可用处理并记录 script version。
 - 禁止 `KEYS`、无界 `SCAN`、无 TTL 临时 key，以及依赖 Pub/Sub 才能保证正确性的设计。
@@ -44,15 +44,15 @@ API Key、Subscription 与 Group policy 的正缓存只用于尽早拒绝和减�
 
 ## 3. Lease Lua v1
 
-R1 只对 Account 使用该 lease 算法，不创建 User lease。owner token 是服务端生成的随机 128-bit 值，只在当前 attempt 上下文保存。Account 并发上限来自 PostgreSQL Account 版本化配置，它是供应容量，不是累计 Token 配额。
+R1 只对 Account 使用该 lease 算法，不创建 User lease。owner token 是服务端生成的 16 字节 CSPRNG 随机值，以恰好 32 个小写十六进制字符编码后作为 opaque ZSET member，只在当前 attempt 上下文保存；它不是 UUID、用户/节点标识或可复用 capability。Account 并发上限来自 PostgreSQL Account 版本化配置 `max_concurrency`（`1..10000`），它是供应容量，不是累计 Token 配额。
 
-### 3.1 `lease_acquire_v1`
+### 3.1 [`lease_acquire_v1`](scripts/lease_acquire_v1.lua)
 
 输入：
 
 - `KEYS[1]`：lease ZSET；
-- `ARGV[1]`：owner token；
-- `ARGV[2]`：正整数 limit；
+- `ARGV[1]`：上述 32 位小写十六进制 owner token；
+- `ARGV[2]`：正整数 limit，必须为 `1..10000`；
 - `ARGV[3]`：lease_ms，Release 1 固定 60000；
 - `ARGV[4]`：key_ttl_ms，固定 120000。
 
@@ -67,13 +67,15 @@ R1 只对 Account 使用该 lease 算法，不创建 User lease。owner token �
 
 应用对 code 0 可在释放数据库事务后按调度策略等待，但不能持有 Group reservation 等待 Account lease；达到调用总 deadline 后返回 `503 account_capacity_unavailable`。
 
-### 3.2 `lease_renew_v1`
+### 3.2 [`lease_renew_v1`](scripts/lease_renew_v1.lua)
 
-输入为 lease key、owner、lease_ms、key_ttl_ms。先清理过期 member；owner 存在时更新 score 并返回 `[1, expires_at_ms]`，不存在返回 `[0, 0]`。活跃请求每 20 秒续租；连续两次失败或返回 0 时取消上游请求，进入最长 15 秒 drain，并按已知 usage/保守估算结算 PostgreSQL reservation。
+输入为 lease key、owner、lease_ms、key_ttl_ms。owner 编码、`lease_ms=60000` 与 `key_ttl_ms=120000` 必须精确匹配；先以 Redis `TIME` 清理过期 member。owner 存在时更新 score、重置 key TTL 并返回 `[1, expires_at_ms]`，不存在返回 `[0, 0]`，参数不合法返回 `[-1, 0]`。活跃请求每 20 秒续租；连续两次失败或返回 0 时取消上游请求，进入最长 15 秒 drain，并按已知 usage/保守估算结算 PostgreSQL reservation。
 
-### 3.3 `lease_release_v1`
+### 3.3 [`lease_release_v1`](scripts/lease_release_v1.lua)
 
-输入为 lease key、owner。`ZREM` 后若集合为空则 `DEL`，返回 `[removed_count]`。重复 release 返回 0 且视为成功，不能释放其他 owner。
+输入为 lease key、owner。owner 编码不合法返回 `[-1]`；合法时 `ZREM` 后若集合为空则 `DEL`，返回 `[removed_count]`。重复 release 返回 `[0]` 且视为成功，不能释放其他 owner。
+
+三份脚本的参数数量必须精确匹配，返回数组长度与整数类型固定。Acquire 的 code `0` 是容量拒绝而不是成功；调用方只能在释放任何数据库事务、且尚未创建 Group reservation 时按正 `retry_after_ms` 调度等待。参数错误 `-1`、Redis 命令错误、超时/断开、`NOSCRIPT` 同正文重载一次后仍失败、错误数组长度/类型或未知 code 均返回 `503 coordination_unavailable + Retry-After: 1`，不得本地计数、超卖放行或调用上游。
 
 ## 4. Rate Limit Lua v1
 
@@ -83,7 +85,7 @@ R1 只对 Account 使用该 lease 算法，不创建 User lease。owner token �
 
 脚本再次读取 Redis `TIME`，以其秒值计算 `floor(seconds/60)`，只选择尾部 epoch 与服务器当前分钟相符的一个 key；候选基部不一致、两个/零个候选匹配或参数不合法都返回 `[-1,0,0,0]` 且不写 key。选中后原子执行 `INCRBY`；首次写入设置 `PEXPIRE 120000`，若发现遗留 key 没有 TTL 则补设相同 TTL，但已有正 TTL 不续期。正常返回 `[allowed,current,limit,retry_after_ms]`：`current <= limit` 时 `[1,current,limit,0]`，否则 `[0,current,limit,距离下个 Redis 分钟边界的正毫秒数]`。超限计数仍保留，防止边界内反复重试绕过；任何未知数组形状/code 都按协调不可用处理。
 
-Group RPM 只在通过 API Key 鉴权的 `/v1/responses` 和 `/v1/chat/completions` 模型 POST 进入 Gateway Process Manager 时计数，流式/非流一视同仁；`/v1/models` 归 NonStream bulkhead、`/v1/usage` 归 Usage bulkhead，两个查询端点均不调用 RPM 脚本。Group RPM 的 key minute_epoch 必须由同一次 Redis `TIME` 结果构造。为避免客户端先取时间再执行脚本产生跨分钟竞争，应用传入两个候选 key（当前分钟与下一分钟），脚本再次读取 Redis `TIME` 并只操作匹配的一个；两个 key 使用相同 `{group_id}` hash tag。
+M2-E3 交付并验证 Group RPM 的 Redis 协调原语（既有 `fixed_window_increment_v1` 正文、版本登记、key/`TIME`/返回解析与 fail-closed 边界），但不提前接入尚未实现的 Gateway。M4-E1 才在通过 API Key 鉴权的 `/v1/responses` 和 `/v1/chat/completions` 模型 POST 进入 Gateway Process Manager 时调用该原语并计数，流式/非流一视同仁；`/v1/models` 归 NonStream bulkhead、`/v1/usage` 归 Usage bulkhead，两个查询端点均不调用 RPM 脚本。Group RPM 的 key minute_epoch 必须由同一次 Redis `TIME` 结果构造。为避免客户端先取时间再执行脚本产生跨分钟竞争，应用传入两个候选 key（当前分钟与下一分钟），脚本再次读取 Redis `TIME` 并只操作匹配的一个；两个 key 使用相同 `{group_id}` hash tag。
 
 登录的 `ip_hash` 取 `HMAC-SHA256(Auth:Login:RateLimitScopePepper, "ip" || 0x00 || normalized_ip_bytes)` 前 32 个小写 hex；IP 必须先规范化为网络地址 bytes，Redis key/value、日志和 metrics 都不得出现原始 IP。该 HMAC pepper 只服务 Login IP scope，不得复用 password-reset scope、Refresh/one-time token、TOTP 恢复码、API Key 或 JWT 密钥。
 

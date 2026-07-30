@@ -5,4 +5,6 @@ public interface IAccountLease : IAsyncDisposable
     AccountRoute Route { get; }
 
     ValueTask<Result<AccountRoute>> RenewAsync(CancellationToken cancellationToken);
+
+    ValueTask<Result<bool>> ReleaseAsync(CancellationToken cancellationToken);
 }
