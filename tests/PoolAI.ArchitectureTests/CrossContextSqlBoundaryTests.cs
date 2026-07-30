@@ -84,6 +84,18 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_supply_replace_account_credential"] = Supply,
         ["poolai_supply_select_account_credential_rewrap_batch"] = Supply,
         ["poolai_supply_rewrap_account_credential"] = Supply,
+        ["poolai_supply_base_url_is_valid"] = Supply,
+        ["poolai_supply_model_rules_are_valid"] = Supply,
+        ["poolai_supply_capabilities_are_valid"] = Supply,
+        ["poolai_supply_binding_arrays_are_valid"] = Supply,
+        ["poolai_supply_update_account"] = Supply,
+        ["poolai_supply_retire_account"] = Supply,
+        ["poolai_supply_create_channel"] = Supply,
+        ["poolai_supply_update_channel"] = Supply,
+        ["poolai_supply_retire_channel"] = Supply,
+        ["poolai_supply_create_group_configuration"] = Supply,
+        ["poolai_supply_patch_group_configuration"] = Supply,
+        ["poolai_supply_observe_group_readiness"] = Supply,
         ["poolai_validate_group_activation"] = GroupQuota,
         ["poolai_business_error"] = GroupQuota,
         ["poolai_quota_remaining"] = GroupQuota,
@@ -178,6 +190,15 @@ public sealed class CrossContextSqlBoundaryTests
         "poolai_api_key_rotate->poolai_api_key_text_is_valid",
         "poolai_guard_account_credential_revision->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_supply_create_account->poolai_secret_envelope_v1_is_structurally_valid",
+        "poolai_supply_create_account->poolai_supply_base_url_is_valid",
+        "poolai_supply_update_account->poolai_secret_envelope_v1_is_structurally_valid",
+        "poolai_supply_update_account->poolai_supply_base_url_is_valid",
+        "poolai_supply_create_channel->poolai_supply_capabilities_are_valid",
+        "poolai_supply_create_channel->poolai_supply_model_rules_are_valid",
+        "poolai_supply_update_channel->poolai_supply_capabilities_are_valid",
+        "poolai_supply_update_channel->poolai_supply_model_rules_are_valid",
+        "poolai_supply_create_group_configuration->poolai_supply_binding_arrays_are_valid",
+        "poolai_supply_patch_group_configuration->poolai_supply_binding_arrays_are_valid",
         "poolai_supply_replace_account_credential->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_supply_rewrap_account_credential->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_emit_quota_event->poolai_business_error",
@@ -225,6 +246,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0008_identity_api_keys_m1_e5.sql:$permission_audit$:e537d1ed39ebfeeb040b34e330e0e395a48a07fd55ccff41639a95cd7750d6ad",
         "0009_identity_api_key_text_validation_m1_e5.sql:$permission_audit$:5da19374d5c80bbec7b4712436347b3ab255c471b4261f828ac63031edcbefed",
         "0010_supply_account_credentials_m2_e1.sql:$permission_audit$:d47e055c58fb077526c58fe1250d118e3cbf6bfa0a3eb47b40fbdc0e1a9e301d",
+        "0011_supply_control_plane_m2_e2.sql:$permission_audit$:1f5d5ee0b8d2230dc59850c53806cb64b114bd645cddf1b21e7dcb03c44edccb",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -524,6 +546,14 @@ public sealed class CrossContextSqlBoundaryTests
             SELECT * FROM information_schema.tables;
             SELECT * FROM jsonb_array_elements('[]'::jsonb) AS item;
             """));
+        const string conflictUpdate = """
+            INSERT INTO public.accounts(id)
+            VALUES (gen_random_uuid())
+            ON CONFLICT (id) DO UPDATE
+            SET status = EXCLUDED.status;
+            """;
+        Assert.Empty(FindInvalidRelations(conflictUpdate));
+        Assert.Equal(["accounts"], ExtractOwnedRelations(conflictUpdate));
 
         Assert.Equal(
             ["poolai_subscription_assign->poolai_group_update"],
@@ -685,6 +715,15 @@ public sealed class CrossContextSqlBoundaryTests
             "SELECT q.group_id FROM public.group_token_quotas AS q, public.accounts AS a;"));
         Assert.True(HasCommaSeparatedRelation(
             "SELECT q . group_id FROM public . group_token_quotas AS q, public . accounts AS a;"));
+        Assert.False(HasCommaSeparatedRelation("""
+            SELECT
+                CASE WHEN account.status = 'active'
+                    THEN pg_catalog.jsonb_build_object('ready', true)
+                    ELSE NULL::jsonb
+                END,
+                account.id
+            FROM public.accounts AS account;
+            """));
 
         const string archiveEscape = """
             IF v_status = 'archived' THEN
@@ -1210,6 +1249,7 @@ public sealed class CrossContextSqlBoundaryTests
                 RegexOptions.CultureInvariant,
                 RegexTimeout)
             .Where(match => !IsTableFunctionReference(normalized, match))
+            .Where(match => !IsOnConflictActionUpdate(normalized, match))
             .Select(match => new RelationReference(
                 match.Groups["schema"].Value,
                 match.Groups["name"].Value))
@@ -1219,6 +1259,33 @@ public sealed class CrossContextSqlBoundaryTests
             .OrderBy(static relation => relation.Schema, StringComparer.Ordinal)
             .ThenBy(static relation => relation.Name, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static bool IsOnConflictActionUpdate(string sql, Match reference)
+    {
+        if (!string.Equals(
+                reference.Groups["verb"].Value,
+                "update",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int tokenEnd = reference.Index - 1;
+        while (tokenEnd >= 0 && char.IsWhiteSpace(sql[tokenEnd]))
+        {
+            tokenEnd--;
+        }
+
+        int tokenStart = tokenEnd;
+        while (tokenStart >= 0
+            && (char.IsLetterOrDigit(sql[tokenStart]) || sql[tokenStart] == '_'))
+        {
+            tokenStart--;
+        }
+
+        return sql.AsSpan(tokenStart + 1, tokenEnd - tokenStart)
+            .Equals("do", StringComparison.Ordinal);
     }
 
     private static bool IsTableFunctionReference(string sql, Match reference)
@@ -1382,7 +1449,7 @@ public sealed class CrossContextSqlBoundaryTests
         StripCommentsAndLiterals(sql),
         @"\b(?:FROM|JOIN)\s+(?:ONLY\s*\(\s*(?:public\.)?[a-z_][a-z0-9_]*\b\s*\)|(?:ONLY\s+)?(?:public\.)?[a-z_][a-z0-9_]*\b)"
         + @"(?:\s+(?:AS\s+)?[a-z_][a-z0-9_]*)?\s*,"
-        + @"|\)\s+(?:AS\s+)?[a-z_][a-z0-9_]*\s*,",
+        + @"|\)\s+(?:AS\s+)?(?!END\b)[a-z_][a-z0-9_]*\s*,",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         RegexTimeout);
 

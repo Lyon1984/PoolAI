@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141"
+    "sha256": "6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 10,
-    "maximum_compatible_version": 10,
+    "minimum_compatible_version": 11,
+    "maximum_compatible_version": 11,
     "migrations": [
       {
         "version": 1,
@@ -70,6 +70,12 @@
         "name": "0010_supply_account_credentials_m2_e1.sql",
         "source": "docs/database/0010_supply_account_credentials_m2_e1.sql",
         "sha256": "0de4b5e38ab8dee9f7d5b222e729947e825934241f2c9b8ae2598f89267174c0"
+      },
+      {
+        "version": 11,
+        "name": "0011_supply_control_plane_m2_e2.sql",
+        "source": "docs/database/0011_supply_control_plane_m2_e2.sql",
+        "sha256": "02b9eb0818b1e69b42253ef4b7d6a642f547815cd6e010e495a6c97785b9fac4"
       }
     ]
   },

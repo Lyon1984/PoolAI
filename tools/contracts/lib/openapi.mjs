@@ -44,6 +44,7 @@ const STRICT_ADMIN_LIST_QUERY_OPERATIONS = new Set([
 ])
 
 export const API_KEY_TEXT_PATTERN = String.raw`^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
+export const UPSTREAM_BASE_URL_PATTERN = String.raw`^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$`
 
 const API_KEY_NAME_INPUTS = [
   ['AdminUserApiKeyCreateRequest', 'name'],
@@ -408,6 +409,20 @@ function validateApiKeyTextInputs(openApi) {
         (parameter) => parameter?.$ref === '#/components/parameters/XChangeReason',
       ),
       `${operationId} must not tighten the shared XChangeReason parameter.`,
+    )
+  }
+}
+
+function validateUpstreamBaseUrlInputs(openApi) {
+  for (const schemaName of ['Account', 'AccountCreateRequest', 'AccountUpdateRequest']) {
+    const pointer = `#/components/schemas/${schemaName}/properties/base_url`
+    const schema = openApi.components?.schemas?.[schemaName]?.properties?.base_url
+    invariant(
+      schema?.type === 'string' &&
+        schema.format === 'uri' &&
+        schema.maxLength === 2048 &&
+        schema.pattern === UPSTREAM_BASE_URL_PATTERN,
+      `${pointer} must use the exact upstream Base URL safety contract.`,
     )
   }
 }
@@ -922,6 +937,7 @@ export function validateOpenApi(openApi, catalog = null) {
   const schemaNodes = validateSupportedSchemas(openApi)
   validateBodyErrorComponents(openApi)
   validateApiKeyTextInputs(openApi)
+  validateUpstreamBaseUrlInputs(openApi)
   const operations = validateOperations(openApi)
   const validateSchema = createSchemaValidator(openApi)
   const examples = validateEmbeddedExamples(openApi, validateSchema, catalog)

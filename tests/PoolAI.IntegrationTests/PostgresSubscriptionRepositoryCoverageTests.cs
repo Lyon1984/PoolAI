@@ -1455,10 +1455,12 @@ public sealed class PostgresSubscriptionRepositoryCoverageTests(PostgresRuntimeF
             using NpgsqlCommand supply = fixture.AdministratorDataSource.CreateCommand("""
                 WITH inserted_channel AS (
                     INSERT INTO public.channels (
-                        id, provider, name, model_rules, status
+                        id, provider, name, model_rules, capabilities, status
                     ) VALUES (
                         $1, 'openai', $2,
-                        '{"gpt-test":"gpt-test"}'::jsonb, 'active'
+                        '{"gpt-test":"gpt-test"}'::jsonb,
+                        '{"responses":true,"chat_completions":true,"function_tools":true,"streaming":true}'::jsonb,
+                        'active'
                     )
                     RETURNING id
                 ),

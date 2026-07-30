@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply;
+using PoolAI.Modules.Supply.Application;
 using PoolAI.Modules.Supply.Application.Ports;
 using PoolAI.Modules.Supply.Infrastructure.Workers;
 using PoolAI.Modules.Supply.Worker;
@@ -40,6 +41,50 @@ public sealed class SupplyAccountCredentialRewrapWorkerTests
             services,
             static descriptor =>
                 descriptor.ImplementationType == typeof(AccountCredentialRewrapService));
+    }
+
+    [Theory]
+    [InlineData("not-base64", "Idempotency:RequestHashPepper is invalid.")]
+    [InlineData("AQID", "Idempotency:RequestHashPepper must contain at least 256 bits.")]
+    public void SupplyControlPlaneResolutionRejectsInvalidRequestHashPepper(
+        string requestHashPepper,
+        string expectedMessage)
+    {
+        IConfiguration configuration = SupplyConfiguration(enabled: false);
+        configuration["Idempotency:RequestHashPepper"] = requestHashPepper;
+        ServiceCollection services = new();
+        services.AddSupplyModule(configuration);
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        InvalidOperationException exception =
+            Assert.Throws<InvalidOperationException>(() =>
+                provider.GetRequiredService<AccountControlPlanePolicy>());
+
+        Assert.Equal(expectedMessage, exception.Message);
+    }
+
+    [Fact]
+    public void WorkerSupplyRegistrationDoesNotReadApiOnlyRequestHashPepper()
+    {
+        IConfiguration configuration = SupplyConfiguration(enabled: false);
+        configuration["Idempotency:RequestHashPepper"] = null;
+        ServiceCollection services = new();
+
+        IServiceCollection returned = services.AddSupplyModule(configuration);
+
+        Assert.Same(services, returned);
+        using ServiceProvider provider = services.BuildServiceProvider();
+        Assert.Throws<InvalidOperationException>(() =>
+            provider.GetRequiredService<AccountControlPlanePolicy>());
+    }
+
+    [Fact]
+    public void AccountControlPlanePolicyRejectsWeakRequestHashPepper()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new AccountControlPlanePolicy(null!));
+        Assert.Throws<ArgumentException>(() =>
+            new AccountControlPlanePolicy(new byte[31]));
     }
 
     [Fact]
@@ -1040,6 +1085,8 @@ public sealed class SupplyAccountCredentialRewrapWorkerTests
             Enumerable.Repeat((byte)0x5a, 32).ToArray());
         Dictionary<string, string?> values = new(StringComparer.Ordinal)
         {
+            ["Idempotency:RequestHashPepper"] = Convert.ToBase64String(
+                Enumerable.Repeat((byte)0x5c, 32).ToArray()),
             ["Secrets:Envelope:CurrentKeyId"] = CurrentKeyId,
             ["Secrets:Envelope:CurrentKey"] = currentKey,
             [$"Secrets:Envelope:DecryptKeyRing:{CurrentKeyId}"] = currentKey,

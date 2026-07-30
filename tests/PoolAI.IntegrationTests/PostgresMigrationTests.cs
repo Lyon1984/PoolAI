@@ -1,3 +1,4 @@
+#pragma warning disable MA0051 // The migration smoke test keeps its ordered evidence in one flow.
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -61,6 +62,12 @@ public sealed partial class PostgresMigrationTests
             .ConfigureAwait(true);
         await AssertM2E1AccountCredentialPersistenceAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await EtagsWritesAndActivationEvidenceRemainIsolated(
+            connectionString,
+            cancellationToken).ConfigureAwait(true);
+        await LifecycleHealthAndRetirementReferencesAreIndependent(
+            connectionString,
+            cancellationToken).ConfigureAwait(true);
         await AssertOutboxFencingAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertAppliedMetadataDriftRejectedAsync(
             migrator,
@@ -169,7 +176,7 @@ public sealed partial class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(10L, Assert.IsType<long>(scalar));
+        Assert.Equal(11L, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(
@@ -780,3 +787,4 @@ public sealed partial class PostgresMigrationTests
         return $"{image}@{digest}";
     }
 }
+#pragma warning restore MA0051

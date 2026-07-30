@@ -529,23 +529,25 @@ public sealed class PostgresQuotaCrashCompensationTests
     {
         await InsertGroupAsync(session, scenario, cancellationToken).ConfigureAwait(false);
         await InsertChannelAsync(session, scenario, cancellationToken).ConfigureAwait(false);
-        using (NpgsqlCommand configuration = session.CreateCommand("""
-                   INSERT INTO public.group_supply_configurations (group_id, channel_id)
-                   VALUES ($1, $2);
-                   """))
-        {
-            configuration.Parameters.AddWithValue(scenario.GroupId);
-            configuration.Parameters.AddWithValue(scenario.ChannelId);
-            await AssertSingleRowAsync(configuration, cancellationToken).ConfigureAwait(false);
-        }
-
-        using NpgsqlCommand binding = session.CreateCommand("""
-            INSERT INTO public.group_accounts (group_id, account_id, is_enabled)
-            VALUES ($1, $2, true);
+        using NpgsqlCommand configuration = session.CreateCommand("""
+            SELECT disposition
+            FROM public.poolai_supply_create_group_configuration(
+                $1,
+                $2,
+                ARRAY[$3]::uuid[],
+                ARRAY[NULL::integer],
+                ARRAY[NULL::integer],
+                ARRAY[true]::boolean[]
+            );
             """);
-        binding.Parameters.AddWithValue(scenario.GroupId);
-        binding.Parameters.AddWithValue(scenario.AccountId);
-        await AssertSingleRowAsync(binding, cancellationToken).ConfigureAwait(false);
+        configuration.Parameters.AddWithValue(scenario.GroupId);
+        configuration.Parameters.AddWithValue(scenario.ChannelId);
+        configuration.Parameters.AddWithValue(scenario.AccountId);
+        Assert.Equal(
+            "created",
+            Assert.IsType<string>(await configuration
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private static async ValueTask InsertGroupAsync(
@@ -637,13 +639,48 @@ public sealed class PostgresQuotaCrashCompensationTests
         CrashScenario scenario,
         CancellationToken cancellationToken)
     {
-        using NpgsqlCommand command = session.CreateCommand("""
-            INSERT INTO public.channels (id, provider, name, model_rules, status)
-            VALUES ($1, 'openai', $2, '{"gpt-ac39":"gpt-ac39"}'::jsonb, 'active');
+        using (NpgsqlCommand create = session.CreateCommand("""
+                   SELECT disposition
+                   FROM public.poolai_supply_create_channel(
+                       $1,
+                       'openai',
+                       $2,
+                       '{"gpt-ac39":"gpt-ac39"}'::jsonb,
+                       '{"responses":true,"chat_completions":true,"function_tools":true,"streaming":true}'::jsonb
+                   );
+                   """))
+        {
+            create.Parameters.AddWithValue(scenario.ChannelId);
+            create.Parameters.AddWithValue(scenario.ChannelName);
+            Assert.Equal(
+                "created",
+                Assert.IsType<string>(await create
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
+        }
+
+        using NpgsqlCommand activate = session.CreateCommand("""
+            SELECT disposition
+            FROM public.poolai_supply_update_channel(
+                $1,
+                1,
+                false,
+                NULL,
+                true,
+                'active',
+                false,
+                NULL::jsonb,
+                false,
+                NULL::jsonb,
+                'AC-039 fixture activation'
+            );
             """);
-        command.Parameters.AddWithValue(scenario.ChannelId);
-        command.Parameters.AddWithValue(scenario.ChannelName);
-        await AssertSingleRowAsync(command, cancellationToken).ConfigureAwait(false);
+        activate.Parameters.AddWithValue(scenario.ChannelId);
+        Assert.Equal(
+            "updated",
+            Assert.IsType<string>(await activate
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)));
     }
 
     private static async ValueTask InsertAccessGrantAsync(

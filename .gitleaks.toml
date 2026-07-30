@@ -58,3 +58,13 @@ paths = [
   '''^docs/contracts/compatibility-windows-v1\.json$''',
 ]
 regexes = ['''^(14380eab5b05f3b58ecb879969314868ef9cfdf23e6b6e39b3a283e211ebc58c|1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141)$''']
+
+[[allowlists]]
+description = "Accepted ADR 0010 public OpenAPI digests are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0010-freeze-upstream-account-base-url-safety-contract\.md$''',
+  '''^docs/contracts/compatibility-windows-v1\.json$''',
+]
+regexes = ['''^(1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141|6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb)$''']

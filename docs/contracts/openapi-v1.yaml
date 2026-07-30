@@ -6329,6 +6329,11 @@ components:
         base_url:
           type: string
           format: uri
+          maxLength: 2048
+          pattern: '^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$'
+          description: >-
+            规范的绝对上游 Base URL。非 loopback 只允许 HTTPS；HTTP 仅允许精确
+            localhost、127.0.0.1 或 [::1]。禁止 userinfo、query 和 fragment。
         credential_prefix:
           type: string
         status:
@@ -6374,6 +6379,11 @@ components:
         base_url:
           type: string
           format: uri
+          maxLength: 2048
+          pattern: '^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$'
+          description: >-
+            规范的绝对上游 Base URL。非 loopback 只允许 HTTPS；HTTP 仅允许精确
+            localhost、127.0.0.1 或 [::1]。禁止 userinfo、query 和 fragment。
         credential:
           type: string
           minLength: 16
@@ -6420,6 +6430,11 @@ components:
         base_url:
           type: string
           format: uri
+          maxLength: 2048
+          pattern: '^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$'
+          description: >-
+            规范的绝对上游 Base URL。非 loopback 只允许 HTTPS；HTTP 仅允许精确
+            localhost、127.0.0.1 或 [::1]。禁止 userinfo、query 和 fragment。
         credential:
           type: string
           minLength: 16
