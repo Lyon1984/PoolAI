@@ -2,7 +2,7 @@ namespace PoolAI.Modules.Routing.Abstractions;
 
 public interface IAccountRouter
 {
-    ValueTask<Result<AccountRoute>> RouteAsync(
+    ValueTask<Result<IAccountLease>> RouteAsync(
         RouteAccountCommand command,
         CancellationToken cancellationToken);
 }

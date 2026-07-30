@@ -4,4 +4,6 @@ public sealed record RouteAccountCommand(
     EntityId GroupId,
     string Model,
     EntityId RequestId,
-    EntityId AttemptId);
+    EntityId AttemptId,
+    long GroupPolicyVersion,
+    string? SessionAffinityHash = null);
