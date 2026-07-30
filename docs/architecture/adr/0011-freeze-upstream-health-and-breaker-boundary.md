@@ -1,12 +1,12 @@
 # ADR 0011: Freeze the upstream-health and shared-breaker boundary
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-07-30
 - Decider: PoolAI architecture, Supply, Routing, operations, and security owner (`@Lyon1984`)
 - Relates to: DEC-030, DEC-037, DEC-041, AC-042, [M2-E4 Issue #18](https://github.com/Lyon1984/PoolAI/issues/18), ADR 0002, ADR 0010, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Architecture approval evidence: pending
-- Coupled OpenAPI target approval: pending
+- Architecture approval evidence: [Issue #44 permanent approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5135660266)
+- Coupled OpenAPI target approval: [Issue #44 permanent approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5135813781)
 
 ## Context
 
@@ -39,20 +39,21 @@ Supply Health Worker. Stored Base URL syntax alone is not sufficient SSRF
 protection, and no PostgreSQL transaction may remain open during DNS, HTTP,
 TLS, backoff, or response parsing.
 
-## Proposed decision
+## Decision
 
-This proposal becomes effective only after `@Lyon1984` explicitly approves the
-exact candidate and this ADR is changed to **Accepted** with permanent evidence.
-The existing Account PATCH operation also gains a normative description of the
-same-write credential-replacement rule below. Its exact OpenAPI target SHA-256
+This decision was accepted by `@Lyon1984` through the permanent architecture
+approval linked above. The existing Account PATCH operation also gains a
+normative description of the same-write credential-replacement rule below. Its
+exact OpenAPI target SHA-256
 `ba965851bd6b9b4996ecab2bdf9c947e77981a40e559005ff6618a5269015afe`
-requires a separate permanent approval even though the compatibility analyzer
-reports no structural diagnostic and therefore no compatibility window is
-opened. Architecture, OpenAPI, database, and Redis approvals do not substitute
-for one another.
-Until then it is a contract candidate, not authorization to change a Host graph,
-register or execute Lua remotely, run a database migration, send a real
-credential, deploy, merge, close M2-E4, or pass M2 Exit.
+was separately approved through the coupled OpenAPI evidence linked above; the
+compatibility analyzer reports no structural diagnostic and therefore no
+compatibility window is opened. Architecture, OpenAPI, the independently
+approved [migration 0012](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5135902002),
+and the exact [Redis contract/scripts](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5135961558)
+remain separate approvals and do not substitute for one another. None of these
+approvals authorizes remote Lua execution, a remote database migration, a real
+credential operation, deployment, M2-E4 closeout, or M2 Exit.
 
 ### Ownership and dependency direction
 
@@ -340,7 +341,7 @@ Any database health-writer change is forward-only once applied and must use a
 new migration rather than modifying signed migrations 0001 through 0011. This
 ADR neither supplies nor approves that migration and authorizes no remote
 database, Redis, upstream, credential, deployment, or data-repair operation.
-Before the coupled OpenAPI target is approved and merged, its rollback is
+Before the independently approved coupled OpenAPI target is merged, its rollback is
 candidate withdrawal and regeneration from the already approved M2-E2
 contract. After merge, the target becomes the ordinary v1 baseline; this ADR
 does not create a reusable exemption for later description or schema changes.
