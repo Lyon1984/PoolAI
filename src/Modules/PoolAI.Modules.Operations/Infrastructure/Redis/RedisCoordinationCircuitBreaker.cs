@@ -485,10 +485,14 @@ internal sealed class RedisCoordinationCircuitBreaker(
         int length,
         out RedisResult[] parts)
     {
+        parts = [];
+        if (result is null || result.Resp2Type != ResultType.Array)
+        {
+            return false;
+        }
+
         parts = (RedisResult[]?)result ?? [];
-        return result is not null
-            && result.Resp2Type == ResultType.Array
-            && parts.Length == length;
+        return parts.Length == length;
     }
 
     private static bool TryLong(RedisResult value, out long parsed)

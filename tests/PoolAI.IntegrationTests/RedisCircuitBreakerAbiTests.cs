@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.DependencyInjection;
+using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Operations.Infrastructure.Redis;
 using StackExchange.Redis;
@@ -184,6 +186,127 @@ public sealed class RedisCircuitBreakerAbiTests(PostgresRuntimeFixture fixture)
             firstClient,
             secondClient,
             workerClient).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "Redis")]
+    public async Task AdapterLoadsPinnedScriptsAndUsesRedisTimeForBreakerFences()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        ICoordinationCircuitBreaker adapter = _fixture.WorkerServices
+            .GetRequiredService<ICoordinationCircuitBreaker>();
+        ConnectionMultiplexer redis = await ConnectionMultiplexer
+            .ConnectAsync(_fixture.RedisConnectionString)
+            .ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable redisLease =
+            redis.ConfigureAwait(true);
+        IDatabase database = redis.GetDatabase();
+        EntityId accountId = EntityId.New();
+        BreakerKeys keys = AdapterKeys(accountId);
+        _ = await database.KeyDeleteAsync(keys.All).ConfigureAwait(true);
+
+        await AssertAdapterRecordAndOpenAsync(
+            adapter,
+            accountId,
+            cancellationToken).ConfigureAwait(true);
+        await AssertAdapterProbeFenceAsync(
+            adapter,
+            database,
+            accountId,
+            keys,
+            cancellationToken).ConfigureAwait(true);
+
+        _ = await database.KeyDeleteAsync(keys.All).ConfigureAwait(true);
+    }
+
+    private static async Task AssertAdapterRecordAndOpenAsync(
+        ICoordinationCircuitBreaker adapter,
+        EntityId accountId,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = TimeProvider.System.GetUtcNow();
+        CoordinationBreakerRecordResult healthy = await adapter.RecordAsync(
+            new CoordinationBreakerRecordRequest(
+                accountId,
+                CoordinationBreakerOutcome.Success,
+                RetryAfter: null,
+                JitterBasisPoints: 0,
+                SourceStatus: 200,
+                CoordinationBreakerObservationMode.Passive),
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            CoordinationBreakerRecordDisposition.Recorded,
+            healthy.Disposition);
+        Assert.Equal(CoordinationBreakerState.Closed, healthy.State);
+        Assert.Equal(
+            CoordinationBreakerAction.WriteHealthy,
+            healthy.Action);
+
+        CoordinationBreakerRecordResult rateLimited =
+            await adapter.RecordAsync(
+                new CoordinationBreakerRecordRequest(
+                    accountId,
+                    CoordinationBreakerOutcome.RateLimited,
+                    RetryAfter: null,
+                    JitterBasisPoints: 0,
+                    SourceStatus: 429,
+                    CoordinationBreakerObservationMode.Passive,
+                    RetryAfterAt: now.AddMinutes(5)),
+                cancellationToken).ConfigureAwait(true);
+        Assert.Equal(CoordinationBreakerState.Open, rateLimited.State);
+        Assert.Equal(
+            CoordinationBreakerAction.WriteCooling,
+            rateLimited.Action);
+        Assert.True(rateLimited.OpenUntil > now);
+
+        CoordinationProbeAcquireResult rejected =
+            await adapter.AcquireProbeAsync(
+                new CoordinationProbeAcquireRequest(accountId, FirstOwner),
+                cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            CoordinationProbeAcquireDisposition.Rejected,
+            rejected.Disposition);
+        Assert.True(rejected.RetryAfter > TimeSpan.Zero);
+    }
+
+    private static async Task AssertAdapterProbeFenceAsync(
+        ICoordinationCircuitBreaker adapter,
+        IDatabase database,
+        EntityId accountId,
+        BreakerKeys keys,
+        CancellationToken cancellationToken)
+    {
+        _ = await database.KeyDeleteAsync(keys.All).ConfigureAwait(true);
+        await SeedHalfOpenAsync(database, keys, openCount: 1)
+            .ConfigureAwait(true);
+        CoordinationProbeAcquireResult acquired =
+            await adapter.AcquireProbeAsync(
+                new CoordinationProbeAcquireRequest(accountId, SecondOwner),
+                cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            CoordinationProbeAcquireDisposition.Acquired,
+            acquired.Disposition);
+        Assert.True(
+            acquired.ProbeExpiresAt > TimeProvider.System.GetUtcNow());
+
+        CoordinationProbeCompleteResult completed =
+            await adapter.CompleteProbeAsync(
+                new CoordinationProbeCompleteRequest(
+                    accountId,
+                    SecondOwner,
+                    CoordinationBreakerOutcome.Success,
+                    RetryAfter: null,
+                    JitterBasisPoints: 0,
+                    SourceStatus: 200),
+                cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            CoordinationProbeCompleteDisposition.Completed,
+            completed.Disposition);
+        Assert.Equal(CoordinationBreakerState.HalfOpen, completed.State);
+        Assert.Equal(
+            CoordinationBreakerAction.WriteUnknown,
+            completed.Action);
+        Assert.Equal(1, completed.HalfOpenSuccesses);
     }
 
     private static async Task AssertUnknownAndAuthBlockedRemainIneligibleAsync(
@@ -1260,6 +1383,16 @@ public sealed class RedisCircuitBreakerAbiTests(PostgresRuntimeFixture fixture)
         string unique = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         string prefix = $"poolai:r1:breaker-abi:{unique}:";
         string tag = $"{{{unique}}}";
+        return new BreakerKeys(
+            $"{prefix}breaker:account:v1:{tag}",
+            $"{prefix}cooldown:account:v1:{tag}",
+            $"{prefix}breaker-probe:account:v1:{tag}");
+    }
+
+    private static BreakerKeys AdapterKeys(EntityId accountId)
+    {
+        const string prefix = "poolai:r1:integration:";
+        string tag = $"{{{accountId.Value:D}}}";
         return new BreakerKeys(
             $"{prefix}breaker:account:v1:{tag}",
             $"{prefix}cooldown:account:v1:{tag}",

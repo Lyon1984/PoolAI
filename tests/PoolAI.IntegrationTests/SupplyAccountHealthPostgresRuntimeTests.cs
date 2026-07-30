@@ -4,6 +4,7 @@ using Npgsql;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply.Abstractions;
+using PoolAI.Modules.Supply.Infrastructure.Health;
 using PoolAI.Modules.Supply.Infrastructure.Persistence;
 
 namespace PoolAI.IntegrationTests;
@@ -482,6 +483,145 @@ public sealed class SupplyAccountHealthPostgresRuntimeTests(
                 cancellationToken).ConfigureAwait(true));
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ProbeCatalogReturnsOnlyContractEligibleAccountShapes()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId disabledUnknownId = EntityId.New();
+        EntityId activeUnknownId = EntityId.New();
+        await CreateAccountAsync(disabledUnknownId, cancellationToken)
+            .ConfigureAwait(true);
+        await CreateAccountAsync(activeUnknownId, cancellationToken)
+            .ConfigureAwait(true);
+        await ActivateAccountAsync(
+            activeUnknownId,
+            expectedVersion: 1,
+            cancellationToken).ConfigureAwait(true);
+        PostgresAccountHealthProbeCatalog catalog = new(
+            _fixture.WorkerServices.GetRequiredService<NpgsqlDataSource>());
+
+        Result<IReadOnlyList<AccountHealthProbeCandidate>> result =
+            await catalog.GetDueBatchAsync(
+                afterExclusive: null,
+                maximumCount: 1000,
+                healthyProbeInterval: TimeSpan.FromSeconds(30),
+                cancellationToken).ConfigureAwait(true);
+
+        Assert.True(result.IsSuccess);
+        AccountHealthProbeCandidate disabled = Assert.Single(
+            result.Value,
+            candidate => candidate.AccountId == disabledUnknownId);
+        Assert.Equal(AccountHealth.Unknown, disabled.Health);
+        Assert.Equal(4, disabled.ConcurrencyLimit);
+        Assert.Null(disabled.RetryAt);
+        Assert.Null(disabled.LastCheckedAt);
+        Assert.Equal(1, disabled.AccountVersion);
+        Assert.Equal(1, disabled.CredentialRevision);
+        Assert.False(disabled.IsActive);
+        AccountHealthProbeCandidate active = Assert.Single(
+            result.Value,
+            candidate => candidate.AccountId == activeUnknownId);
+        Assert.Equal(AccountHealth.Unknown, active.Health);
+        Assert.Equal(2, active.AccountVersion);
+        Assert.Equal(1, active.CredentialRevision);
+        Assert.True(active.IsActive);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ProbeCatalogRejectsUnboundedBatchAndCadenceBeforeIo()
+    {
+        PostgresAccountHealthProbeCatalog catalog = new(
+            _fixture.WorkerServices.GetRequiredService<NpgsqlDataSource>());
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => catalog.GetDueBatchAsync(
+                afterExclusive: null,
+                maximumCount: 0,
+                healthyProbeInterval: TimeSpan.FromSeconds(30),
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => catalog.GetDueBatchAsync(
+                afterExclusive: null,
+                maximumCount: 1001,
+                healthyProbeInterval: TimeSpan.FromSeconds(30),
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => catalog.GetDueBatchAsync(
+                afterExclusive: null,
+                maximumCount: 8,
+                healthyProbeInterval: TimeSpan.FromMilliseconds(999),
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => catalog.GetDueBatchAsync(
+                afterExclusive: null,
+                maximumCount: 8,
+                healthyProbeInterval: TimeSpan.FromHours(25),
+                cancellationToken).AsTask()).ConfigureAwait(true);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ProbeSnapshotTracksPristineDisabledActiveAndRetiredFences()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId accountId = EntityId.New();
+        await CreateAccountAsync(accountId, cancellationToken).ConfigureAwait(true);
+        PostgresAccountHealthProbeSnapshotReader reader = new(
+            _fixture.WorkerServices.GetRequiredService<NpgsqlDataSource>());
+
+        AccountHealthProbeSnapshot? disabled = await reader.ReadAsync(
+            accountId,
+            cancellationToken).ConfigureAwait(true);
+        AccountHealthProbeSnapshot disabledSnapshot = Assert.IsType<
+            AccountHealthProbeSnapshot>(disabled);
+        Assert.Equal(accountId, disabledSnapshot.AccountId);
+        Assert.Equal(new Uri("https://example.test/v1"), disabledSnapshot.BaseUri);
+        Assert.Equal(1, disabledSnapshot.CredentialRevision);
+        Assert.Equal(1, disabledSnapshot.AccountVersion);
+        Assert.Equal("disabled", disabledSnapshot.Lifecycle);
+        Assert.Equal(
+            "m2-e4-health-k1",
+            disabledSnapshot.CredentialEnvelope.GetProperty("kid").GetString());
+        Assert.True(await reader.IsCurrentAsync(
+            disabledSnapshot,
+            cancellationToken).ConfigureAwait(true));
+
+        Assert.Null(await reader.ReadAsync(
+            EntityId.New(),
+            cancellationToken).ConfigureAwait(true));
+
+        await ActivateAccountAsync(
+            accountId,
+            expectedVersion: 1,
+            cancellationToken).ConfigureAwait(true);
+        Assert.False(await reader.IsCurrentAsync(
+            disabledSnapshot,
+            cancellationToken).ConfigureAwait(true));
+        AccountHealthProbeSnapshot active = Assert.IsType<
+            AccountHealthProbeSnapshot>(await reader.ReadAsync(
+                accountId,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal("active", active.Lifecycle);
+        Assert.Equal(2, active.AccountVersion);
+        Assert.True(await reader.IsCurrentAsync(
+            active,
+            cancellationToken).ConfigureAwait(true));
+
+        await RetireAccountAsync(
+            accountId,
+            expectedVersion: 2,
+            cancellationToken).ConfigureAwait(true);
+        Assert.False(await reader.IsCurrentAsync(
+            active,
+            cancellationToken).ConfigureAwait(true));
+        Assert.Null(await reader.ReadAsync(
+            accountId,
+            cancellationToken).ConfigureAwait(true));
+    }
+
     private PostgresAccountHealthWriter ApiWriter() => new(
         _fixture.ApiServices.GetRequiredService<IUnitOfWorkFactory>(),
         _fixture.ApiServices.GetRequiredService<IAuditAppender>());
@@ -545,6 +685,36 @@ public sealed class SupplyAccountHealthPostgresRuntimeTests(
         command.Parameters.AddWithValue(expectedVersion);
         Assert.Equal(
             "retired",
+            Assert.IsType<string>(
+                await command.ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(true)));
+    }
+
+    private async ValueTask ActivateAccountAsync(
+        EntityId accountId,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        NpgsqlDataSource dataSource =
+            _fixture.ApiServices.GetRequiredService<NpgsqlDataSource>();
+        using NpgsqlCommand command = dataSource.CreateCommand("""
+            SELECT disposition
+            FROM public.poolai_supply_update_account(
+                $1, $2,
+                false, NULL::text,
+                false, NULL::text,
+                false, NULL::jsonb, NULL::text, NULL::text,
+                true, 'active',
+                false, NULL::integer,
+                false, NULL::integer,
+                false, NULL::integer,
+                'activate for M2-E4 probe evidence'
+            );
+            """);
+        command.Parameters.AddWithValue(accountId.Value);
+        command.Parameters.AddWithValue(expectedVersion);
+        Assert.Equal(
+            "updated",
             Assert.IsType<string>(
                 await command.ExecuteScalarAsync(cancellationToken)
                     .ConfigureAwait(true)));
