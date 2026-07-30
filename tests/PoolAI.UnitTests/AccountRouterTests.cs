@@ -34,7 +34,7 @@ public sealed class AccountRouterTests
             Candidate(AccountAId, groupId: OtherGroupId)));
         QueueLeaseSet leaseSet = new();
         RecordingAffinityStore affinities = new();
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -52,7 +52,7 @@ public sealed class AccountRouterTests
     {
         StubCandidateReader reader = new(SuccessCandidates());
         QueueLeaseSet leaseSet = new();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -73,7 +73,7 @@ public sealed class AccountRouterTests
                 "PostgreSQL is unavailable.",
                 retryAfterSeconds: 3));
         QueueLeaseSet leaseSet = new();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -92,7 +92,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = new();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
         RouteAccountCommand command = Command() with { Model = model! };
 
         Result<IAccountLease> result = await router.RouteAsync(
@@ -114,7 +114,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = new();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
         RouteAccountCommand command = Command() with
         {
             GroupPolicyVersion = groupPolicyVersion,
@@ -140,7 +140,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = new();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: affinityHash),
@@ -163,7 +163,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(SuccessCandidates(first, second));
         QueueLeaseSet leaseSet = new();
         leaseSet.AcquireResults.Enqueue(CoordinationLeaseAcquireResult.Unavailable);
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -175,6 +175,98 @@ public sealed class AccountRouterTests
         CoordinationLeaseAcquireRequest request =
             Assert.Single(leaseSet.AcquireRequests);
         Assert.Equal(AccountRouter.LeaseKey(AccountAId), request.KeyBase);
+    }
+
+    [Fact]
+    public async Task OpenSharedBreakerIsExcludedBeforeAccountLeaseAcquisition()
+    {
+        StubCandidateReader reader = new(SuccessCandidates(
+            Candidate(AccountAId, priority: 20),
+            Candidate(AccountBId, channelId: ChannelBId, priority: 10)));
+        QueueLeaseSet leaseSet = AcquiringLeaseSet();
+        StubCircuitBreaker breakers = new();
+        breakers.ReadResults.Enqueue(Result.Success(new AccountBreakerSnapshot(
+            AccountBreakerState.Open,
+            Samples: 10,
+            Failures: 5,
+            ConsecutiveFailures: 5,
+            OpenUntil: FirstExpiry,
+            AccountBreakerAction.MarkCooling)));
+        breakers.ReadResults.Enqueue(StubCircuitBreaker.ClosedResult);
+        AccountRouter router = Router(
+            reader,
+            leaseSet,
+            new RecordingAffinityStore(),
+            breakers);
+
+        Result<IAccountLease> result = await router.RouteAsync(
+            Command(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(AccountBId, result.Value.Route.AccountId);
+        CoordinationLeaseAcquireRequest request =
+            Assert.Single(leaseSet.AcquireRequests);
+        Assert.Equal(AccountRouter.LeaseKey(AccountBId), request.KeyBase);
+        Assert.Equal([AccountAId, AccountBId], breakers.ReadAccountIds);
+    }
+
+    [Fact]
+    public async Task SharedBreakerReadFailureFailsClosedBeforeAccountLease()
+    {
+        StubCandidateReader reader = new(
+            SuccessCandidates(Candidate(AccountAId)));
+        QueueLeaseSet leaseSet = new();
+        StubCircuitBreaker breakers = new();
+        breakers.ReadResults.Enqueue(
+            Result.Failure<AccountBreakerSnapshot>(
+                "coordination_unavailable",
+                "Redis coordination is unavailable.",
+                retryAfterSeconds: 1));
+        AccountRouter router = Router(
+            reader,
+            leaseSet,
+            new RecordingAffinityStore(),
+            breakers);
+
+        Result<IAccountLease> result = await router.RouteAsync(
+            Command(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("coordination_unavailable", result.Error.Code);
+        Assert.Empty(leaseSet.AcquireRequests);
+    }
+
+    [Fact]
+    public async Task HalfOpenSharedBreakerCannotBeUsedAsARegularRoute()
+    {
+        StubCandidateReader reader = new(
+            SuccessCandidates(Candidate(AccountAId)));
+        QueueLeaseSet leaseSet = new();
+        StubCircuitBreaker breakers = new();
+        breakers.ReadResults.Enqueue(Result.Success(new AccountBreakerSnapshot(
+            AccountBreakerState.HalfOpen,
+            Samples: 10,
+            Failures: 5,
+            ConsecutiveFailures: 5,
+            OpenUntil: FirstExpiry,
+            AccountBreakerAction.None)));
+        AccountRouter router = Router(
+            reader,
+            leaseSet,
+            new RecordingAffinityStore(),
+            breakers);
+
+        Result<IAccountLease> result = await router.RouteAsync(
+            Command(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("no_available_account", result.Error.Code);
+        Assert.Equal(1, result.Error.RetryAfterSeconds);
+        Assert.Equal([AccountAId], breakers.ReadAccountIds);
+        Assert.Empty(leaseSet.AcquireRequests);
     }
 
     [Fact]
@@ -200,7 +292,7 @@ public sealed class AccountRouterTests
                 activeCount: 1,
                 expiresAt: FirstExpiry,
                 renewed: false));
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -240,7 +332,7 @@ public sealed class AccountRouterTests
             CoordinationLeaseAcquireResult.CapacityExceeded(
                 activeCount: 2,
                 retryAfter: TimeSpan.FromMilliseconds(1_001)));
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -263,7 +355,7 @@ public sealed class AccountRouterTests
                 ActiveCount: 0,
                 ExpiresAt: default,
                 RetryAfter: TimeSpan.Zero));
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -361,7 +453,7 @@ public sealed class AccountRouterTests
                 GroupPolicyVersion: 11,
                 SupplyConfigurationVersion: 9),
         };
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -389,7 +481,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(SuccessCandidates(expected, other));
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         RecordingAffinityStore affinities = new();
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -420,7 +512,7 @@ public sealed class AccountRouterTests
                 GroupPolicyVersion: 10,
                 SupplyConfigurationVersion: stale.ConfigurationVersion),
         };
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -448,7 +540,7 @@ public sealed class AccountRouterTests
                 GroupPolicyVersion: 11,
                 SupplyConfigurationVersion: 8),
         };
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -470,7 +562,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -502,7 +594,7 @@ public sealed class AccountRouterTests
                 GroupPolicyVersion: 11,
                 SupplyConfigurationVersion: sticky.ConfigurationVersion),
         };
-        AccountRouter router = new(reader, leaseSet, affinities);
+        AccountRouter router = Router(reader, leaseSet, affinities);
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(sessionHash: SessionHash),
@@ -522,7 +614,7 @@ public sealed class AccountRouterTests
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Released);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             reader,
             leaseSet,
             new CancelingAffinityStore(cancellation));
@@ -549,7 +641,7 @@ public sealed class AccountRouterTests
         StubCandidateReader reader = new(
             SuccessCandidates(Candidate(AccountAId)));
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
-        AccountRouter router = new(reader, leaseSet, new RecordingAffinityStore());
+        AccountRouter router = Router(reader, leaseSet, new RecordingAffinityStore());
 
         Result<IAccountLease> result = await router.RouteAsync(
             Command(),
@@ -580,7 +672,7 @@ public sealed class AccountRouterTests
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.RenewResults.Enqueue(
             CoordinationLeaseRenewResult.Renewed(RenewedExpiry));
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -607,7 +699,7 @@ public sealed class AccountRouterTests
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.RenewResults.Enqueue(CoordinationLeaseRenewResult.Lost);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -636,7 +728,7 @@ public sealed class AccountRouterTests
         leaseSet.RenewResults.Enqueue(CoordinationLeaseRenewResult.Unavailable);
         leaseSet.RenewResults.Enqueue(
             CoordinationLeaseRenewResult.Renewed(RenewedExpiry));
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -665,7 +757,7 @@ public sealed class AccountRouterTests
             new CoordinationLeaseRenewResult(
                 (CoordinationLeaseRenewDisposition)int.MaxValue,
                 ExpiresAt: default));
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -687,7 +779,7 @@ public sealed class AccountRouterTests
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Released);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -717,7 +809,7 @@ public sealed class AccountRouterTests
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.NotOwned);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -743,7 +835,7 @@ public sealed class AccountRouterTests
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Unavailable);
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Released);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -769,7 +861,7 @@ public sealed class AccountRouterTests
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseException = new ObjectDisposedException("coordination");
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -788,7 +880,7 @@ public sealed class AccountRouterTests
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Released);
-        AccountRouter router = new(
+        AccountRouter router = Router(
             new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
             leaseSet,
             new RecordingAffinityStore());
@@ -816,6 +908,17 @@ public sealed class AccountRouterTests
                 renewed: false));
         return leaseSet;
     }
+
+    private static AccountRouter Router(
+        IAccountCandidateReader candidates,
+        ICoordinationLeaseSet leases,
+        IRouteAffinityStore affinities,
+        IAccountCircuitBreaker? breakers = null) =>
+        new(
+            candidates,
+            leases,
+            affinities,
+            breakers ?? new StubCircuitBreaker());
 
     private static Result<IReadOnlyList<AccountCandidate>> SuccessCandidates(
         params AccountCandidate[] candidates) =>
@@ -885,6 +988,45 @@ public sealed class AccountRouterTests
             Requests.Add(new CandidateReadRequest(groupId, model, cancellationToken));
             return ValueTask.FromResult(result);
         }
+    }
+
+    private sealed class StubCircuitBreaker : IAccountCircuitBreaker
+    {
+        internal static Result<AccountBreakerSnapshot> ClosedResult { get; } =
+            Result.Success(new AccountBreakerSnapshot(
+                AccountBreakerState.Closed,
+                Samples: 0,
+                Failures: 0,
+                ConsecutiveFailures: 0,
+                OpenUntil: null,
+                AccountBreakerAction.None));
+
+        internal Queue<Result<AccountBreakerSnapshot>> ReadResults { get; } = [];
+
+        internal List<EntityId> ReadAccountIds { get; } = [];
+
+        public ValueTask<Result<AccountBreakerSnapshot>> ReadAsync(
+            EntityId accountId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ReadAccountIds.Add(accountId);
+            return ValueTask.FromResult(
+                ReadResults.Count == 0
+                    ? ClosedResult
+                    : ReadResults.Dequeue());
+        }
+
+        public ValueTask<Result<AccountBreakerSnapshot>> RecordAsync(
+            AccountBreakerRecordCommand command,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<Result<AccountBreakerProbeAcquireResult>>
+            TryAcquireProbeAsync(
+                EntityId accountId,
+                CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class QueueLeaseSet : ICoordinationLeaseSet

@@ -136,7 +136,7 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
                 cancellationToken).ConfigureAwait(true);
             Assert.Equal(2, beforeReplacement.Version);
             Assert.Equal(1, beforeReplacement.CredentialRevision);
-            Assert.Equal("degraded", beforeReplacement.HealthStatus);
+            Assert.Equal("cooling", beforeReplacement.HealthStatus);
             Assert.NotNull(beforeReplacement.RateLimitedUntil);
             Assert.NotNull(beforeReplacement.LastHealthAt);
 
@@ -576,6 +576,9 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
         EntityId accountId,
         CancellationToken cancellationToken)
     {
+        AccountRow current = await ReadAccountAsync(
+            accountId,
+            cancellationToken).ConfigureAwait(false);
         IUnitOfWork unitOfWork = await WorkerFactory()
             .BeginAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -584,18 +587,24 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
         PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(
             unitOfWork.Context);
         using NpgsqlCommand command = session.CreateCommand("""
-            UPDATE public.accounts
-            SET upstream_rate_limited_until = clock_timestamp() + interval '5 minutes',
-                last_health_at = clock_timestamp(),
-                last_health_status = 'degraded',
-                version = version + 1,
-                updated_at = clock_timestamp()
-            WHERE id = $1;
+            SELECT disposition
+            FROM public.poolai_supply_record_account_health(
+                $1,
+                'cooling',
+                clock_timestamp(),
+                clock_timestamp() + interval '5 minutes',
+                $2,
+                $3
+            );
             """);
         command.Parameters.AddWithValue(accountId.Value);
+        command.Parameters.AddWithValue(current.Version);
+        command.Parameters.AddWithValue(current.CredentialRevision);
         Assert.Equal(
-            1,
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+            "applied",
+            Assert.IsType<string>(
+                await command.ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 

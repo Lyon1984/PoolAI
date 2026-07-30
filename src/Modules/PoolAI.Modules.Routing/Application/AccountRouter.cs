@@ -9,7 +9,8 @@ namespace PoolAI.Modules.Routing.Application;
 internal sealed class AccountRouter(
     IAccountCandidateReader candidates,
     ICoordinationLeaseSet leases,
-    IRouteAffinityStore affinities) : IAccountRouter
+    IRouteAffinityStore affinities,
+    IAccountCircuitBreaker breakers) : IAccountRouter
 {
     private readonly IAccountCandidateReader _candidates =
         candidates ?? throw new ArgumentNullException(nameof(candidates));
@@ -17,6 +18,8 @@ internal sealed class AccountRouter(
         leases ?? throw new ArgumentNullException(nameof(leases));
     private readonly IRouteAffinityStore _affinities =
         affinities ?? throw new ArgumentNullException(nameof(affinities));
+    private readonly IAccountCircuitBreaker _breakers =
+        breakers ?? throw new ArgumentNullException(nameof(breakers));
 
     public async ValueTask<Result<IAccountLease>> RouteAsync(
         RouteAccountCommand command,
@@ -37,7 +40,24 @@ internal sealed class AccountRouter(
             return CopyFailure<IAccountLease>(candidateResult.Error);
         }
 
-        IReadOnlyList<AccountCandidate> available = candidateResult.Value;
+        Result<IReadOnlyList<AccountCandidate>> breakerResult =
+            await FilterClosedBreakersAsync(
+                candidateResult.Value,
+                cancellationToken).ConfigureAwait(false);
+        if (breakerResult.IsFailure)
+        {
+            return CopyFailure<IAccountLease>(breakerResult.Error);
+        }
+
+        IReadOnlyList<AccountCandidate> available = breakerResult.Value;
+        if (available.Count == 0)
+        {
+            return Result.Failure<IAccountLease>(
+                "no_available_account",
+                "No Account has a closed shared circuit breaker.",
+                retryAfterSeconds: 1);
+        }
+
         EntityId? stickyAccountId = await FindStickyAccountAsync(
             command,
             available,
@@ -48,6 +68,32 @@ internal sealed class AccountRouter(
             stickyAccountId);
         return await AcquireAsync(command, ordered, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private async ValueTask<Result<IReadOnlyList<AccountCandidate>>>
+        FilterClosedBreakersAsync(
+            IReadOnlyList<AccountCandidate> candidates,
+            CancellationToken cancellationToken)
+    {
+        List<AccountCandidate> closed = new(candidates.Count);
+        foreach (AccountCandidate candidate in candidates)
+        {
+            Result<AccountBreakerSnapshot> breaker = await _breakers
+                .ReadAsync(candidate.AccountId, cancellationToken)
+                .ConfigureAwait(false);
+            if (breaker.IsFailure)
+            {
+                return CopyFailure<IReadOnlyList<AccountCandidate>>(
+                    breaker.Error);
+            }
+
+            if (breaker.Value.State == AccountBreakerState.Closed)
+            {
+                closed.Add(candidate);
+            }
+        }
+
+        return Result.Success<IReadOnlyList<AccountCandidate>>(closed);
     }
 
     private async ValueTask<Result<IAccountLease>> AcquireAsync(

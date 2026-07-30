@@ -82,6 +82,8 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_guard_account_credential_revision"] = Supply,
         ["poolai_supply_create_account"] = Supply,
         ["poolai_supply_replace_account_credential"] = Supply,
+        ["poolai_supply_guard_account_credential_authority"] = Supply,
+        ["poolai_supply_record_account_health"] = Supply,
         ["poolai_supply_select_account_credential_rewrap_batch"] = Supply,
         ["poolai_supply_rewrap_account_credential"] = Supply,
         ["poolai_supply_base_url_is_valid"] = Supply,
@@ -247,6 +249,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0009_identity_api_key_text_validation_m1_e5.sql:$permission_audit$:5da19374d5c80bbec7b4712436347b3ab255c471b4261f828ac63031edcbefed",
         "0010_supply_account_credentials_m2_e1.sql:$permission_audit$:d47e055c58fb077526c58fe1250d118e3cbf6bfa0a3eb47b40fbdc0e1a9e301d",
         "0011_supply_control_plane_m2_e2.sql:$permission_audit$:1f5d5ee0b8d2230dc59850c53806cb64b114bd645cddf1b21e7dcb03c44edccb",
+        "0012_supply_account_health_m2_e4.sql:$permission_audit$:4224d77efb2e437de44c45d705897b50a3c4bf85df6c06f615fb8a2f51512996",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -279,6 +282,7 @@ public sealed class CrossContextSqlBoundaryTests
         "create trigger tr_group_accounts_validate_binding before insert or update of group_id, account_id, is_enabled, priority_override, weight_override on group_accounts for each row execute function poolai_validate_group_account_binding();",
         "create trigger tr_group_accounts_bump_supply_configuration_version after insert or update or delete on group_accounts for each row execute function poolai_bump_group_supply_configuration_version();",
         "create trigger tr_accounts_credential_revision before update of credential_envelope, credential_revision on public.accounts for each row execute function public.poolai_guard_account_credential_revision();",
+        "create trigger trg_accounts_guard_credential_authority before update of upstream_base_url, credential_revision on public.accounts for each row execute function public.poolai_supply_guard_account_credential_authority();",
         "create trigger tr_groups_validate_activation before insert or update of status, activation_supply_readiness_token, activation_supply_observed_at on groups for each row execute function poolai_validate_group_activation();",
         "create trigger tr_group_quota_events_append_only before update or delete on group_quota_events for each row execute function poolai_reject_fact_mutation();",
         "create trigger tr_usage_attempts_append_only before update or delete on usage_attempts for each row execute function poolai_reject_fact_mutation();",

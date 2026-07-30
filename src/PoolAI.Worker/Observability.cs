@@ -22,6 +22,7 @@ internal static class Observability
                 configuration["Observability:ServiceName"] ?? "poolai-worker"))
             .WithMetrics(metrics => metrics
                 .AddMeter("PoolAI.Identity.EmailOutbox")
+                .AddMeter("PoolAI.Routing")
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation())
             .WithTracing(tracing => tracing.AddHttpClientInstrumentation());

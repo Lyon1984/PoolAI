@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Mail;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +19,9 @@ public static class PoolAiRuntimeConfigurationValidator
     }
 
     private const long JavaScriptSafeIntegerMax = 9_007_199_254_740_991;
+    private const string PrivateEgressRulesKey =
+        "Supply:Health:PrivateEgressRules";
+    private const int MaximumPrivateEgressRules = 64;
 
     private static readonly string[] ForbiddenSections =
     [
@@ -515,6 +519,12 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Fixed("Routing:Breaker:MaxBreakSeconds", 300);
         validation.Fixed("Routing:Breaker:HalfOpenProbeSeconds", 10);
         validation.Fixed("Routing:Breaker:SuccessesToClose", 2);
+
+        validation.Fixed("Supply:Health:ProbeIntervalSeconds", 30);
+        validation.Fixed("Supply:Health:ProbeTimeoutSeconds", 10);
+        validation.Fixed("Supply:Health:ProbeMaxResponseBytes", 1_048_576);
+        validation.Fixed("Supply:Health:ProbeMaxConcurrency", 8);
+        ValidatePrivateEgressRules(validation);
     }
 
     private static void ValidateUsageAndOperations(Validation validation)
@@ -600,6 +610,250 @@ public static class PoolAiRuntimeConfigurationValidator
         }
 
         return string.Equals(uri.AbsolutePath, "/", StringComparison.Ordinal);
+    }
+
+    private static void ValidatePrivateEgressRules(Validation validation)
+    {
+        IConfigurationSection section = validation.Configuration.GetSection(
+            PrivateEgressRulesKey);
+        IConfigurationSection[] entries = [.. section.GetChildren()];
+        if (section.Value is not null
+            || entries.Length > MaximumPrivateEgressRules)
+        {
+            validation.Invalid(PrivateEgressRulesKey);
+            return;
+        }
+
+        HashSet<int> indexes = [];
+        HashSet<string> canonicalRules = new(StringComparer.Ordinal);
+        foreach (IConfigurationSection entry in entries)
+        {
+            if (!TryParseCanonicalRuleIndex(entry.Key, out int index)
+                || entry.Value is null
+                || entry.GetChildren().Any()
+                || !TryParsePrivateEgressRule(
+                    entry.Value,
+                    out string canonicalRule)
+                || !indexes.Add(index)
+                || !canonicalRules.Add(canonicalRule))
+            {
+                validation.Invalid(PrivateEgressRulesKey);
+            }
+        }
+
+        if (indexes.Count != entries.Length
+            || !indexes.Order().SequenceEqual(
+                Enumerable.Range(0, indexes.Count)))
+        {
+            validation.Invalid(PrivateEgressRulesKey);
+        }
+    }
+
+    private static bool TryParseCanonicalRuleIndex(
+        string value,
+        out int index)
+    {
+        index = -1;
+        return value.Length is >= 1 and <= 2
+            && (value.Length == 1 || value[0] != '0')
+            && value.All(static character => character is >= '0' and <= '9')
+            && int.TryParse(
+                value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out index)
+            && index is >= 0 and < MaximumPrivateEgressRules;
+    }
+
+    private static bool TryParsePrivateEgressRule(
+        string value,
+        out string canonicalRule)
+    {
+        canonicalRule = string.Empty;
+        if (value.Length is < 1 or > 512
+            || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+            || value.Any(static character =>
+                !char.IsAscii(character)
+                || char.IsWhiteSpace(character)
+                || character is '\\' or '\0'))
+        {
+            return false;
+        }
+
+        int separator = value.IndexOf('|');
+        if (separator <= 0
+            || separator != value.LastIndexOf('|')
+            || separator == value.Length - 1
+            || !TryParsePrivateEgressAuthority(
+                value[..separator],
+                out string canonicalAuthority)
+            || !TryParsePrivateEgressCidr(
+                value[(separator + 1)..],
+                out string canonicalCidr))
+        {
+            return false;
+        }
+
+        canonicalRule = $"{canonicalAuthority}|{canonicalCidr}";
+        return true;
+    }
+
+    private static bool TryParsePrivateEgressAuthority(
+        string value,
+        out string canonicalAuthority)
+    {
+        canonicalAuthority = string.Empty;
+        if (!value.StartsWith("https://", StringComparison.Ordinal)
+            || !Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
+            || !string.Equals(
+                uri.Scheme,
+                Uri.UriSchemeHttps,
+                StringComparison.Ordinal)
+            || uri.HostNameType is UriHostNameType.Unknown
+                or UriHostNameType.Basic
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.Equals(uri.AbsolutePath, "/", StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            return false;
+        }
+
+        string host = NormalizeEgressHost(uri);
+        if (host.Length == 0
+            || string.Equals(host, "localhost", StringComparison.Ordinal)
+            || IPAddress.TryParse(host, out IPAddress? literal)
+                && IPAddress.IsLoopback(CanonicalAddress(literal)))
+        {
+            return false;
+        }
+
+        string authorityHost = uri.HostNameType == UriHostNameType.IPv6
+            ? $"[{host}]"
+            : host;
+        canonicalAuthority = string.Create(
+            CultureInfo.InvariantCulture,
+            $"https://{authorityHost}:{uri.Port}");
+        return true;
+    }
+
+    private static string NormalizeEgressHost(Uri uri)
+    {
+        string host = uri.HostNameType == UriHostNameType.Dns
+            ? uri.IdnHost
+            : uri.DnsSafeHost;
+        if (host.Length >= 2
+            && host[0] == '['
+            && host[^1] == ']')
+        {
+            host = host[1..^1];
+        }
+
+        return host.ToLowerInvariant();
+    }
+
+    private static bool TryParsePrivateEgressCidr(
+        string value,
+        out string canonicalCidr)
+    {
+        canonicalCidr = string.Empty;
+        int separator = value.LastIndexOf('/');
+        if (separator <= 0
+            || separator == value.Length - 1
+            || value.AsSpan(0, separator).Contains('/')
+            || !TryParseCanonicalDecimal(
+                value[(separator + 1)..],
+                out int prefixLength)
+            || value[..separator].Contains('%', StringComparison.Ordinal)
+            || !IPAddress.TryParse(
+                value[..separator],
+                out IPAddress? parsed)
+            || parsed.IsIPv4MappedToIPv6
+            || parsed.AddressFamily == AddressFamily.InterNetwork
+                && prefixLength > 32
+            || parsed.AddressFamily == AddressFamily.InterNetworkV6
+                && prefixLength > 128)
+        {
+            return false;
+        }
+
+        byte[] networkBytes = parsed.GetAddressBytes();
+        ClearHostBits(networkBytes, prefixLength);
+        IPAddress network = new(networkBytes);
+        canonicalCidr = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{network.ToString().ToLowerInvariant()}/{prefixLength}");
+        return string.Equals(
+                value,
+                canonicalCidr,
+                StringComparison.Ordinal)
+            && IsPrivateNetwork(network, prefixLength);
+    }
+
+    private static bool TryParseCanonicalDecimal(
+        string value,
+        out int parsed)
+    {
+        parsed = 0;
+        if (value.Length == 0
+            || value.Length > 3
+            || value.Length > 1 && value[0] == '0')
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+
+            parsed = checked((parsed * 10) + (character - '0'));
+        }
+
+        return true;
+    }
+
+    private static bool IsPrivateNetwork(
+        IPAddress network,
+        int prefixLength)
+    {
+        byte[] bytes = network.GetAddressBytes();
+        if (network.AddressFamily == AddressFamily.InterNetwork)
+        {
+            return bytes[0] == 10 && prefixLength >= 8
+                || bytes is [172, >= 16 and <= 31, _, _]
+                    && prefixLength >= 12
+                || bytes is [192, 168, _, _]
+                    && prefixLength >= 16;
+        }
+
+        return network.AddressFamily == AddressFamily.InterNetworkV6
+            && (bytes[0] & 0xfe) == 0xfc
+            && prefixLength >= 7;
+    }
+
+    private static IPAddress CanonicalAddress(IPAddress address) =>
+        address.IsIPv4MappedToIPv6
+            ? address.MapToIPv4()
+            : address;
+
+    private static void ClearHostBits(
+        Span<byte> address,
+        int prefixLength)
+    {
+        int wholeBytes = prefixLength / 8;
+        int remainingBits = prefixLength % 8;
+        if (remainingBits != 0)
+        {
+            byte mask = checked(
+                (byte)(256 - (1 << (8 - remainingBits))));
+            address[wholeBytes] &= mask;
+            wholeBytes++;
+        }
+
+        address[wholeBytes..].Clear();
     }
 
     private static bool IsHostNameOrIpLiteral(string value)

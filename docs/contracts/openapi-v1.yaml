@@ -6435,6 +6435,9 @@ components:
           description: >-
             规范的绝对上游 Base URL。非 loopback 只允许 HTTPS；HTTP 仅允许精确
             localhost、127.0.0.1 或 [::1]。禁止 userinfo、query 和 fragment。
+            若规范化 authority（scheme、case-folded host、effective port）相对
+            当前值发生变化，同一 PATCH 必须同时提交新的 credential；仅 path
+            变化可以沿用原凭据。
         credential:
           type: string
           minLength: 16

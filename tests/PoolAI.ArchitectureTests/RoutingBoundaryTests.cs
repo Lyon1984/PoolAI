@@ -194,7 +194,11 @@ public sealed class RoutingBoundaryTests
             ],
             projectReferences);
         Assert.Equal(
-            ["Microsoft.Extensions.DependencyInjection.Abstractions"],
+            [
+                "Microsoft.Extensions.Configuration.Binder",
+                "Microsoft.Extensions.DependencyInjection.Abstractions",
+                "Microsoft.Extensions.Hosting.Abstractions",
+            ],
             PackageReferences(project));
 
         XDocument abstractionsProject = XDocument.Load(Path.Combine(
@@ -225,7 +229,15 @@ public sealed class RoutingBoundaryTests
             .ToArray();
 
     [Fact]
-    public void ApiRegistersRoutingWhileWorkerDoesNotLoadIt()
+    public void WorkerLoadsOnlyTheRoutingHealthGraph()
+    {
+        RoutingHostGraph graph = ReadRoutingHostGraph();
+        AssertApiRoutingGraph(graph);
+        AssertWorkerRoutingGraph(graph);
+        AssertHealthRegistration(graph);
+    }
+
+    private static RoutingHostGraph ReadRoutingHostGraph()
     {
         string root = RepositoryRoot.Find();
         string apiProgram = File.ReadAllText(Path.Combine(
@@ -254,32 +266,102 @@ public sealed class RoutingBoundaryTests
             "Modules",
             "PoolAI.Modules.Routing",
             "DependencyInjection.cs"));
+        int healthRegistrationStart = routingRegistration.IndexOf(
+            "public static IServiceCollection AddRoutingHealthModule(",
+            StringComparison.Ordinal);
+        Assert.True(healthRegistrationStart >= 0);
+        int healthRegistrationEnd = routingRegistration.IndexOf(
+            "    private static void AddHealthCore(",
+            healthRegistrationStart,
+            StringComparison.Ordinal);
 
-        Assert.Equal(1, CountOccurrences(apiProgram, ".AddRoutingModule()"));
+        Assert.True(healthRegistrationEnd > healthRegistrationStart);
+        string healthRegistration = routingRegistration[
+            healthRegistrationStart..healthRegistrationEnd];
+        return new(
+            apiProgram,
+            apiProject,
+            workerProgram,
+            workerProject,
+            routingRegistration,
+            healthRegistration);
+    }
+
+    private static void AssertApiRoutingGraph(RoutingHostGraph graph)
+    {
+        Assert.Equal(
+            1,
+            CountOccurrences(graph.ApiProgram, ".AddRoutingModule()"));
+        Assert.DoesNotContain(
+            ".AddRoutingHealthModule(",
+            graph.ApiProgram,
+            StringComparison.Ordinal);
         Assert.Contains(
             "PoolAI.Modules.Routing/PoolAI.Modules.Routing.csproj",
-            apiProject.Replace('\\', '/'),
+            graph.ApiProject.Replace('\\', '/'),
             StringComparison.Ordinal);
         Assert.Contains(
             "\"Routing\",",
-            routingRegistration,
+            graph.RoutingRegistration,
             StringComparison.Ordinal);
         Assert.Contains(
-            "HostCapability.Api",
-            routingRegistration,
+            "HostCapability.Api | HostCapability.Worker",
+            graph.RoutingRegistration,
             StringComparison.Ordinal);
+    }
 
-        Assert.DoesNotContain(
-            "PoolAI.Modules.Routing",
-            workerProgram,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            "PoolAI.Modules.Routing",
-            workerProject,
-            StringComparison.Ordinal);
+    private static void AssertWorkerRoutingGraph(RoutingHostGraph graph)
+    {
+        Assert.Equal(
+            1,
+            CountOccurrences(
+                graph.WorkerProgram,
+                ".AddRoutingHealthModule("));
         Assert.DoesNotContain(
             ".AddRoutingModule()",
-            workerProgram,
+            graph.WorkerProgram,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "PoolAI.Modules.Routing/PoolAI.Modules.Routing.csproj",
+            graph.WorkerProject.Replace('\\', '/'),
+            StringComparison.Ordinal);
+
+        string workerComposition = string.Concat(
+            graph.WorkerProgram,
+            graph.WorkerProject);
+        foreach (string forbidden in new[]
+        {
+            "AccountRouter",
+            "IAccountRouter",
+            "RouteAffinity",
+            "IRouteAffinityStore",
+            "GroupRequestRateLimiter",
+            "IGroupRequestRateLimiter",
+            "PoolAI.Modules.Gateway",
+            "PoolAI.Adapters.OpenAI",
+            "Endpoints",
+        })
+        {
+            Assert.DoesNotContain(
+                forbidden,
+                workerComposition,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                forbidden,
+                graph.HealthRegistration,
+                StringComparison.Ordinal);
+        }
+    }
+
+    private static void AssertHealthRegistration(RoutingHostGraph graph)
+    {
+        Assert.Contains(
+            "AddHealthCore(services);",
+            graph.HealthRegistration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AccountHealthWorkerService",
+            graph.HealthRegistration,
             StringComparison.Ordinal);
     }
 
@@ -313,4 +395,12 @@ public sealed class RoutingBoundaryTests
 
         return count;
     }
+
+    private sealed record RoutingHostGraph(
+        string ApiProgram,
+        string ApiProject,
+        string WorkerProgram,
+        string WorkerProject,
+        string RoutingRegistration,
+        string HealthRegistration);
 }

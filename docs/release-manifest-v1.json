@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb"
+    "sha256": "ba965851bd6b9b4996ecab2bdf9c947e77981a40e559005ff6618a5269015afe"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 11,
-    "maximum_compatible_version": 11,
+    "minimum_compatible_version": 12,
+    "maximum_compatible_version": 12,
     "migrations": [
       {
         "version": 1,
@@ -76,6 +76,12 @@
         "name": "0011_supply_control_plane_m2_e2.sql",
         "source": "docs/database/0011_supply_control_plane_m2_e2.sql",
         "sha256": "02b9eb0818b1e69b42253ef4b7d6a642f547815cd6e010e495a6c97785b9fac4"
+      },
+      {
+        "version": 12,
+        "name": "0012_supply_account_health_m2_e4.sql",
+        "source": "docs/database/0012_supply_account_health_m2_e4.sql",
+        "sha256": "d41abf363c856172c27812313213c76a54c0ce458d250249adc02ad127ef4dc7"
       }
     ]
   },
@@ -84,7 +90,7 @@
     "contract_version": 1,
     "key_schema_version": "r1",
     "contract_source": "docs/runtime/redis-contract.md",
-    "contract_sha256": "c30816c779bddb28d6b2464e7d9ee7e42af86791b96a02fa6c77af352917d887",
+    "contract_sha256": "c42684aeb9b7459170bc44a878d373e0206b8b839a71a471a0d929aa6488d59d",
     "scripts": [
       {
         "name": "fixed_window_increment",
@@ -109,6 +115,24 @@
         "logical_version": 1,
         "source": "docs/runtime/scripts/lease_release_v1.lua",
         "body_sha256": "baa5b875f5033e91baf649273aae81ba91e9793384801300deab110f48bf4e01"
+      },
+      {
+        "name": "breaker_record",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/breaker_record_v1.lua",
+        "body_sha256": "d254ef82ddf86073c12706744f43d2a9d7dedb59d231c76c5871eacf4a84bd14"
+      },
+      {
+        "name": "breaker_probe_acquire",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/breaker_probe_acquire_v1.lua",
+        "body_sha256": "975226a6110e7778a9956afbc474ced0d61e18ef2a54467ef152eab407245756"
+      },
+      {
+        "name": "breaker_probe_complete",
+        "logical_version": 1,
+        "source": "docs/runtime/scripts/breaker_probe_complete_v1.lua",
+        "body_sha256": "edfbb5e151707baca63b0fe4e3aedc4ed0945597aa72643488b6f6740124e964"
       }
     ]
   }
