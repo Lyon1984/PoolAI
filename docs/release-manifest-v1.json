@@ -102,7 +102,7 @@
     "contract_version": 1,
     "key_schema_version": "r1",
     "contract_source": "docs/runtime/redis-contract.md",
-    "contract_sha256": "c42684aeb9b7459170bc44a878d373e0206b8b839a71a471a0d929aa6488d59d",
+    "contract_sha256": "8959068f90fa4fa2be7b5b3a6dfc2211abf0227dd63311c227d66975057b12c8",
     "scripts": [
       {
         "name": "fixed_window_increment",

@@ -442,7 +442,9 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
             new GetGroupQuotaQuery(actor, groupId),
             cancellationToken).ConfigureAwait(true);
         Assert.True(initial.IsSuccess, initial.Error.Description);
-        Assert.Equal(GroupPoolQuotaStatus.Disabled, initial.Value.Status);
+        // Since migration 0014, the public quota representation is quota-owned:
+        // a disabled Group does not override an enabled, non-exhausted quota row.
+        Assert.Equal(GroupPoolQuotaStatus.Active, initial.Value.Status);
         Assert.Equal((BigInteger)200, initial.Value.TotalTokens);
         Assert.Equal(1, initial.Value.Version);
 

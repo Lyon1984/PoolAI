@@ -474,6 +474,7 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Fixed("Quota:ReservationSweepSeconds", 30);
         validation.Fixed("Quota:MaxStreamSeconds", 7_200);
         validation.Range("Quota:DisconnectDrainSeconds", 15, 5, 15);
+        validation.Range("Quota:DeniedMutationAttemptsPerMinute", 5, 1, 20);
 
         validation.Range("Gateway:DefaultMaxOutputTokens", 4_096, 1, int.MaxValue);
         validation.RangeLong(

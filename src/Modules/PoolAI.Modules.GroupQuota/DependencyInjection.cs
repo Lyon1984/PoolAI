@@ -21,7 +21,12 @@ public static class DependencyInjection
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(static serviceProvider =>
             CreatePolicy(serviceProvider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton(static serviceProvider =>
+            QuotaMutationDenialRateLimitOptions.FromConfiguration(
+                serviceProvider.GetRequiredService<IConfiguration>()));
         services.AddGroupQuotaInfrastructure();
+        services.AddSingleton<IQuotaMutationDenialRateLimiter,
+            OperationsQuotaMutationDenialRateLimiter>();
         services.AddSingleton(static serviceProvider => new GroupControlPlaneService(
             serviceProvider.GetRequiredService<IGroupRepository>(),
             serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
@@ -48,6 +53,7 @@ public static class DependencyInjection
                 PoolAI.Modules.Operations.Abstractions.ICommandIdempotencyStore>(),
             serviceProvider.GetRequiredService<
                 PoolAI.Modules.Operations.Abstractions.IAuditAppender>(),
+            serviceProvider.GetRequiredService<IQuotaMutationDenialRateLimiter>(),
             serviceProvider.GetRequiredService<GroupQuotaPolicy>()));
         services.AddSingleton<IGetGroupQuotaUseCase>(static serviceProvider =>
             serviceProvider.GetRequiredService<QuotaControlPlaneService>());

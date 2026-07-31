@@ -17,10 +17,10 @@ internal sealed partial class PostgresQuotaRepository(NpgsqlDataSource dataSourc
 
     private const string SelectCurrentSql = """
         SELECT
-            current_group.id,
+            quota.group_id,
             period.id,
             CASE
-                WHEN current_group.status <> 'active' OR quota.enabled = false THEN 'disabled'
+                WHEN quota.enabled = false THEN 'disabled'
                 WHEN period.consumed_tokens >= period.total_tokens THEN 'exhausted'
                 ELSE 'active'
             END AS quota_status,
@@ -35,10 +35,8 @@ internal sealed partial class PostgresQuotaRepository(NpgsqlDataSource dataSourc
             period.opened_at,
             period.closed_at,
             quota.version,
-            GREATEST(current_group.updated_at, quota.updated_at, period.updated_at) AS updated_at
+            quota.updated_at
         FROM public.group_token_quotas AS quota
-        JOIN public.groups AS current_group
-          ON current_group.id = quota.group_id
         JOIN public.group_quota_periods AS period
           ON period.id = quota.current_period_id
          AND period.group_id = quota.group_id

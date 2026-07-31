@@ -487,6 +487,7 @@ public static class GroupQuotaEndpointMappings
                 GroupQuotaHttp.RequireActor(context),
                 groupId,
                 operation,
+                GroupQuotaHttp.QuotaMutationIdempotencyKeyAudit(context),
                 GroupQuotaHttp.RemoteIp(context),
                 GroupQuotaHttp.UserAgent(context)),
             context.RequestAborted).ConfigureAwait(false);

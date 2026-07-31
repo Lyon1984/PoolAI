@@ -14,11 +14,58 @@ public enum QuotaMutationOperation
     ResetPeriod,
 }
 
+public enum QuotaMutationIdempotencyKeyStatus
+{
+    Missing,
+    Invalid,
+    Multiple,
+    Valid,
+}
+
+public sealed class QuotaMutationIdempotencyKeyAuditInput
+{
+    private QuotaMutationIdempotencyKeyAuditInput(
+        QuotaMutationIdempotencyKeyStatus status,
+        string? validValue)
+    {
+        Status = status;
+        ValidValue = validValue;
+    }
+
+    public QuotaMutationIdempotencyKeyStatus Status { get; }
+
+    public string? ValidValue { get; }
+
+    public static QuotaMutationIdempotencyKeyAuditInput Missing { get; } =
+        new(QuotaMutationIdempotencyKeyStatus.Missing, validValue: null);
+
+    public static QuotaMutationIdempotencyKeyAuditInput Multiple { get; } =
+        new(QuotaMutationIdempotencyKeyStatus.Multiple, validValue: null);
+
+    public static QuotaMutationIdempotencyKeyAuditInput FromSingle(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return Missing;
+        }
+
+        return value is { Length: >= 1 and <= 128 }
+            && value.All(static character => character is >= (char)0x21 and <= (char)0x7e)
+                ? new QuotaMutationIdempotencyKeyAuditInput(
+                    QuotaMutationIdempotencyKeyStatus.Valid,
+                    value)
+                : new QuotaMutationIdempotencyKeyAuditInput(
+                    QuotaMutationIdempotencyKeyStatus.Invalid,
+                    validValue: null);
+    }
+}
+
 public sealed record AuthorizeQuotaMutationCommand(
     EntityId RequestId,
     GroupActor Actor,
     EntityId GroupId,
     QuotaMutationOperation Operation,
+    QuotaMutationIdempotencyKeyAuditInput IdempotencyKeyAudit,
     string? IpAddress,
     string? UserAgent);
 

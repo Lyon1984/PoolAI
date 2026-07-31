@@ -74,9 +74,11 @@ internal static class GroupQuotaHttp
         out string? idempotencyKey,
         out IResult? failure)
     {
-        idempotencyKey = context.Request.Headers["Idempotency-Key"].ToString();
-        if (string.IsNullOrEmpty(idempotencyKey))
+        QuotaMutationIdempotencyKeyAuditInput auditInput =
+            QuotaMutationIdempotencyKeyAudit(context);
+        if (auditInput.Status == QuotaMutationIdempotencyKeyStatus.Missing)
         {
+            idempotencyKey = null;
             failure = Problem(
                 context,
                 StatusCodes.Status428PreconditionRequired,
@@ -87,18 +89,30 @@ internal static class GroupQuotaHttp
             return false;
         }
 
-        if (idempotencyKey.Length > 128
-            || idempotencyKey.Any(static character =>
-                character is < (char)0x21 or > (char)0x7e))
+        if (auditInput.Status != QuotaMutationIdempotencyKeyStatus.Valid)
         {
+            idempotencyKey = null;
             failure = InvalidRequestProblem(
                 context,
                 FieldError("/headers/Idempotency-Key", "The idempotency key is invalid."));
             return false;
         }
 
+        idempotencyKey = auditInput.ValidValue;
         failure = null;
         return true;
+    }
+
+    internal static QuotaMutationIdempotencyKeyAuditInput QuotaMutationIdempotencyKeyAudit(
+        HttpContext context)
+    {
+        var values = context.Request.Headers["Idempotency-Key"];
+        return values.Count switch
+        {
+            0 => QuotaMutationIdempotencyKeyAuditInput.Missing,
+            1 => QuotaMutationIdempotencyKeyAuditInput.FromSingle(values[0]),
+            _ => QuotaMutationIdempotencyKeyAuditInput.Multiple,
+        };
     }
 
     internal static bool TryGetExpectedVersion(
@@ -546,16 +560,229 @@ internal static class GroupQuotaHttp
             return false;
         }
 
-        ReadOnlySpan<char> raw = element.GetRawText().AsSpan();
-        if (raw.IsEmpty
-            || raw.ContainsAnyExceptInRange('0', '9')
-            || !element.TryGetInt64(out value))
+        return TryParsePositiveSafeInteger(element.GetRawText().AsSpan(), out value);
+    }
+
+    private static bool TryParsePositiveSafeInteger(
+        ReadOnlySpan<char> raw,
+        out long value)
+    {
+        const long maximum = 9_007_199_254_740_991;
+        value = 0;
+        if (raw.IsEmpty || raw[0] == '-')
         {
-            value = 0;
             return false;
         }
 
-        return value is >= 1 and <= 9_007_199_254_740_991;
+        int exponentMarker = raw.IndexOfAny('e', 'E');
+        ReadOnlySpan<char> coefficient = exponentMarker < 0
+            ? raw
+            : raw[..exponentMarker];
+        long exponent = 0;
+        if (exponentMarker >= 0
+            && !TryReadBoundedExponent(
+                raw[(exponentMarker + 1)..],
+                checked((long)raw.Length + 17),
+                out exponent))
+        {
+            return false;
+        }
+
+        if (!TryAnalyzeCoefficient(
+                coefficient,
+                out int coefficientDigitCount,
+                out int leadingZeroCount,
+                out int trailingZeroCount))
+        {
+            return false;
+        }
+
+        if (!TryNormalizeIntegerShape(
+                coefficient,
+                exponent,
+                coefficientDigitCount,
+                leadingZeroCount,
+                trailingZeroCount,
+                out int significantDigitCount,
+                out long scale))
+        {
+            return false;
+        }
+
+        return TryAccumulatePositiveSafeInteger(
+            coefficient,
+            leadingZeroCount,
+            significantDigitCount,
+            scale,
+            maximum,
+            out value);
+    }
+
+    private static bool TryNormalizeIntegerShape(
+        ReadOnlySpan<char> coefficient,
+        long exponent,
+        int coefficientDigitCount,
+        int leadingZeroCount,
+        int trailingZeroCount,
+        out int significantDigitCount,
+        out long scale)
+    {
+        int decimalPoint = coefficient.IndexOf('.');
+        int fractionDigitCount = decimalPoint < 0
+            ? 0
+            : coefficient.Length - decimalPoint - 1;
+        scale = exponent - fractionDigitCount;
+        int removedTrailingZeros = 0;
+        if (scale < 0)
+        {
+            long requiredTrailingZeros = -scale;
+            if (requiredTrailingZeros > trailingZeroCount)
+            {
+                significantDigitCount = 0;
+                return false;
+            }
+
+            removedTrailingZeros = checked((int)requiredTrailingZeros);
+            scale = 0;
+        }
+
+        significantDigitCount = coefficientDigitCount
+            - leadingZeroCount
+            - removedTrailingZeros;
+        long finalDigitCount = significantDigitCount + scale;
+        return significantDigitCount > 0
+            && finalDigitCount is > 0 and <= 16;
+    }
+
+    private static bool TryAnalyzeCoefficient(
+        ReadOnlySpan<char> coefficient,
+        out int digitCount,
+        out int leadingZeroCount,
+        out int trailingZeroCount)
+    {
+        digitCount = 0;
+        leadingZeroCount = 0;
+        trailingZeroCount = 0;
+        bool foundNonZero = false;
+        foreach (char character in coefficient)
+        {
+            if (character == '.')
+            {
+                continue;
+            }
+
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+
+            digitCount++;
+            if (!foundNonZero)
+            {
+                if (character == '0')
+                {
+                    leadingZeroCount++;
+                    continue;
+                }
+
+                foundNonZero = true;
+            }
+
+            trailingZeroCount = character == '0'
+                ? trailingZeroCount + 1
+                : 0;
+        }
+
+        return foundNonZero;
+    }
+
+    private static bool TryAccumulatePositiveSafeInteger(
+        ReadOnlySpan<char> coefficient,
+        int leadingZeroCount,
+        int significantDigitCount,
+        long scale,
+        long maximum,
+        out long value)
+    {
+        value = 0;
+        foreach (char character in coefficient)
+        {
+            if (character == '.')
+            {
+                continue;
+            }
+
+            if (leadingZeroCount > 0)
+            {
+                leadingZeroCount--;
+                continue;
+            }
+
+            if (significantDigitCount == 0)
+            {
+                break;
+            }
+
+            int digit = character - '0';
+            if (value > (maximum - digit) / 10)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = (value * 10) + digit;
+            significantDigitCount--;
+        }
+
+        for (long index = 0; index < scale; index++)
+        {
+            if (value > maximum / 10)
+            {
+                value = 0;
+                return false;
+            }
+
+            value *= 10;
+        }
+
+        return value >= 1 && value <= maximum;
+    }
+
+    private static bool TryReadBoundedExponent(
+        ReadOnlySpan<char> raw,
+        long maximumMagnitude,
+        out long exponent)
+    {
+        exponent = 0;
+        if (raw.IsEmpty)
+        {
+            return false;
+        }
+
+        bool negative = raw[0] == '-';
+        int start = negative || raw[0] == '+' ? 1 : 0;
+        if (start == raw.Length)
+        {
+            return false;
+        }
+
+        long magnitude = 0;
+        for (int index = start; index < raw.Length; index++)
+        {
+            char character = raw[index];
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+
+            int digit = character - '0';
+            magnitude = magnitude > (maximumMagnitude - digit) / 10
+                ? maximumMagnitude
+                : (magnitude * 10) + digit;
+        }
+
+        exponent = negative ? -magnitude : magnitude;
+        return true;
     }
 
     internal static bool SatisfiesQuotaReasonContract(string value)
@@ -717,6 +944,8 @@ internal static class GroupQuotaHttp
             error.Code, 422, "Validation failed", "One or more request fields failed validation.", false),
         "invalid_request" => new(
             error.Code, 400, "Invalid request", "The request is invalid.", false),
+        "rate_limit_exceeded" => new(
+            error.Code, 429, "Rate limit exceeded", "Too many requests were received for this operation.", true, error.RetryAfterSeconds),
         "coordination_unavailable" => new(
             error.Code, 503, "Coordination unavailable", "Required coordination is temporarily unavailable.", true, 1),
         "dependency_unavailable" or "service_unavailable" => new(

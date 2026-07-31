@@ -7,9 +7,14 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using NpgsqlTypes;
+using PoolAI.BuildingBlocks;
 using PoolAI.Database.Migrations;
+using PoolAI.Modules.GroupQuota.Abstractions;
+using PoolAI.Modules.GroupQuota.Application;
 using PoolAI.Modules.Identity.Abstractions;
 using Testcontainers.PostgreSql;
 
@@ -101,6 +106,7 @@ public sealed class M3E1QuotaPublicApiPostgresAcceptanceTests(
                 scenario.Actor(role),
                 role,
                 operation,
+                key,
                 cancellationToken).ConfigureAwait(true);
             Assert.Equal(
                 0,
@@ -112,6 +118,85 @@ public sealed class M3E1QuotaPublicApiPostgresAcceptanceTests(
                 await fixture.ReadInvariantSnapshotAsync(
                     scenario.GroupId,
                     cancellationToken).ConfigureAwait(true));
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task RejectedOrUnavailableDenialGateWritesNoPostgreSqlFact()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        M3E1QuotaScenario scenario = await fixture.SeedScenarioAsync(
+            "denial-gate",
+            totalTokens: 1_000,
+            consumedTokens: 300,
+            reservedTokens: 50,
+            cancellationToken).ConfigureAwait(true);
+
+        (QuotaMutationDenialRateLimitDecision Decision, HttpStatusCode Status,
+            string Code, TimeSpan RetryAfter)[] cases =
+        [
+            (QuotaMutationDenialRateLimitDecision.Rejected(17),
+                HttpStatusCode.TooManyRequests,
+                GroupErrorCodes.RateLimitExceeded,
+                TimeSpan.FromSeconds(17)),
+            (QuotaMutationDenialRateLimitDecision.Unavailable,
+                HttpStatusCode.ServiceUnavailable,
+                GroupErrorCodes.CoordinationUnavailable,
+                TimeSpan.FromSeconds(1)),
+        ];
+
+        try
+        {
+            foreach ((QuotaMutationDenialRateLimitDecision decision,
+                         HttpStatusCode status, string code, TimeSpan retryAfter) in cases)
+            {
+                fixture.SetDenialRateLimitDecision(decision);
+                QuotaInvariantSnapshot before = await fixture.ReadInvariantSnapshotAsync(
+                    scenario.GroupId,
+                    cancellationToken).ConfigureAwait(true);
+                long auditsBefore = await fixture.CountAuditsAsync(
+                    scenario.GroupId,
+                    cancellationToken).ConfigureAwait(true);
+                using HttpClient client = fixture.AuthenticatedClient(
+                    "operator",
+                    scenario.Actor("operator"));
+                using HttpRequestMessage request = QuotaCommand(
+                    scenario.GroupId,
+                    "adjust",
+                    totalTokens: 750,
+                    reason: "denial gate must precede PostgreSQL",
+                    $"m3-e1-denial-gate-{code}",
+                    ifMatch: "\"v1\"");
+
+                using HttpResponseMessage response = await client.SendAsync(
+                    request,
+                    cancellationToken).ConfigureAwait(true);
+
+                Assert.Equal(status, response.StatusCode);
+                Assert.Equal(retryAfter, response.Headers.RetryAfter?.Delta);
+                _ = await AssertProblemAsync(
+                    response,
+                    code,
+                    cancellationToken,
+                    expectedRetryable: true)
+                    .ConfigureAwait(true);
+                Assert.Equal(
+                    auditsBefore,
+                    await fixture.CountAuditsAsync(
+                        scenario.GroupId,
+                        cancellationToken).ConfigureAwait(true));
+                Assert.Equal(
+                    before,
+                    await fixture.ReadInvariantSnapshotAsync(
+                        scenario.GroupId,
+                        cancellationToken).ConfigureAwait(true));
+            }
+        }
+        finally
+        {
+            fixture.SetDenialRateLimitDecision(
+                QuotaMutationDenialRateLimitDecision.Allowed);
         }
     }
 
@@ -441,7 +526,8 @@ public sealed class M3E1QuotaPublicApiPostgresAcceptanceTests(
     private static async ValueTask<Guid> AssertProblemAsync(
         HttpResponseMessage response,
         string expectedCode,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool expectedRetryable = false)
     {
         Assert.Equal(
             "application/problem+json",
@@ -451,7 +537,9 @@ public sealed class M3E1QuotaPublicApiPostgresAcceptanceTests(
             await response.Content.ReadAsStringAsync(cancellationToken)
                 .ConfigureAwait(true));
         Assert.Equal(expectedCode, document.RootElement.GetProperty("code").GetString());
-        Assert.False(document.RootElement.GetProperty("retryable").GetBoolean());
+        Assert.Equal(
+            expectedRetryable,
+            document.RootElement.GetProperty("retryable").GetBoolean());
         Assert.Equal(
             requestId,
             document.RootElement.GetProperty("request_id").GetGuid());
@@ -524,6 +612,7 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
     private const string UserRoleId = "01900000-0000-7000-8000-000000000004";
     private PostgreSqlContainer? container;
     private RealQuotaApiFactory? factory;
+    private readonly MutableQuotaMutationDenialRateLimiter denialRateLimiter = new();
 
     internal NpgsqlDataSource AdministratorDataSource { get; private set; } = null!;
 
@@ -550,7 +639,7 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
 
         AdministratorDataSource = NpgsqlDataSource.Create(
             container.GetConnectionString());
-        factory = new RealQuotaApiFactory(connections.Api);
+        factory = new RealQuotaApiFactory(connections.Api, denialRateLimiter);
     }
 
     public async ValueTask DisposeAsync()
@@ -596,6 +685,10 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
                 actorId));
         return client;
     }
+
+    internal void SetDenialRateLimitDecision(
+        QuotaMutationDenialRateLimitDecision decision) =>
+        denialRateLimiter.NextDecision = decision;
 
     internal async ValueTask<M3E1QuotaScenario> SeedScenarioAsync(
         string prefix,
@@ -879,6 +972,7 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
         Guid actorId,
         string role,
         string operation,
+        string idempotencyKey,
         CancellationToken cancellationToken)
     {
         using NpgsqlCommand command = AdministratorDataSource.CreateCommand("""
@@ -892,7 +986,10 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
                 before_state,
                 after_state,
                 metadata ->> 'operation',
-                metadata ->> 'denial_code'
+                metadata ->> 'denial_code',
+                metadata ->> 'idempotency_key_status',
+                metadata ->> 'idempotency_key_hash',
+                metadata::text
             FROM public.audit_logs
             WHERE request_id = $1;
             """);
@@ -918,6 +1015,12 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
                 : "reset_period",
             reader.GetString(8));
         Assert.Equal("role_required", reader.GetString(9));
+        Assert.Equal("valid", reader.GetString(10));
+        Assert.Matches("^[0-9a-f]{64}$", reader.GetString(11));
+        Assert.DoesNotContain(
+            idempotencyKey,
+            reader.GetString(12),
+            StringComparison.Ordinal);
         Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(true));
     }
 
@@ -1320,7 +1423,9 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
     private static string SecretHex() => Convert.ToHexString(
         RandomNumberGenerator.GetBytes(24));
 
-    private sealed class RealQuotaApiFactory(string postgresConnectionString) :
+    private sealed class RealQuotaApiFactory(
+        string postgresConnectionString,
+        IQuotaMutationDenialRateLimiter denialRateLimiter) :
         PoolAiApiFactory
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1337,6 +1442,26 @@ public sealed class M3E1QuotaPostgresApiFixture : IAsyncLifetime
 
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(overrides));
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IQuotaMutationDenialRateLimiter>();
+                services.AddSingleton(denialRateLimiter);
+            });
+        }
+    }
+
+    private sealed class MutableQuotaMutationDenialRateLimiter :
+        IQuotaMutationDenialRateLimiter
+    {
+        internal QuotaMutationDenialRateLimitDecision NextDecision { get; set; } =
+            QuotaMutationDenialRateLimitDecision.Allowed;
+
+        public ValueTask<QuotaMutationDenialRateLimitDecision> AcquireAsync(
+            EntityId actorUserId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(NextDecision);
         }
     }
 

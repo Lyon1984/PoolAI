@@ -32,6 +32,7 @@ internal sealed class QuotaControlPlaneService :
     private readonly IUnitOfWorkFactory _unitOfWorkFactory;
     private readonly ICommandIdempotencyStore _idempotencyStore;
     private readonly IAuditAppender _auditAppender;
+    private readonly IQuotaMutationDenialRateLimiter _denialRateLimiter;
     private readonly GroupQuotaPolicy _policy;
 
     internal QuotaControlPlaneService(
@@ -39,6 +40,7 @@ internal sealed class QuotaControlPlaneService :
         IUnitOfWorkFactory unitOfWorkFactory,
         ICommandIdempotencyStore idempotencyStore,
         IAuditAppender auditAppender,
+        IQuotaMutationDenialRateLimiter denialRateLimiter,
         GroupQuotaPolicy policy)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
@@ -47,6 +49,8 @@ internal sealed class QuotaControlPlaneService :
         _idempotencyStore = idempotencyStore
             ?? throw new ArgumentNullException(nameof(idempotencyStore));
         _auditAppender = auditAppender ?? throw new ArgumentNullException(nameof(auditAppender));
+        _denialRateLimiter = denialRateLimiter
+            ?? throw new ArgumentNullException(nameof(denialRateLimiter));
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
     }
 
@@ -89,6 +93,7 @@ internal sealed class QuotaControlPlaneService :
             command.Actor,
             command.GroupId,
             command.Operation,
+            command.IdempotencyKeyAudit,
             command.IpAddress,
             command.UserAgent,
             cancellationToken);
@@ -104,6 +109,7 @@ internal sealed class QuotaControlPlaneService :
             command.Actor,
             command.GroupId,
             QuotaMutationOperation.AdjustTotal,
+            QuotaMutationIdempotencyKeyAuditInput.FromSingle(command.IdempotencyKey),
             command.IpAddress,
             command.UserAgent,
             cancellationToken).ConfigureAwait(false);
@@ -147,6 +153,7 @@ internal sealed class QuotaControlPlaneService :
             command.Actor,
             command.GroupId,
             QuotaMutationOperation.ResetPeriod,
+            QuotaMutationIdempotencyKeyAuditInput.FromSingle(command.IdempotencyKey),
             command.IpAddress,
             command.UserAgent,
             cancellationToken).ConfigureAwait(false);
@@ -399,6 +406,7 @@ internal sealed class QuotaControlPlaneService :
         GroupActor actor,
         EntityId groupId,
         QuotaMutationOperation operation,
+        QuotaMutationIdempotencyKeyAuditInput idempotencyKeyAudit,
         string? ipAddress,
         string? userAgent,
         CancellationToken cancellationToken)
@@ -408,6 +416,7 @@ internal sealed class QuotaControlPlaneService :
             || actor.TokenVersion <= 0
             || !IsKnownRole(actor.Role)
             || groupId.Value == Guid.Empty
+            || idempotencyKeyAudit is null
             || operation is not QuotaMutationOperation.AdjustTotal
                 and not QuotaMutationOperation.ResetPeriod)
         {
@@ -423,6 +432,34 @@ internal sealed class QuotaControlPlaneService :
 
         // The known-role guard and Admin fast path above prove this is exactly
         // one of Operator, Auditor, or User.
+        QuotaMutationDenialRateLimitDecision denialPermit = await _denialRateLimiter
+            .AcquireAsync(actor.UserId, cancellationToken)
+            .ConfigureAwait(false);
+        if (denialPermit.Disposition == QuotaMutationDenialRateLimitDisposition.Rejected
+            && denialPermit.RetryAfterSeconds is > 0)
+        {
+            return Failure<bool>(
+                GroupErrorCodes.RateLimitExceeded,
+                "Too many denied quota-mutation attempts were received.",
+                denialPermit.RetryAfterSeconds);
+        }
+
+        if (denialPermit.Disposition == QuotaMutationDenialRateLimitDisposition.Unavailable
+            && denialPermit.RetryAfterSeconds == 1)
+        {
+            return Failure<bool>(
+                GroupErrorCodes.CoordinationUnavailable,
+                "Redis denial-rate coordination is unavailable.",
+                retryAfterSeconds: 1);
+        }
+
+        if (denialPermit.Disposition != QuotaMutationDenialRateLimitDisposition.Allowed
+            || denialPermit.RetryAfterSeconds is not null)
+        {
+            throw new InvalidOperationException(
+                "The quota-mutation denial limiter returned an invalid decision.");
+        }
+
         AuditActorType deniedActorType = ToDeniedAuditActorType(actor.Role);
         bool adjust = operation == QuotaMutationOperation.AdjustTotal;
         await AppendDeniedAuditAsync(
@@ -434,6 +471,7 @@ internal sealed class QuotaControlPlaneService :
                 ? "groupquota.quota.total_adjust_denied"
                 : "groupquota.quota.period_reset_denied",
             adjust ? "adjust_total" : "reset_period",
+            idempotencyKeyAudit,
             ipAddress,
             userAgent,
             cancellationToken).ConfigureAwait(false);
@@ -449,6 +487,7 @@ internal sealed class QuotaControlPlaneService :
         EntityId requestId,
         string action,
         string operation,
+        QuotaMutationIdempotencyKeyAuditInput idempotencyKeyAudit,
         string? ipAddress,
         string? userAgent,
         CancellationToken cancellationToken)
@@ -475,6 +514,13 @@ internal sealed class QuotaControlPlaneService :
                 {
                     operation,
                     denial_code = GroupErrorCodes.RoleRequired,
+                    idempotency_key_status = IdempotencyKeyStatus(idempotencyKeyAudit.Status),
+                    idempotency_key_hash = idempotencyKeyAudit.Status
+                        == QuotaMutationIdempotencyKeyStatus.Valid
+                            ? HmacText(
+                                "poolai|audit-idempotency-key|groupquota-period|v1\0",
+                                idempotencyKeyAudit.ValidValue!)
+                            : null,
                 })),
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false);
@@ -773,6 +819,16 @@ internal sealed class QuotaControlPlaneService :
             : role == GroupControlRole.Auditor
                 ? AuditActorType.Auditor
                 : AuditActorType.User;
+
+    private static string IdempotencyKeyStatus(QuotaMutationIdempotencyKeyStatus status) =>
+        status switch
+        {
+            QuotaMutationIdempotencyKeyStatus.Missing => "missing",
+            QuotaMutationIdempotencyKeyStatus.Invalid => "invalid",
+            QuotaMutationIdempotencyKeyStatus.Multiple => "multiple",
+            QuotaMutationIdempotencyKeyStatus.Valid => "valid",
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
+        };
 
     private static string Scope(
         QuotaMutationKind kind,

@@ -1,6 +1,8 @@
 #pragma warning disable MA0051 // Test doubles keep the complete transactional protocol visible.
 using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.GroupQuota.Abstractions;
@@ -80,12 +82,13 @@ public sealed class QuotaControlPlaneServiceTests
         foreach ((GroupControlRole role, AuditActorType actorType, bool reset) in cases)
         {
             GroupActor actor = new(ActorId, role, 1);
+            string key = reset ? "denied-reset" : "denied-adjust";
             Result<GroupQuotaCommandOutcome> result = reset
                 ? await context.Service.ExecuteAsync(
-                    Reset(actor, "denied-reset"),
+                    Reset(actor, key),
                     CancellationToken.None)
                 : await context.Service.ExecuteAsync(
-                    Adjust(actor, "denied-adjust"),
+                    Adjust(actor, key),
                     CancellationToken.None);
 
             Assert.True(result.IsFailure);
@@ -105,6 +108,13 @@ public sealed class QuotaControlPlaneServiceTests
             Assert.Equal(
                 GroupErrorCodes.RoleRequired,
                 entry.Metadata.GetProperty("denial_code").GetString());
+            Assert.Equal(
+                "valid",
+                entry.Metadata.GetProperty("idempotency_key_status").GetString());
+            Assert.Equal(
+                64,
+                entry.Metadata.GetProperty("idempotency_key_hash").GetString()!.Length);
+            Assert.DoesNotContain(key, entry.Metadata.GetRawText(), StringComparison.Ordinal);
         }
 
         Assert.Equal(cases.Length, context.Units.BeginCalls);
@@ -127,6 +137,7 @@ public sealed class QuotaControlPlaneServiceTests
                 actor,
                 GroupId,
                 QuotaMutationOperation.AdjustTotal,
+                QuotaMutationIdempotencyKeyAuditInput.Missing,
                 "127.0.0.1",
                 "sha256:test"),
             CancellationToken.None);
@@ -137,8 +148,128 @@ public sealed class QuotaControlPlaneServiceTests
         AuditEntry entry = Assert.Single(context.Audit.Entries);
         Assert.Equal("groupquota.quota.total_adjust_denied", entry.Action);
         Assert.Equal(AuditActorType.Operator, entry.ActorType);
+        Assert.Equal(
+            "missing",
+            entry.Metadata.GetProperty("idempotency_key_status").GetString());
+        Assert.Equal(
+            JsonValueKind.Null,
+            entry.Metadata.GetProperty("idempotency_key_hash").ValueKind);
         Assert.Empty(context.Idempotency.Requests);
         Assert.Equal(0, repository.AdjustCalls);
+    }
+
+    [Fact]
+    public async Task DenialAuditRecordsOnlyIdempotencyKeyStatusOrHmac()
+    {
+        const string validKey = "denial-audit-secret-key";
+        (QuotaMutationIdempotencyKeyAuditInput Input, string Status)[] cases =
+        [
+            (QuotaMutationIdempotencyKeyAuditInput.Missing, "missing"),
+            (QuotaMutationIdempotencyKeyAuditInput.FromSingle(string.Empty), "missing"),
+            (QuotaMutationIdempotencyKeyAuditInput.FromSingle("bad key"), "invalid"),
+            (QuotaMutationIdempotencyKeyAuditInput.Multiple, "multiple"),
+            (QuotaMutationIdempotencyKeyAuditInput.FromSingle(validKey), "valid"),
+        ];
+
+        foreach ((QuotaMutationIdempotencyKeyAuditInput input, string status) in cases)
+        {
+            TestContext context = CreateContext(new RecordingQuotaRepository());
+            Result<bool> result = await context.Service.ExecuteAsync(
+                new AuthorizeQuotaMutationCommand(
+                    EntityId.New(),
+                    new GroupActor(ActorId, GroupControlRole.Operator, 1),
+                    GroupId,
+                    QuotaMutationOperation.AdjustTotal,
+                    input,
+                    "127.0.0.1",
+                    "sha256:test"),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+            Assert.Equal(GroupErrorCodes.RoleRequired, result.Error.Code);
+            JsonElement metadata = Assert.Single(context.Audit.Entries).Metadata;
+            Assert.Equal(status, metadata.GetProperty("idempotency_key_status").GetString());
+            JsonElement hash = metadata.GetProperty("idempotency_key_hash");
+            if (string.Equals(status, "valid", StringComparison.Ordinal))
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(
+                    "poolai|audit-idempotency-key|groupquota-period|v1\0" + validKey);
+                string expected = Convert.ToHexStringLower(HMACSHA256.HashData(
+                    Enumerable.Repeat((byte)0x5a, 32).ToArray(),
+                    inputBytes));
+                Assert.Equal(expected, hash.GetString());
+                Assert.DoesNotContain(validKey, metadata.GetRawText(), StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.Equal(JsonValueKind.Null, hash.ValueKind);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RejectedOrUnavailableDenialGateReturnsBeforeEveryDatabaseWrite()
+    {
+        (QuotaMutationDenialRateLimitDecision Decision, string Code, long RetryAfter)[] cases =
+        [
+            (QuotaMutationDenialRateLimitDecision.Rejected(17),
+                GroupErrorCodes.RateLimitExceeded,
+                17),
+            (QuotaMutationDenialRateLimitDecision.Unavailable,
+                GroupErrorCodes.CoordinationUnavailable,
+                1),
+        ];
+
+        foreach ((QuotaMutationDenialRateLimitDecision decision, string code,
+                     long retryAfter) in cases)
+        {
+            RecordingQuotaRepository repository = new();
+            RecordingQuotaMutationDenialRateLimiter limiter = new()
+            {
+                NextDecision = decision,
+            };
+            TestContext context = CreateContext(repository, limiter);
+
+            Result<GroupQuotaCommandOutcome> result = await context.Service.ExecuteAsync(
+                Adjust(
+                    new GroupActor(ActorId, GroupControlRole.Operator, 1),
+                    $"denial-gate-{code}"),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+            Assert.Equal(code, result.Error.Code);
+            Assert.Equal(retryAfter, result.Error.RetryAfterSeconds);
+            Assert.Equal([ActorId], limiter.Actors);
+            Assert.Equal(0, context.Units.BeginCalls);
+            Assert.Equal(0, context.Units.CommitCalls);
+            Assert.Empty(context.Audit.Entries);
+            Assert.Empty(context.Idempotency.Requests);
+            Assert.Equal(0, repository.AdjustCalls);
+            Assert.Equal(0, repository.ResetCalls);
+        }
+    }
+
+    [Fact]
+    public async Task AdminBypassesTheDenialGate()
+    {
+        RecordingQuotaRepository repository = new()
+        {
+            NextAdjust = new QuotaWriteResult(QuotaWriteDisposition.NotFound),
+        };
+        RecordingQuotaMutationDenialRateLimiter limiter = new()
+        {
+            NextDecision = QuotaMutationDenialRateLimitDecision.Rejected(60),
+        };
+        TestContext context = CreateContext(repository, limiter);
+
+        Result<GroupQuotaCommandOutcome> result = await context.Service.ExecuteAsync(
+            Adjust(Admin(), "admin-bypass-denial-gate"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(GroupErrorCodes.ResourceNotFound, result.Error.Code);
+        Assert.Empty(limiter.Actors);
+        Assert.Equal(1, repository.AdjustCalls);
     }
 
     [Fact]
@@ -434,18 +565,21 @@ public sealed class QuotaControlPlaneServiceTests
         RecordingUnitOfWorkFactory units = new();
         RecordingIdempotencyStore idempotency = new([]);
         RecordingAuditAppender audit = new();
+        RecordingQuotaMutationDenialRateLimiter limiter = new();
         GroupQuotaPolicy policy = Policy();
 
         Assert.Throws<ArgumentNullException>(() =>
-            _ = new QuotaControlPlaneService(null!, units, idempotency, audit, policy));
+            _ = new QuotaControlPlaneService(null!, units, idempotency, audit, limiter, policy));
         Assert.Throws<ArgumentNullException>(() =>
-            _ = new QuotaControlPlaneService(repository, null!, idempotency, audit, policy));
+            _ = new QuotaControlPlaneService(repository, null!, idempotency, audit, limiter, policy));
         Assert.Throws<ArgumentNullException>(() =>
-            _ = new QuotaControlPlaneService(repository, units, null!, audit, policy));
+            _ = new QuotaControlPlaneService(repository, units, null!, audit, limiter, policy));
         Assert.Throws<ArgumentNullException>(() =>
-            _ = new QuotaControlPlaneService(repository, units, idempotency, null!, policy));
+            _ = new QuotaControlPlaneService(repository, units, idempotency, null!, limiter, policy));
         Assert.Throws<ArgumentNullException>(() =>
-            _ = new QuotaControlPlaneService(repository, units, idempotency, audit, null!));
+            _ = new QuotaControlPlaneService(repository, units, idempotency, audit, null!, policy));
+        Assert.Throws<ArgumentNullException>(() =>
+            _ = new QuotaControlPlaneService(repository, units, idempotency, audit, limiter, null!));
     }
 
     [Fact]
@@ -577,6 +711,7 @@ public sealed class QuotaControlPlaneServiceTests
             Admin(),
             GroupId,
             QuotaMutationOperation.AdjustTotal,
+            QuotaMutationIdempotencyKeyAuditInput.Missing,
             "127.0.0.1",
             "sha256:test");
         AuthorizeQuotaMutationCommand[] invalid =
@@ -587,6 +722,7 @@ public sealed class QuotaControlPlaneServiceTests
             valid with { Actor = Admin() with { Role = (GroupControlRole)int.MaxValue } },
             valid with { GroupId = default },
             valid with { Operation = (QuotaMutationOperation)int.MaxValue },
+            valid with { IdempotencyKeyAudit = null! },
         ];
 
         foreach (AuthorizeQuotaMutationCommand command in invalid)
@@ -601,6 +737,7 @@ public sealed class QuotaControlPlaneServiceTests
             Assert.Equal(GroupErrorCodes.InvalidRequest, result.Error.Code);
             Assert.Equal(0, context.Units.BeginCalls);
             Assert.Empty(context.Audit.Entries);
+            Assert.Empty(context.DenialRateLimiter.Actors);
         }
     }
 
@@ -952,20 +1089,24 @@ public sealed class QuotaControlPlaneServiceTests
         Assert.Equal(0, failureContext.Units.CommitCalls);
     }
 
-    private static TestContext CreateContext(RecordingQuotaRepository repository)
+    private static TestContext CreateContext(
+        RecordingQuotaRepository repository,
+        RecordingQuotaMutationDenialRateLimiter? limiter = null)
     {
         List<string> trace = [];
         repository.Trace = trace;
         RecordingUnitOfWorkFactory units = new();
         RecordingIdempotencyStore idempotency = new(trace);
         RecordingAuditAppender audit = new();
+        limiter ??= new RecordingQuotaMutationDenialRateLimiter();
         QuotaControlPlaneService service = new(
             repository,
             units,
             idempotency,
             audit,
+            limiter,
             Policy());
-        return new TestContext(service, units, idempotency, audit, trace);
+        return new TestContext(service, units, idempotency, audit, limiter, trace);
     }
 
     private static GroupQuotaPolicy Policy() =>
@@ -1125,7 +1266,26 @@ public sealed class QuotaControlPlaneServiceTests
         RecordingUnitOfWorkFactory Units,
         RecordingIdempotencyStore Idempotency,
         RecordingAuditAppender Audit,
+        RecordingQuotaMutationDenialRateLimiter DenialRateLimiter,
         List<string> Trace);
+
+    private sealed class RecordingQuotaMutationDenialRateLimiter :
+        IQuotaMutationDenialRateLimiter
+    {
+        internal QuotaMutationDenialRateLimitDecision NextDecision { get; set; } =
+            QuotaMutationDenialRateLimitDecision.Allowed;
+
+        internal List<EntityId> Actors { get; } = [];
+
+        public ValueTask<QuotaMutationDenialRateLimitDecision> AcquireAsync(
+            EntityId actorUserId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Actors.Add(actorUserId);
+            return ValueTask.FromResult(NextDecision);
+        }
+    }
 
     private sealed class RecordingQuotaRepository : IQuotaRepository
     {

@@ -23,6 +23,8 @@ public sealed class GroupQuotaEndpointContractTests
 {
     private const string QuotaTotal = "9007199254740991";
     private const string QuotaConsumed = "9007199254740992";
+    private static readonly string[] MultipleIdempotencyKeys =
+        ["first-key", "second-key"];
     private const string QuotaReserved =
         "123456789012345678901234567890";
     private static readonly EntityId ActorId = new(Guid.Parse(
@@ -197,22 +199,26 @@ public sealed class GroupQuotaEndpointContractTests
     }
 
     [Fact]
-    public async Task AdminCreateTotalTokensRequiresACanonicalSafeIntegerJsonNumber()
+#pragma warning disable MA0051 // The mathematical-integer positive/negative matrix is cohesive.
+    public async Task AdminCreateTotalTokensRequiresAMathematicallyIntegralSafeJsonNumber()
     {
-        // Governing contract: AC-026 accepts only a positive JSON integer in
-        // the JavaScript-safe range. Lexically non-integer JSON numbers and
-        // strings fail at the endpoint before the Group create use case.
+        // Governing contract: AC-026 and the OpenAPI 3.1 JSON Schema accept a
+        // positive mathematical integer in the JavaScript-safe range. JSON
+        // strings, non-integral values, and out-of-range values fail before
+        // the Group create use case.
         await using GroupApiFactory factory = new();
         using HttpClient client = AuthenticatedClient(factory, "admin");
         string[] invalidTotalTokens =
         [
             "\"1\"",
             "1.5",
-            "1.0",
-            "1e3",
+            "1e-1",
+            "100e-3",
+            "1.0000000000000001",
             "0",
             "-1",
             "9007199254740992",
+            "9.007199254740992e15",
         ];
 
         for (int index = 0; index < invalidTotalTokens.Length; index++)
@@ -233,20 +239,34 @@ public sealed class GroupQuotaEndpointContractTests
 
         Assert.Equal(0, factory.UseCases.CreateCalls);
 
-        using HttpRequestMessage valid = RawJsonCommand(
-            """{"name":"Valid","total_tokens":9007199254740991}""",
-            "group-create-safe-integer-maximum");
-        using HttpResponseMessage validResponse = await client.SendAsync(
-            valid,
-            TestContext.Current.CancellationToken);
+        (string Number, long Expected)[] validTotalTokens =
+        [
+            ("1.0", 1),
+            ("1e3", 1_000),
+            ("10e-1", 1),
+            ("0.001e3", 1),
+            ("9.007199254740991e15", 9_007_199_254_740_991),
+        ];
+        for (int index = 0; index < validTotalTokens.Length; index++)
+        {
+            (string number, long expected) = validTotalTokens[index];
+            using HttpRequestMessage valid = RawJsonCommand(
+                $$"""{"name":"Valid","total_tokens":{{number}}}""",
+                $"group-create-safe-integer-{index}");
+            using HttpResponseMessage validResponse = await client.SendAsync(
+                valid,
+                TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.Created, validResponse.StatusCode);
-        Assert.Equal(1, factory.UseCases.CreateCalls);
-        Assert.Equal(
-            9_007_199_254_740_991,
-            Assert.IsType<CreateGroupCommand>(
-                factory.UseCases.LastCreateCommand).TotalTokens);
+            Assert.Equal(HttpStatusCode.Created, validResponse.StatusCode);
+            Assert.Equal(
+                expected,
+                Assert.IsType<CreateGroupCommand>(
+                    factory.UseCases.LastCreateCommand).TotalTokens);
+        }
+
+        Assert.Equal(validTotalTokens.Length, factory.UseCases.CreateCalls);
     }
+#pragma warning restore MA0051
 
     [Fact]
     public async Task AdminCreateRejectsAdditionalProperties()
@@ -537,6 +557,54 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
     }
 
+    [Theory]
+    [InlineData("adjust", "new_total_tokens", "1.0", 1L)]
+    [InlineData("adjust", "new_total_tokens", "1e3", 1_000L)]
+    [InlineData("reset", "total_tokens", "10e-1", 1L)]
+    [InlineData(
+        "reset",
+        "total_tokens",
+        "9.007199254740991e15",
+        9_007_199_254_740_991L)]
+    public async Task QuotaMutationAcceptsMathematicallyIntegralJsonForms(
+        string operation,
+        string tokenProperty,
+        string number,
+        long expected)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = RawJsonCommand(
+            QuotaMutationBody(tokenProperty, number),
+            $"quota-{operation}-mathematical-integer",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/{operation}",
+            ifMatch: "\"v1\"");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        if (string.Equals(operation, "adjust", StringComparison.Ordinal))
+        {
+            Assert.Equal(
+                expected,
+                Assert.IsType<AdjustGroupQuotaCommand>(
+                    factory.UseCases.LastAdjustQuotaCommand).NewTotalTokens);
+            Assert.Equal(1, factory.UseCases.AdjustQuotaCalls);
+            Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+        }
+        else
+        {
+            Assert.Equal(
+                expected,
+                Assert.IsType<ResetGroupQuotaCommand>(
+                    factory.UseCases.LastResetQuotaCommand).TotalTokens);
+            Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+            Assert.Equal(1, factory.UseCases.ResetQuotaCalls);
+        }
+    }
+
     [Fact]
     public async Task QuotaMutationTransportAndPathFailuresDoNotReachUseCases()
     {
@@ -613,6 +681,9 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal(
             QuotaMutationOperation.AdjustTotal,
             factory.UseCases.LastQuotaAuthorizationCommand.Operation);
+        Assert.Equal(
+            QuotaMutationIdempotencyKeyStatus.Missing,
+            factory.UseCases.LastQuotaAuthorizationCommand.IdempotencyKeyAudit.Status);
 
         using HttpRequestMessage reset = new(
             HttpMethod.Post,
@@ -632,9 +703,63 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal(
             QuotaMutationOperation.ResetPeriod,
             factory.UseCases.LastQuotaAuthorizationCommand.Operation);
+        Assert.Equal(
+            QuotaMutationIdempotencyKeyStatus.Missing,
+            factory.UseCases.LastQuotaAuthorizationCommand.IdempotencyKeyAudit.Status);
         Assert.Equal(2, factory.UseCases.QuotaAuthorizationCalls);
         Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
         Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task QuotaAuthorizationPreflightClassifiesIdempotencyHeadersWithoutReadingBody()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "operator");
+        (string? Single, string[]? Multiple, QuotaMutationIdempotencyKeyStatus Status,
+            string? ValidValue)[] cases =
+        [
+            (null, null, QuotaMutationIdempotencyKeyStatus.Missing, null),
+            (string.Empty, null, QuotaMutationIdempotencyKeyStatus.Missing, null),
+            ("bad key", null, QuotaMutationIdempotencyKeyStatus.Invalid, null),
+            (null, ["first-key", "second-key"],
+                QuotaMutationIdempotencyKeyStatus.Multiple, null),
+            ("valid-audit-key", null, QuotaMutationIdempotencyKeyStatus.Valid,
+                "valid-audit-key"),
+        ];
+
+        foreach ((string? single, string[]? multiple,
+                     QuotaMutationIdempotencyKeyStatus status, string? validValue) in cases)
+        {
+            using HttpRequestMessage request = new(
+                HttpMethod.Post,
+                $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust")
+            {
+                Content = new StringContent("{", Encoding.UTF8, "text/plain"),
+            };
+            if (single is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Idempotency-Key", single);
+            }
+            else if (multiple is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Idempotency-Key", multiple);
+            }
+
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            await AssertProblemAsync(response, "role_required").ConfigureAwait(true);
+            QuotaMutationIdempotencyKeyAuditInput input =
+                factory.UseCases.LastQuotaAuthorizationCommand!.IdempotencyKeyAudit;
+            Assert.Equal(status, input.Status);
+            Assert.Equal(validValue, input.ValidValue);
+        }
+
+        Assert.Equal(cases.Length, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
     }
 
     [Fact]
@@ -961,6 +1086,7 @@ public sealed class GroupQuotaEndpointContractTests
             ("version_conflict", HttpStatusCode.PreconditionFailed, "version_conflict", true, false, "\"v23\""),
             ("validation_failed", HttpStatusCode.UnprocessableEntity, "validation_failed", false, false, null),
             ("invalid_request", HttpStatusCode.BadRequest, "invalid_request", false, false, null),
+            ("rate_limit_exceeded", HttpStatusCode.TooManyRequests, "rate_limit_exceeded", true, true, null),
             ("coordination_unavailable", HttpStatusCode.ServiceUnavailable, "coordination_unavailable", true, true, null),
             ("dependency_unavailable", HttpStatusCode.ServiceUnavailable, "dependency_unavailable", true, true, null),
             ("service_unavailable", HttpStatusCode.ServiceUnavailable, "dependency_unavailable", true, true, null),
@@ -973,6 +1099,12 @@ public sealed class GroupQuotaEndpointContractTests
             factory.UseCases.ListResult = Result.Failure<GroupPage>(
                 sourceCode,
                 "synthetic failure",
+                retryAfterSeconds: string.Equals(
+                    sourceCode,
+                    GroupErrorCodes.RateLimitExceeded,
+                    StringComparison.Ordinal)
+                        ? 1
+                        : null,
                 etag: etag);
             using HttpResponseMessage response = await client.GetAsync(
                 "/api/v1/admin/groups",
@@ -1191,8 +1323,8 @@ public sealed class GroupQuotaEndpointContractTests
         [
             (QuotaMutationBody(tokenProperty, "\"1\""), $"/{tokenProperty}"),
             (QuotaMutationBody(tokenProperty, "1.5"), $"/{tokenProperty}"),
-            (QuotaMutationBody(tokenProperty, "1.0"), $"/{tokenProperty}"),
-            (QuotaMutationBody(tokenProperty, "1e3"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "1e-1"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "100e-3"), $"/{tokenProperty}"),
             (QuotaMutationBody(tokenProperty, "0"), $"/{tokenProperty}"),
             (QuotaMutationBody(tokenProperty, "-1"), $"/{tokenProperty}"),
             (
@@ -1268,19 +1400,10 @@ public sealed class GroupQuotaEndpointContractTests
                 .ConfigureAwait(false);
         }
 
-        using (HttpRequestMessage missingIdempotency = RawJsonCommand(
-                   validBody,
-                   idempotencyKey: null,
-                   path: path,
-                   ifMatch: "\"v1\""))
-        using (HttpResponseMessage response = await client.SendAsync(
-                   missingIdempotency,
-                   TestContext.Current.CancellationToken).ConfigureAwait(false))
-        {
-            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
-            await AssertProblemAsync(response, "idempotency_key_required")
-                .ConfigureAwait(false);
-        }
+        await AssertInvalidQuotaMutationIdempotencyHeadersAsync(
+            client,
+            validBody,
+            path).ConfigureAwait(false);
 
         using (HttpRequestMessage missingIfMatch = RawJsonCommand(
                    validBody,
@@ -1294,6 +1417,57 @@ public sealed class GroupQuotaEndpointContractTests
             await AssertProblemAsync(response, "if_match_required")
                 .ConfigureAwait(false);
         }
+    }
+
+    private static async ValueTask AssertInvalidQuotaMutationIdempotencyHeadersAsync(
+        HttpClient client,
+        string validBody,
+        string path)
+    {
+        using (HttpRequestMessage missing = RawJsonCommand(
+                   validBody,
+                   idempotencyKey: null,
+                   path: path,
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   missing,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
+            await AssertProblemAsync(response, "idempotency_key_required")
+                .ConfigureAwait(false);
+        }
+
+        using (HttpRequestMessage empty = RawJsonCommand(
+                   validBody,
+                   idempotencyKey: string.Empty,
+                   path: path,
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   empty,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
+            await AssertProblemAsync(response, "idempotency_key_required")
+                .ConfigureAwait(false);
+        }
+
+        using HttpRequestMessage multiple = RawJsonCommand(
+            validBody,
+            idempotencyKey: null,
+            path: path,
+            ifMatch: "\"v1\"");
+        multiple.Headers.TryAddWithoutValidation(
+            "Idempotency-Key",
+            MultipleIdempotencyKeys);
+        using HttpResponseMessage multipleResponse = await client.SendAsync(
+            multiple,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.BadRequest, multipleResponse.StatusCode);
+        await AssertProblemAsync(
+            multipleResponse,
+            "invalid_request",
+            "/headers/Idempotency-Key").ConfigureAwait(false);
     }
 
     private static string QuotaMutationBody(

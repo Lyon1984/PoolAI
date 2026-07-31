@@ -343,6 +343,8 @@ public sealed class ConfigurationValidationTests
     [InlineData("Quota:ReservationSweepSeconds", "31")]
     [InlineData("Quota:MaxStreamSeconds", "7199")]
     [InlineData("Quota:DisconnectDrainSeconds", "16")]
+    [InlineData("Quota:DeniedMutationAttemptsPerMinute", "0")]
+    [InlineData("Quota:DeniedMutationAttemptsPerMinute", "21")]
     [InlineData("Admission:DataQueueLimit", "1")]
     [InlineData("Admission:ControlQueueLimit", "51")]
     [InlineData("Admission:UsageQueueLimit", "21")]

@@ -54,6 +54,7 @@ x-common-app-environment: &common-app-environment
   Quota__ReservationSweepSeconds: "30"
   Quota__MaxStreamSeconds: "7200"
   Quota__DisconnectDrainSeconds: "15"
+  Quota__DeniedMutationAttemptsPerMinute: "5"
   Admission__DataNonStreamPermits: "200"
   Admission__DataStreamPermits: "600"
   Admission__DataQueueLimit: "0"

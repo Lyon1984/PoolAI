@@ -114,11 +114,15 @@ public sealed class GroupQuotaHttpDefensiveTests
     [Theory]
     [InlineData("""{"name":"Research","total_tokens":"1"}""")]
     [InlineData("""{"name":"Research","total_tokens":1.5}""")]
-    [InlineData("""{"name":"Research","total_tokens":1e1}""")]
+    [InlineData("""{"name":"Research","total_tokens":1e-1}""")]
+    [InlineData("""{"name":"Research","total_tokens":100e-3}""")]
+    [InlineData("""{"name":"Research","total_tokens":1.0000000000000001}""")]
     [InlineData("""{"name":"Research","total_tokens":0}""")]
     [InlineData("""{"name":"Research","total_tokens":-1}""")]
     [InlineData("""{"name":"Research","total_tokens":9007199254740992}""")]
-    public void GroupCreateParserRejectsNonCanonicalOrUnsafeTokenInput(
+    [InlineData("""{"name":"Research","total_tokens":9.007199254740992e15}""")]
+    [InlineData("""{"name":"Research","total_tokens":1e999999999999999999}""")]
+    public void GroupCreateParserRejectsNonIntegralOrUnsafeTokenInput(
         string json)
     {
         using JsonDocument document = JsonDocument.Parse(json);
@@ -266,9 +270,45 @@ public sealed class GroupQuotaHttpDefensiveTests
     }
 
     [Theory]
+    [InlineData("1.0", 1L)]
+    [InlineData("1.000e0", 1L)]
+    [InlineData("1e3", 1_000L)]
+    [InlineData("1E+3", 1_000L)]
+    [InlineData("10e-1", 1L)]
+    [InlineData("1000e-3", 1L)]
+    [InlineData("0.001e3", 1L)]
+    [InlineData("9007199254740991.0", 9_007_199_254_740_991L)]
+    [InlineData("9.007199254740991e15", 9_007_199_254_740_991L)]
+    [InlineData("90071992547409910e-1", 9_007_199_254_740_991L)]
+    public void GroupAndQuotaParsersAcceptEveryMathematicallyIntegralJsonForm(
+        string number,
+        long expected)
+    {
+        using JsonDocument create = JsonDocument.Parse(
+            $$"""{"name":"Research","total_tokens":{{number}}}""");
+        Assert.True(GroupQuotaHttp.TryParseGroupCreateRequest(
+            create.RootElement,
+            out GroupQuotaHttp.ParsedGroupCreateRequest? parsedCreate,
+            out IReadOnlyDictionary<string, IReadOnlyList<string>> createErrors));
+        Assert.Empty(createErrors);
+        Assert.Equal(expected, parsedCreate!.TotalTokens);
+
+        using JsonDocument mutation = JsonDocument.Parse(
+            $$"""{"new_total_tokens":{{number}},"reason":"capacity review"}""");
+        Assert.True(GroupQuotaHttp.TryParseQuotaMutationRequest(
+            mutation.RootElement,
+            "new_total_tokens",
+            out GroupQuotaHttp.ParsedQuotaMutationRequest? parsedMutation,
+            out IReadOnlyDictionary<string, IReadOnlyList<string>> mutationErrors));
+        Assert.Empty(mutationErrors);
+        Assert.Equal(expected, parsedMutation!.TotalTokens);
+    }
+
+    [Theory]
     [InlineData("new_total_tokens", """{"new_total_tokens":"1","reason":"adjust"}""", "/new_total_tokens")]
-    [InlineData("new_total_tokens", """{"new_total_tokens":1.0,"reason":"adjust"}""", "/new_total_tokens")]
-    [InlineData("new_total_tokens", """{"new_total_tokens":1e1,"reason":"adjust"}""", "/new_total_tokens")]
+    [InlineData("new_total_tokens", """{"new_total_tokens":1.5,"reason":"adjust"}""", "/new_total_tokens")]
+    [InlineData("new_total_tokens", """{"new_total_tokens":1e-1,"reason":"adjust"}""", "/new_total_tokens")]
+    [InlineData("new_total_tokens", """{"new_total_tokens":9007199254740992.0,"reason":"adjust"}""", "/new_total_tokens")]
     [InlineData("new_total_tokens", """{"new_total_tokens":1,"reason":" "}""", "/reason")]
     [InlineData("new_total_tokens", """{"new_total_tokens":1,"reason":"\uD800"}""", "/reason")]
     [InlineData("new_total_tokens", """{"new_total_tokens":1,"reason":"valid","\uD800":true}""", "/")]
