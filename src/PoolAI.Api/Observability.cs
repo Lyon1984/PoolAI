@@ -20,6 +20,7 @@ internal static class Observability
             .ConfigureResource(resource => resource.AddService(
                 configuration["Observability:ServiceName"] ?? "poolai-api"))
             .WithMetrics(metrics => metrics
+                .AddMeter("PoolAI.Routing")
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation())

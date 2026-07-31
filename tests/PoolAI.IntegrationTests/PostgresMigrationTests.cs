@@ -33,7 +33,10 @@ public sealed partial class PostgresMigrationTests
         PostgresMigrator migrator = new(catalog);
         await ApplyConcurrentlyAndRepeatAsync(migrator, connectionString, cancellationToken)
             .ConfigureAwait(true);
-        await AssertMigrationCountAsync(connectionString, cancellationToken).ConfigureAwait(true);
+        await AssertMigrationCountAsync(
+            connectionString,
+            catalog.Assets.Count,
+            cancellationToken).ConfigureAwait(true);
         await AssertNumeric78BoundaryAsync(connectionString, cancellationToken).ConfigureAwait(true);
         await AssertRefreshSessionForeignKeysAreIndexedAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
@@ -118,8 +121,10 @@ public sealed partial class PostgresMigrationTests
             "PoolAI.IntegrationTests.compose-migrator",
             cancellationToken).ConfigureAwait(true);
 
-        await AssertMigrationCountAsync(administratorConnectionString, cancellationToken)
-            .ConfigureAwait(true);
+        await AssertMigrationCountAsync(
+            administratorConnectionString,
+            catalog.Assets.Count,
+            cancellationToken).ConfigureAwait(true);
         await AssertQuotaEntryPointSecurityAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
@@ -168,6 +173,7 @@ public sealed partial class PostgresMigrationTests
 
     private static async ValueTask AssertMigrationCountAsync(
         string connectionString,
+        int expectedCount,
         CancellationToken cancellationToken)
     {
         using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
@@ -176,7 +182,7 @@ public sealed partial class PostgresMigrationTests
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(11L, Assert.IsType<long>(scalar));
+        Assert.Equal((long)expectedCount, Assert.IsType<long>(scalar));
     }
 
     private static async ValueTask AssertNumeric78BoundaryAsync(

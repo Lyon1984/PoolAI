@@ -103,6 +103,7 @@ public sealed class RepositoryLayoutTests
                 "PoolAI.Modules.Supply",
                 "PoolAI.Modules.Usage",
                 "PoolAI.Modules.Operations",
+                "PoolAI.Modules.Routing",
             ],
             ["PoolAI.Migrator"] = ["PoolAI.Database.Migrations"],
             ["PoolAI.Application.Orchestration"] =

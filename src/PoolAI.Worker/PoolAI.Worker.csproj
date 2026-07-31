@@ -15,5 +15,6 @@
     <ProjectReference Include="../Modules/PoolAI.Modules.Supply/PoolAI.Modules.Supply.csproj" />
     <ProjectReference Include="../Modules/PoolAI.Modules.Usage/PoolAI.Modules.Usage.csproj" />
     <ProjectReference Include="../Modules/PoolAI.Modules.Operations/PoolAI.Modules.Operations.csproj" />
+    <ProjectReference Include="../Modules/PoolAI.Modules.Routing/PoolAI.Modules.Routing.csproj" />
   </ItemGroup>
 </Project>

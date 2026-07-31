@@ -33,7 +33,7 @@ Redis 只承载短生命周期协调、限流、粘性和缓存，不是 Subscri
 | 密码重置 | `rate:password-reset:v1:{scope_hash}:{minute_epoch}` / String integer | 当前 Redis 分钟内按 IP 或账户族群区分的请求次数 | 120 s | anonymous forgot-password 对 IP 与规范化邮箱两个 scope 分别计数；任一超限返回 `429 rate_limit_exceeded`，异常返回 `503 coordination_unavailable`；存在/不存在/disabled User 使用相同路径 |
 | 粘性路由 | `sticky:v1:{group_id}:{session_hash}` / String | account_id、group_policy_version、supply_configuration_version | 60 min，命中续期 | miss/error 或任一 version 不匹配时重新调度；仍必须强读 Supply Configuration 并取得 Account lease |
 | Account 冷却 | `cooldown:account:v1:{account_id}` / String JSON | reason、retry_at、source_status | `retry_at-now`，上限 24 h | miss 使用 PostgreSQL 最近健康状态；不得绕过 Account lease |
-| Account breaker 窗口 | `breaker:account:v1:{account_id}` / HASH | window_started_at_ms、samples、failures、consecutive_failures、open_until_ms、open_count、half_open_successes、auth_blocked | 每次记录后 24 h | 脚本异常 fail-closed；不得仅用进程内计数判定 breaker |
+| Account breaker 窗口 | `breaker:account:v1:{account_id}` / HASH | window_started_at_ms、samples、failures、consecutive_failures、open_until_ms、open_count、half_open_successes、auth_blocked | 每次有效写入后 48 h | 脚本异常 fail-closed；TTL 必须长于最长 24 h cooldown 并保留一整天调度余量；不得仅用进程内计数判定 breaker |
 | Account half-open 单探针 | `breaker-probe:account:v1:{account_id}` / String | member=随机 128-bit owner token | 固定 10 s，不续期 | 只能通过 `breaker_probe_acquire_v1` 取得；异常 fail-closed |
 | Access Token 撤销预筛快照 | `auth:token-version:v1:{user_id}` / String integer | 最近观察到的 token_version | 5 min | 只能提前拒绝；M1-E2 的每个 `UserJwt` 请求仍强读 PostgreSQL 验证 JWT `sid` family 有 active generation，M1-E3 再完整覆盖 User/status/role/token_version canonical 强读，PG 失败均 fail-closed |
 | 缓存失效通知 | channel `poolai:r1:<environment>:invalidate:v1` | entity type、id、version | Pub/Sub 无持久 TTL | best effort；正确性依靠短 TTL 与数据库 version |
@@ -146,11 +146,124 @@ Breaker 记录与 retry 是两个正交决策：“计入上游健康失败”�
 
 ### 7.3 Breaker Lua v1 与 half-open 单探针
 
-- `breaker_record_v1` 的 `KEYS[1..2]` 依次为 breaker HASH 与 cooldown String；`ARGV` 包含 outcome（`success/transient_failure/rate_limited/auth_failure/ignored`）、经校验的 retry-after-ms、有界 jitter 与逻辑版本。脚本用 Redis `TIME` 换窗、原子更新计数/open_until，并把 HASH TTL 重置为 24 h。返回固定数组 `[state_code,samples,failures,consecutive_failures,open_until_ms,action_code]`。
-- `breaker_probe_acquire_v1` 的 `KEYS[1..3]` 为 breaker、cooldown、probe；它用 Redis `TIME` 确认 breaker 存在、`open_count > 0`、`auth_blocked=0` 且 `open_until_ms <= now_ms`，再以等价于 `SET probe owner NX PX 10000` 的原子操作选出全集群唯一探针。返回 `[1,probe_expires_at_ms]`、`[0,retry_after_ms]` 或参数错误。
-- `breaker_probe_complete_v1` 只接受 probe key 中的当前 owner。成功时原子增加 `half_open_successes`并删除 probe；第 1 次连续成功仍保持 half-open，只允许下一个单 probe，第 2 次连续成功才清零窗口/open_count/half_open_successes、删除 cooldown 并返“写 healthy/closed”。任一探针失败都清零 `half_open_successes`，按指数 break duration 或受限 Retry-After 重新 open，删除 probe 并返“写 cooling/unhealthy”。迟到/非 owner complete 不能改变状态。
-- 探针仍必须获取 Account lease。如以真实模型请求做探针，必须走完 Group reservation、attempt 事实和核销，不存在“免配额健康请求”。
-- 三个 breaker 脚本的所有 key 共用 `{account_id}` hash tag。任一脚本超时、未知 code、Redis 断开或 probe 所有权不可验证均 fail-closed，不降级为本地 breaker。
+以下 ABI 是逻辑版本 1 的完整协议。Lua 正文、Operations 固定端口和测试不得自行增加可选参数、缩短数组或重新解释整数 code。
+
+#### 7.3.1 通用编码、HASH 完整性与状态 code
+
+- 三个脚本的所有 key 必须非空且共用同一个非空 `{account_id}` hash tag；应用侧 key guard 还必须分别验证 `breaker:account:v1:`、`cooldown:account:v1:` 与 `breaker-probe:account:v1:` 的完整前缀/类型。key 数量、参数数量、hash tag 或逻辑版本不精确匹配时返回该脚本的 `-1` 固定错误数组且不写 Redis。
+- owner token 恰为 32 个小写十六进制字符，由 16-byte CSPRNG 生成。所有整数参数使用无空白、正号、小数点或指数的十进制编码；`0` 只能编码为 `"0"`，正数不能有前导零，最大值为 `9007199254740991`。`logical_version` 必须逐字节等于 `"1"`。
+- breaker HASH 要么不存在，要么恰有且只有以下八个字段；缺失、额外、非整数、负数、`failures > samples`、`half_open_successes > 1`、`auth_blocked` 非 `0/1`、`open_count=0` 却存在 auth/open/half-open 信息，或时间超过安全整数范围都视为不兼容并返回 `-1`：
+
+  | 字段 | 范围与含义 |
+  |---|---|
+  | `window_started_at_ms` | `0..9007199254740991`；当前 closed 固定窗口的 Redis epoch milliseconds |
+  | `samples` | `0..2147483647`；本窗口内仅 `success/transient_failure` 的样本数 |
+  | `failures` | `0..samples`；本窗口内 `transient_failure` 数 |
+  | `consecutive_failures` | `0..2147483647`；跨窗口保留、由 closed success 清零的连续 transient 数 |
+  | `open_until_ms` | `0..9007199254740991`；auth-blocked/closed 使用 0，瞬态 open 使用绝对 Redis epoch milliseconds |
+  | `open_count` | `0..2147483647`；每次从 closed/half-open 进入瞬态 open 至多加一，成功关闭时归零 |
+  | `half_open_successes` | `0/1`；第一个已完成的 owner success |
+  | `auth_blocked` | `0/1`；1 时不因时间经过进入 half-open |
+
+- `state_code` 固定为：`-1=invalid_or_incompatible`、`0=closed`、`1=open`、`2=half_open`。HASH 不存在或 `open_count=0/auth_blocked=0` 为 closed；`auth_blocked=1` 为 open；否则 `open_until_ms > Redis now` 为 open，`open_until_ms <= Redis now` 为 half-open。
+- `action_code` 是 Supply health writer 应尝试持久化的目标，而不是脚本替 PostgreSQL 完成的写入：`0=none`、`1=healthy`、`2=degraded`、`3=cooling`、`4=unhealthy`、`5=unknown`。writer 必须以观察到的 Account version/credential revision 和时间做 stale/no-change 判定；同状态重复 observation 不制造 version/audit 风暴。
+- 返回数组的每一个元素都必须是 RESP Integer；即使文本可解析为相同十进制数，RESP Bulk String/Simple String、浮点或其他类型也一律视为不兼容。调用方还必须校验本节列出的完整 tuple 语义，不能只接受已知首项 code。
+- 三个脚本只使用 Redis `TIME` 生成 `now_ms`。写入或有效完成后 breaker HASH 的 TTL 精确重置为 `172800000 ms`（48 h），必须长于最大 24 h cooldown 并保留至少 24 h 调度余量；只读拒绝、ignored、stale/non-owner complete 不续期。任何整数加法将超过上述范围时返回错误数组且不部分写入。
+
+#### 7.3.2 `breaker_record_v1`
+
+输入必须精确为：
+
+| 位置 | 值 |
+|---|---|
+| `KEYS[1]` | breaker HASH |
+| `KEYS[2]` | cooldown String |
+| `KEYS[3]` | half-open probe String；仅 `controlled_active success` 原子删除，其他 record 路径不修改 |
+| `ARGV[1]` | `outcome`：`success/transient_failure/rate_limited/auth_failure/ignored` |
+| `ARGV[2]` | `retry_after_ms`：HTTP Retry-After 的规范化正时长；`0` 表示缺失/非法 |
+| `ARGV[3]` | `jitter_basis_points`：`0..1000`，即指数 cooldown 的 `0..10%` 非负 jitter |
+| `ARGV[4]` | `source_status`：无 HTTP status 时为 `0`，否则为三位 HTTP status |
+| `ARGV[5]` | `observation_mode`：`passive` 或 `controlled_active` |
+| `ARGV[6]` | `logical_version`：精确 `"1"` |
+
+参数组合还必须满足：
+
+- `success`：`retry_after_ms=0`、`jitter_basis_points=0`、`source_status=200..299`；
+- `transient_failure`：`retry_after_ms=0`、`jitter_basis_points=0..1000`，`source_status` 只可为 `0`、`200..399`、`408` 或 `500..599`；其中 2xx 表示响应体/协议验证失败，3xx 表示禁止的 redirect；
+- `rate_limited`：`source_status=429`、`jitter_basis_points=0`，`retry_after_ms` 可为 `0..9007199254740991`；
+- `auth_failure`：`source_status=401/403`，retry/jitter 均为 0；
+- `ignored`：retry/jitter 均为 0，status 只可为 0 或除 `401/403/408/429` 外的 `400..499`。
+
+不匹配返回 `[-1,0,0,0,0,0]`。正常返回始终为六个整数：
+
+```text
+[state_code, samples, failures, consecutive_failures, open_until_ms, action_code]
+```
+
+精确转换规则如下：
+
+1. `ignored` 不创建、不修改、不删除 key，也不续 TTL；HASH 不存在返回 `[0,0,0,0,0,0]`，存在时只验证并返回当前 state/counters、`action_code=0`。closed HASH（`open_count=0`）与仍存活的 cooldown 是不兼容状态，必须返回固定错误数组且不得把持久 health 放宽。
+2. closed 状态仅把 `success/transient_failure` 计入 30 秒固定窗口。`now_ms - window_started_at_ms >= 30000` 时先清零 `samples/failures` 并以 `now_ms` 开新窗口，但保留 `consecutive_failures`；`now_ms` 早于已存窗口起点视为不兼容。success 使 samples 加一并把 consecutive 清零，返回 closed + `healthy`。transient 使 samples/failures/consecutive 各按规则加一；未达阈值返回 closed + `degraded`。
+3. 更新后的 `samples >= 10 && failures * 2 >= samples`，或 `consecutive_failures >= 5` 时，只从 closed 打开一次：`open_count` 从 0 变为 1、`half_open_successes=0`，计算瞬态 cooldown 并返回 open + `cooling`。达到阈值后的其他迟到 observation 不能在当前 open 周期重复增加 `open_count`。
+4. 瞬态 reopen 基准为 `min(30000 * 2^(open_count-1),300000)`；实现必须在乘法前封顶，不以浮点溢出决定结果。最终时长为 `min(base_ms + floor(base_ms * jitter_basis_points / 10000),300000)` 且不少于 1000 ms。只有从 half-open 因 transient failure 重新打开时把 `open_count` 加一；仍在 `open_until_ms` 前的迟到 transient 不延长或重复 reopen。
+5. `rate_limited` 从 closed/half-open 立即进入 open；`retry_after_ms=0` 使用 30000 ms，正值限制到 `1000..86400000 ms`，不加 jitter。已处于瞬态 open 时不增加 `open_count`，但把 deadline 更新为 `max(existing_open_until_ms, now_ms + bounded_retry_after_ms)`。
+6. `auth_failure` 从任一非 auth 状态设置 `auth_blocked=1`、`open_count=max(open_count,1)`、`open_until_ms=0`、`half_open_successes=0`，删除 cooldown 并返回 open + `unhealthy`。重复 auth 保持该状态。时间经过和后续 passive success 都不能清除此标志。
+7. `controlled_active success` 只授权给 ADR 0011 中 canonical health=`unknown`、`last_health_at IS NULL` 的新建/凭据替换版本，并且调用方必须携带已验证的 Account version 与 credential revision 进入条件 health writer；它在同一 Lua 原子步骤删除属于旧凭据版本的 breaker、cooldown 和 probe owner，避免旧 owner 在后续新 breaker generation 上完成（generation ABA），并返回 `[0,0,0,0,0,1]`。若条件 writer 随后判为 stale/retired，persistent `unknown` 仍排除普通路由，下一轮必须重新验证新版本，不能沿用本次 success。例行 healthy/degraded 主动检查只使用无重置权限的 `passive` breaker 语义；瞬态 half-open 只能由 owner complete。其他 `passive success` 在任何 open/auth/half-open 状态都不能关闭或降低严格度。
+8. open/half-open 下除上述明确转换外的迟到 observation 不放宽状态。返回 action 必须维持严格映射：瞬态 open 为 cooling、auth open 为 unhealthy、half-open 为 unknown。探针 success/failure 只能由 `breaker_probe_complete_v1` 完成。
+
+瞬态或 rate-limit 打开/延长时 cooldown value 必须是无空白、字段顺序固定、数值为十进制整数的 canonical JSON：
+
+```json
+{"reason":"transient_failure","retry_at":1234567890,"source_status":0}
+```
+
+`reason` 只能为 `transient_failure/rate_limited`；`retry_at` 必须精确等于本次生效的 `open_until_ms`；`source_status` 等于该生效 observation 的规范化 status。TTL 为 `max(retry_at-now_ms,1)`，瞬态最长 300000 ms、rate-limit 最长 86400000 ms；不得留下无 TTL cooldown。未延长既有 open 的迟到 observation 不重写既有 reason/status。caller 对 delta-seconds 与 IMF-fixdate Retry-After 都先做严格语法验证；HTTP-date 的时长以协调 adapter 最近一次 Redis `TIME` 为参考，最终 deadline 仍由脚本再次读取的 Redis `TIME` 锚定。
+
+#### 7.3.3 `breaker_probe_acquire_v1`
+
+输入必须精确为 `KEYS[1..3]=breaker,cooldown,probe`，
+`ARGV[1]=owner`、`ARGV[2]="10000"`、`ARGV[3]="1"`。返回固定两个整数：
+
+- `[-1,0]`：参数/key/hash 不兼容，cooldown/probe 存在但没有正 TTL，或 Redis 时间/类型异常；
+- `[0,retry_after_ms]`：未取得。先检查 cooldown/probe：任一仍有正 TTL/deadline 时，retry 为相关正剩余时间的最大值且至少 1；仅在不存在活跃 cooldown/probe 时，HASH 不存在、closed 或 auth-blocked 才返回 retry=0；
+- `[1,probe_expires_at_ms]`：breaker 存在、`open_count>0`、`auth_blocked=0`、`open_until_ms<=now_ms`、cooldown 已不存在/到期，且原子 `SET probe owner NX PX 10000` 成功。
+
+相同 owner 重试 acquire 也不续租，只返回当前 probe 的正剩余 TTL。acquire 不修改 breaker fields/TTL；成功后调用方把 persistent health 收敛为 `unknown`，再按 canonical lifecycle/binding 重检取得 Account lease。新建但没有 `open_count` 的 unknown Account 永远不能通过本脚本。
+
+#### 7.3.4 `breaker_probe_complete_v1`
+
+输入必须精确为：
+
+| 位置 | 值 |
+|---|---|
+| `KEYS[1..3]` | breaker、cooldown、probe |
+| `ARGV[1]` | 当前 owner token |
+| `ARGV[2]` | `success/transient_failure/rate_limited/auth_failure` |
+| `ARGV[3]` | 与 record 相同语义的 `retry_after_ms` |
+| `ARGV[4]` | 与 record 相同语义的 `jitter_basis_points` |
+| `ARGV[5]` | 与 record 相同约束的 `source_status` |
+| `ARGV[6]` | 精确 `"1"` |
+
+outcome 的 retry/jitter/status 组合与 record 对应 outcome 完全相同；`ignored` 不能 complete，调用方取消或无法归责时让 10 秒 probe 自然到期。返回始终为五个整数：
+
+```text
+[completion_code, state_code, half_open_successes, open_until_ms, action_code]
+```
+
+- `[-1,0,0,0,0]`：参数/key/HASH/Redis 时间不兼容；
+- `[0,0,0,0,0]`：probe 已不存在、owner 不匹配，或 owner 仍匹配但 breaker 已被并发 record 改成 closed/open/auth 而不再满足 half-open。该结果不得改变 breaker、cooldown 或 probe，迟到 success 不能覆盖较新的 failure；
+- `[1,2,1,0,5]`：当前 owner 的第 1 次 success。原子设 `half_open_successes=1/open_until_ms=0`、删除 cooldown 和 probe、重置 HASH TTL；仍为 half-open/unknown；
+- `[1,0,0,0,1]`：另一轮重新 acquire 后的第 2 次连续 success。原子删除 breaker、cooldown、probe，表示 closed/healthy；
+- `[1,1,0,reopen_until_ms,3]`：当前 owner transient/rate-limit failure。原子清零 half-open success/window counters，按 record 的指数或 Retry-After 规则增加一次 `open_count` 并 reopen，写 canonical cooldown、删除 probe；
+- `[1,1,0,0,4]`：当前 owner auth failure。原子设置 auth-blocked、删除 cooldown/probe，持久目标为 unhealthy。
+
+owner 匹配后仍必须再次确认 `open_count>0`、`auth_blocked=0`、`open_until_ms<=now_ms` 且 cooldown 已到期，才能应用 completion；这是防止 probe 运行期间另一个在途 passive failure 已重新打开 breaker 后，迟到 success 错误关闭它的 fencing 条件。
+
+#### 7.3.5 调用边界
+
+探针仍必须获取 Account lease。ADR 0011 的 Supply Health Worker 使用无请求体、非生成式的受控 `/models` 验证，不创建 Group reservation/usage；若未来以真实模型请求作 probe，则必须走完同 Group canonical read、lease、Group reservation、attempt、dispatch fence 和核销，不存在“免配额健康请求”。
+
+任一脚本超时、命令错误、未知 code、错误数组长度/类型、Redis 断开、`NOSCRIPT` 同正文重载一次后仍失败、HASH/cooldown/probe 不兼容或 probe 所有权不可验证均 fail-closed，不降级为本地 breaker。普通调度不得在不读取 breaker 的情况下仅凭 PostgreSQL healthy/degraded 放行。
 
 ### 7.4 API 进程级 Bulkhead
 

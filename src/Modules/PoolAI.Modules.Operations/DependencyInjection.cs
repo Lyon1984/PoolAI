@@ -61,6 +61,7 @@ public static class DependencyInjection
         services.AddSingleton<RedisScriptRegistry>();
         services.AddSingleton<RedisScriptEvaluator>();
         services.AddSingleton<ICoordinationLeaseSet, RedisCoordinationLeaseSet>();
+        services.AddSingleton<ICoordinationCircuitBreaker, RedisCoordinationCircuitBreaker>();
         services.AddSingleton<ICoordinationValueStore, RedisCoordinationValueStore>();
         services.AddSingleton<IFixedWindowCounter, RedisFixedWindowCounter>();
         services.AddSingleton<IRuntimeDependencyReadiness, RuntimeDependencyReadinessProbe>();

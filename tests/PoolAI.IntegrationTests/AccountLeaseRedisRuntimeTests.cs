@@ -659,6 +659,8 @@ public sealed class AccountLeaseRedisRuntimeTests(PostgresRuntimeFixture fixture
         services.AddSingleton<IConfiguration>(configuration);
         services.AddOperationsModule(configuration, "Integration");
         services.AddSingleton(candidateReader);
+        services.AddSingleton<IAccountHealthWriter,
+            FailClosedAccountHealthWriter>();
         services.AddRoutingModule();
         return services.BuildServiceProvider();
     }
@@ -751,6 +753,22 @@ public sealed class AccountLeaseRedisRuntimeTests(PostgresRuntimeFixture fixture
             string model,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result.Success(_candidates));
+    }
+
+    private sealed class FailClosedAccountHealthWriter : IAccountHealthWriter
+    {
+        public ValueTask<Result<AccountHealthTransitionResult>> RecordAsync(
+            AccountHealthTransition transition,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(transition);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                Result.Failure<AccountHealthTransitionResult>(
+                    "dependency_unavailable",
+                    "The Account lease fixture does not permit health writes.",
+                    retryAfterSeconds: 1));
+        }
     }
 
     private sealed record RoutingSupplyScenario(

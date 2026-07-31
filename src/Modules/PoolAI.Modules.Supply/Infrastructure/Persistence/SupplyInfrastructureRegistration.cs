@@ -1,7 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using PoolAI.BuildingBlocks;
+using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply.Abstractions;
 using PoolAI.Modules.Supply.Application.Ports;
+using PoolAI.Modules.Supply.Infrastructure.Health;
 using PoolAI.Modules.Supply.Infrastructure.Persistence;
 
 namespace PoolAI.Modules.Supply.Infrastructure.Persistence;
@@ -32,6 +35,14 @@ internal static class SupplyInfrastructureRegistration
         services.AddSingleton<IAccountCandidateReader>(static serviceProvider =>
             new PostgresAccountCandidateReader(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));
+        services.AddSingleton<IAccountHealthWriter>(static serviceProvider =>
+            new PostgresAccountHealthWriter(
+                serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+                serviceProvider.GetRequiredService<IAuditAppender>()));
+        services.AddSingleton<IAccountHealthProbeSnapshotReader>(
+            static serviceProvider =>
+                new PostgresAccountHealthProbeSnapshotReader(
+                    serviceProvider.GetRequiredService<NpgsqlDataSource>()));
         services.AddSingleton<IModelCatalog>(static serviceProvider =>
             new PostgresModelCatalog(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));

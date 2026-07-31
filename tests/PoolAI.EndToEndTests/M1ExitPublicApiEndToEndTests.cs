@@ -334,12 +334,13 @@ public sealed class M1ExitPublicApiEndToEndTests
         using (NpgsqlCommand account = new("""
             INSERT INTO public.accounts (
                 id, provider, name, auth_type, upstream_base_url,
-                credential_envelope, credential_prefix, status, last_health_status
+                credential_envelope, credential_prefix, status,
+                last_health_status, last_health_at
             ) VALUES (
                 $1, 'openai_compatible', 'M1 Exit account', 'api_key',
                 $2,
                 pg_catalog.jsonb_build_object('kind', 'noncredential-test-fixture'),
-                'fixture', 'active', 'healthy'
+                'fixture', 'active', 'healthy', pg_catalog.clock_timestamp()
             );
             """, connection, transaction))
         {

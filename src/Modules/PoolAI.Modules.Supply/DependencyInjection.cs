@@ -7,6 +7,7 @@ using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply.Abstractions;
 using PoolAI.Modules.Supply.Application;
 using PoolAI.Modules.Supply.Application.Ports;
+using PoolAI.Modules.Supply.Infrastructure.Health;
 using PoolAI.Modules.Supply.Infrastructure.Persistence;
 using PoolAI.Modules.Supply.Infrastructure.Security;
 using PoolAI.Modules.Supply.Infrastructure.Workers;
@@ -19,11 +20,19 @@ public static class DependencyInjection
 #pragma warning disable MA0051 // The module Composition Root intentionally closes the full graph.
     public static IServiceCollection AddSupplyModule(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration) =>
+        AddSupplyModule(services, configuration, Environments.Production);
+
+    public static IServiceCollection AddSupplyModule(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        string environmentName)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentException.ThrowIfNullOrWhiteSpace(environmentName);
         AddModuleMarker(services);
+        services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(_ => new AccountControlPlanePolicy(
             ReadRequestHashPepper(configuration)));
         services.AddSingleton(
@@ -35,6 +44,23 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IOperationalEventWriter>()));
         services.TryAddSingleton<IAccountCredentialStore,
             PostgresAccountCredentialStore>();
+        services.AddSingleton(
+            AccountHealthProbeHttpOptions.FromConfiguration(
+                configuration,
+                environmentName));
+        services.AddHttpClient(
+                AccountHealthProbeHttpTransport.ClientName,
+                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .RemoveAllLoggers()
+            .ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+                AccountHealthProbeHttpTransport.CreatePrimaryHandler(
+                    serviceProvider.GetRequiredService<
+                        AccountHealthProbeHttpOptions>()));
+        services.AddSingleton<AccountHealthProbeHttpTransport>();
+        services.AddSingleton<IAccountHealthProbeExecutor,
+            AccountHealthProbeExecutor>();
+        services.AddSingleton<IAccountHealthProbeCatalog,
+            PostgresAccountHealthProbeCatalog>();
         services.AddSupplyInfrastructure();
         services.AddSingleton(static serviceProvider =>
             new GroupSupplyCommandCoordinator(

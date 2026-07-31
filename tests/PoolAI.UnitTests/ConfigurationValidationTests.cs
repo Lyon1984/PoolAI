@@ -354,6 +354,10 @@ public sealed class ConfigurationValidationTests
     [InlineData("Routing:Breaker:MaxBreakSeconds", "301")]
     [InlineData("Routing:Breaker:HalfOpenProbeSeconds", "11")]
     [InlineData("Routing:Breaker:SuccessesToClose", "3")]
+    [InlineData("Supply:Health:ProbeIntervalSeconds", "31")]
+    [InlineData("Supply:Health:ProbeTimeoutSeconds", "11")]
+    [InlineData("Supply:Health:ProbeMaxResponseBytes", "1048577")]
+    [InlineData("Supply:Health:ProbeMaxConcurrency", "9")]
     [InlineData("Usage:CacheSeconds", "16")]
     [InlineData("Usage:MaximumReportedLagSeconds", "61")]
     public void FrozenRuntimeBoundsRejectContractDrift(string key, string value)
@@ -368,6 +372,208 @@ public sealed class ConfigurationValidationTests
             PoolAiRuntimeConfigurationValidator.Validate(configuration, "Production"));
 
         Assert.Contains(key, exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void CanonicalPrivateEgressRulesPassStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:0"] =
+            "https://upstream.internal.example:8443|10.20.0.0/16";
+        values["Supply:Health:PrivateEgressRules:1"] =
+            "https://[fd12:3456::10]|fd12:3456::/32";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" https://upstream.internal.example|10.0.0.0/8")]
+    [InlineData("https://upstream internal.example|10.0.0.0/8")]
+    [InlineData("https://upstréam.internal.example|10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example\\|10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example")]
+    [InlineData("https://upstream.internal.example||10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example|")]
+    [InlineData("https://[|10.0.0.0/8")]
+    [InlineData("http://upstream.internal.example|10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example/v1|10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example|10.0.0.0")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/8/8")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/08")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/1000")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/x")]
+    [InlineData("https://upstream.internal.example|fe80::1%1/64")]
+    [InlineData("https://upstream.internal.example|not-an-address/8")]
+    [InlineData("https://upstream.internal.example|::ffff:10.0.0.0/120")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/33")]
+    [InlineData("https://upstream.internal.example|fd00::/129")]
+    [InlineData("https://upstream.internal.example|8.8.8.0/24")]
+    [InlineData("https://upstream.internal.example|10.20.1.1/16")]
+    [InlineData("https://upstream.internal.example|10.0.0.0/7")]
+    [InlineData("https://upstream.internal.example|127.0.0.0/8")]
+    [InlineData("https://upstream.internal.example|2001:db8::/32")]
+    [InlineData("https://upstream.internal.example|fc00::/6")]
+    [InlineData("https://localhost|10.0.0.0/8")]
+    [InlineData("https://127.0.0.1|10.0.0.0/8")]
+    [InlineData("https://[::ffff:127.0.0.1]|10.0.0.0/8")]
+    [InlineData("https://upstream.internal.example|FD00::/8")]
+    public void InvalidPrivateEgressRuleFailsStartupValidation(string rule)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:0"] = rule;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void ScalarPrivateEgressRuleContainerFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules"] =
+            "https://upstream.internal.example|10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void MoreThanSixtyFourPrivateEgressRulesFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        for (int index = 0; index < 65; index++)
+        {
+            values[$"Supply:Health:PrivateEgressRules:{index}"] =
+                $"https://upstream-{index}.internal.example|10.0.0.0/8";
+        }
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void NestedPrivateEgressRuleEntryFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:0"] =
+            "https://upstream.internal.example|10.0.0.0/8";
+        values["Supply:Health:PrivateEgressRules:0:Unexpected"] = "value";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void NonNumericPrivateEgressRuleIndexFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:not-an-index"] =
+            "https://upstream.internal.example|10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void DuplicatePrivateEgressRuleFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:0"] =
+            "https://upstream.internal.example|10.0.0.0/8";
+        values["Supply:Health:PrivateEgressRules:1"] =
+            "https://upstream.internal.example/|10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void SparsePrivateEgressRuleIndexesFailStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Supply:Health:PrivateEgressRules:1"] =
+            "https://upstream.internal.example|10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception =
+            Assert.Throws<PoolAiConfigurationException>(() =>
+                PoolAiRuntimeConfigurationValidator.Validate(
+                    configuration,
+                    "Production"));
+
+        Assert.Contains(
+            "Supply:Health:PrivateEgressRules",
+            exception.InvalidKeys);
     }
 
     [Fact]

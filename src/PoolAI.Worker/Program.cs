@@ -2,6 +2,7 @@ using PoolAI.Modules.GroupQuota;
 using PoolAI.Modules.Identity;
 using PoolAI.Modules.Operations;
 using PoolAI.Modules.Operations.Infrastructure.Configuration;
+using PoolAI.Modules.Routing;
 using PoolAI.Modules.Supply;
 using PoolAI.Modules.Usage;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,7 +28,10 @@ builder.Services
     .AddIdentityModule()
     .AddIdentityEmailOutboxWorker(builder.Configuration)
     .AddGroupQuotaModule()
-    .AddSupplyModule(builder.Configuration)
+    .AddSupplyModule(
+        builder.Configuration,
+        builder.Environment.EnvironmentName)
+    .AddRoutingHealthModule(builder.Configuration)
     .AddSupplyCredentialRewrapWorker(builder.Configuration)
     .AddUsageModule()
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName);

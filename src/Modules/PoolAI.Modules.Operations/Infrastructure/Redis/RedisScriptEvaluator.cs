@@ -48,4 +48,41 @@ internal sealed class RedisScriptEvaluator(
                 .ConfigureAwait(false);
         }
     }
+
+    public async ValueTask<DateTimeOffset> GetServerTimeAsync(
+        CancellationToken cancellationToken)
+    {
+        ConnectionMultiplexer connection = await _connections
+            .GetAsync(cancellationToken)
+            .ConfigureAwait(false);
+        RedisResult result = await connection
+            .GetDatabase()
+            .ExecuteAsync("TIME")
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        RedisResult[] parts = (RedisResult[]?)result ?? [];
+        if (result is null
+            || result.Resp2Type != ResultType.Array
+            || parts.Length != 2
+            || !long.TryParse(
+                parts[0].ToString(),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out long seconds)
+            || !int.TryParse(
+                parts[1].ToString(),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out int microseconds)
+            || seconds < 0
+            || microseconds is < 0 or > 999_999)
+        {
+            throw new InvalidOperationException(
+                "Redis TIME returned an incompatible value.");
+        }
+
+        return DateTimeOffset
+            .FromUnixTimeSeconds(seconds)
+            .AddTicks(checked(microseconds * 10L));
+    }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "capturedAt": "2026-07-29",
+  "capturedAt": "2026-07-31",
   "areas": {
     "quota": {
       "pathIncludes": [
@@ -37,12 +37,12 @@
         "/AccountCredentialEnvelopeOptions.cs",
         "/AccountCredentialProtector.cs"
       ],
-      "linesCovered": 1587,
-      "linesValid": 1739,
-      "lineRate": 91.25934445083381,
-      "branchesCovered": 492,
-      "branchesValid": 618,
-      "branchRate": 79.6116504854369
+      "linesCovered": 1777,
+      "linesValid": 1932,
+      "lineRate": 91.97722567287785,
+      "branchesCovered": 648,
+      "branchesValid": 790,
+      "branchRate": 82.02531645569621
     }
   }
 }
