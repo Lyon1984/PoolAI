@@ -9,15 +9,17 @@
 -- not participate in the quota body, ETag, status, or updated_at.
 
 -- Invalidate every validator issued under the pre-0014 representation rules.
--- The table lock excludes quota writers before Group and current Period rows are
--- frozen in the established Quota -> Group -> Period order. All existing rows
--- advance exactly once; bigint exhaustion fails the whole migration atomically.
+-- EXCLUSIVE conflicts with the ROW SHARE lock taken by SELECT ... FOR UPDATE,
+-- so an in-flight 0013 writer drains before this migration can freeze any Group
+-- or current Period row; new writers then wait at the quota-table root. Plain
+-- ACCESS SHARE reads remain available. All existing rows advance exactly once;
+-- bigint exhaustion fails the whole migration atomically.
 DO $semantic_epoch$
 DECLARE
     v_expected_rows bigint;
     v_updated_rows bigint;
 BEGIN
-    LOCK TABLE public.group_token_quotas IN SHARE ROW EXCLUSIVE MODE;
+    LOCK TABLE public.group_token_quotas IN EXCLUSIVE MODE;
 
     PERFORM 1
     FROM public.groups AS current_group

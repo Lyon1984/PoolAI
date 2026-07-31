@@ -93,7 +93,7 @@
         "version": 14,
         "name": "0014_group_quota_representation_version_m3_e1.sql",
         "source": "docs/database/0014_group_quota_representation_version_m3_e1.sql",
-        "sha256": "931a35ed64ae6e711ddbc4cf9ca18503ac62f46da6688c6a0efcd91592eb3fea"
+        "sha256": "abbf0ac2c5265f830b65fcc447f78b30940183ff0236fc65491f7e920fae9e89"
       }
     ]
   },

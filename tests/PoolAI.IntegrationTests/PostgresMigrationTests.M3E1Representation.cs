@@ -11,6 +11,137 @@ public sealed partial class PostgresMigrationTests
 {
     [Fact]
     [Trait("Category", "PostgreSQL")]
+    public async Task M3E1RepresentationUpgradeDoesNotDeadlockWithInFlight0013Writer()
+    {
+        // Governing contract: docs/database/README.md requires forward migrations
+        // and quota writers to preserve the shared Quota -> Group -> Period order.
+        string password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        PostgreSqlContainer container = new PostgreSqlBuilder(ReadPostgresImage())
+            .WithDatabase("poolai")
+            .WithUsername("postgres")
+            .WithPassword(password)
+            .Build();
+        await using ConfiguredAsyncDisposable containerLease = container.ConfigureAwait(true);
+
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        await container.StartAsync(cancellationToken).ConfigureAwait(true);
+        string connectionString = container.GetConnectionString();
+        await ProvisionRuntimeRolesAsync(connectionString, cancellationToken).ConfigureAwait(true);
+
+        MigrationCatalog catalog = await MigrationCatalog
+            .LoadAsync(cancellationToken)
+            .ConfigureAwait(true);
+        await ApplyM3E1MigrationPrefixAsync(
+            catalog,
+            connectionString,
+            cancellationToken).ConfigureAwait(true);
+        await SeedPre0014QuotaRepresentationAsync(
+            connectionString,
+            cancellationToken).ConfigureAwait(true);
+
+        const string MigratorApplicationName =
+            "PoolAI.IntegrationTests.m3-e1-0014-lock-order";
+        NpgsqlConnectionStringBuilder migratorConnectionString = new(connectionString)
+        {
+            ApplicationName = MigratorApplicationName,
+        };
+        using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
+        using NpgsqlConnection writer = await dataSource
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(true);
+        using NpgsqlTransaction writerTransaction = await writer
+            .BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(true);
+
+        using (NpgsqlCommand acquireQuota = writer.CreateCommand())
+        {
+            acquireQuota.Transaction = writerTransaction;
+            acquireQuota.CommandText = """
+                SET LOCAL deadlock_timeout = '100ms';
+                SELECT group_id
+                FROM public.group_token_quotas
+                WHERE group_id = '01900000-0000-7000-8000-00000000e100'
+                FOR UPDATE;
+                """;
+            Assert.Equal(
+                new Guid("01900000-0000-7000-8000-00000000e100"),
+                Assert.IsType<Guid>(await acquireQuota
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(true)));
+        }
+
+        int writerProcessId = writer.ProcessID;
+        PostgresMigrator migrator = new(catalog);
+        Task migrationTask = migrator.ApplyAsync(
+            migratorConnectionString.ConnectionString,
+            "PoolAI.IntegrationTests.m3-e1-0014-lock-order",
+            cancellationToken).AsTask();
+
+        Assert.True(
+            await WaitForM3E10014WriterDrainAsync(
+                dataSource,
+                MigratorApplicationName,
+                writerProcessId,
+                cancellationToken).ConfigureAwait(true),
+            "Migration 0014 did not reach its writer-drain wait behind the 0013 writer.");
+
+        Exception? writerFailure = await Record.ExceptionAsync(async () =>
+        {
+            using NpgsqlCommand acquireDownstreamRows = writer.CreateCommand();
+            acquireDownstreamRows.Transaction = writerTransaction;
+            acquireDownstreamRows.CommandText = """
+                SELECT id
+                FROM public.groups
+                WHERE id = '01900000-0000-7000-8000-00000000e100'
+                FOR SHARE;
+
+                SELECT id
+                FROM public.group_quota_periods
+                WHERE id = '01900000-0000-7000-8000-00000000e101'
+                  AND group_id = '01900000-0000-7000-8000-00000000e100'
+                FOR UPDATE;
+                """;
+            await acquireDownstreamRows
+                .ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(true);
+        }).ConfigureAwait(true);
+
+        if (writerFailure is null)
+        {
+            await writerTransaction.CommitAsync(cancellationToken).ConfigureAwait(true);
+        }
+        else
+        {
+            await writerTransaction.RollbackAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        Exception? migrationFailure = await Record
+            .ExceptionAsync(() => migrationTask)
+            .ConfigureAwait(true);
+        bool deadlockDetected = writerFailure is PostgresException
+            {
+                SqlState: PostgresErrorCodes.DeadlockDetected,
+            }
+            || migrationFailure is PostgresException
+            {
+                SqlState: PostgresErrorCodes.DeadlockDetected,
+            };
+        Assert.False(
+            deadlockDetected,
+            $"Migration 0014 inverted the Quota -> Group -> Period lock order. "
+            + $"writer={writerFailure?.GetType().Name}:{writerFailure?.Message}; "
+            + $"migration={migrationFailure?.GetType().Name}:{migrationFailure?.Message}");
+        Assert.Null(writerFailure);
+        Assert.Null(migrationFailure);
+        Assert.Equal(
+            "14:42:2026-07-01 03:00:00+00",
+            await ReadM3E1EpochStateAsync(
+                connectionString,
+                cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
     public async Task M3E1RepresentationEpochAndCounterTriggerAreForwardOnly()
     {
         string password = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
@@ -386,6 +517,58 @@ public sealed partial class PostgresMigrationTests
         return Assert.IsType<long>(await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false));
+    }
+
+    private static async ValueTask<bool> WaitForM3E10014WriterDrainAsync(
+        NpgsqlDataSource dataSource,
+        string applicationName,
+        int writerProcessId,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; attempt < 200; attempt++)
+        {
+            using NpgsqlCommand command = dataSource.CreateCommand("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_stat_activity AS activity
+                    WHERE activity.application_name = $1
+                      AND activity.wait_event_type = 'Lock'
+                      AND $2 = ANY (pg_catalog.pg_blocking_pids(activity.pid))
+                      AND EXISTS (
+                          SELECT 1
+                          FROM pg_catalog.pg_locks AS table_lock
+                          WHERE table_lock.pid = activity.pid
+                            AND table_lock.locktype = 'relation'
+                            AND table_lock.relation =
+                                'public.group_token_quotas'::regclass
+                            AND (
+                                (
+                                    table_lock.mode = 'ShareRowExclusiveLock'
+                                    AND table_lock.granted
+                                )
+                                OR (
+                                    table_lock.mode = 'ExclusiveLock'
+                                    AND NOT table_lock.granted
+                                )
+                            )
+                      )
+                );
+                """);
+            command.Parameters.AddWithValue(applicationName);
+            command.Parameters.AddWithValue(writerProcessId);
+            if (await command
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false) is true)
+            {
+                return true;
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(25),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return false;
     }
 }
 #pragma warning restore MA0051
