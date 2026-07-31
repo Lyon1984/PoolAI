@@ -2,29 +2,38 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Npgsql;
+using PoolAI.BuildingBlocks;
+using PoolAI.Modules.Routing.Abstractions;
 
-#pragma warning disable MA0051 // M1 Exit keeps each complete public HTTP proof visible.
+#pragma warning disable MA0051 // M2 Exit keeps the complete public HTTP proof visible.
 
 namespace PoolAI.EndToEndTests;
 
-public sealed class M1ExitPublicApiEndToEndTests
+[Collection(M2ExitSerialTestGroup.Name)]
+public sealed class M2ExitPublicApiEndToEndTests
 {
-    private const string UserPassword = "M1-Exit-User-Password-123!";
+    private const string UserPassword = "M2-Exit-User-Password-123!";
+    private const string UpstreamCredential = "m2-exit-upstream-credential";
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
     [Trait("Category", "Redis")]
-    public async Task M1ExitUsesPublicHttpProductionPortsAndRealDependenciesWithoutUpstream()
+    public async Task M2ExitUsesPublicControlPlaneProductionReadinessAndRouter()
     {
-        // Governing contract: the M1 exit gate permits only a database-backed
-        // test Supply-readiness adapter. Every M1-owned fact and port below is
-        // exercised through the production HTTP Composition Root.
+        // Governing contract: the M2 exit gate starts from migrations plus the
+        // bootstrap Admin, creates every business fact through public HTTP, and
+        // uses the production readiness and Router graphs with real PostgreSQL
+        // and Redis. The only upstream seam answers GET /models for health.
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
-        await using NoUpstreamConnectionSentinel upstreamSentinel = new();
+        await using LoopbackModelsUpstream upstream = new();
         await using PasswordResetHttpEndToEndEnvironment environment =
-            await PasswordResetHttpEndToEndEnvironment.CreateM1ExitAsync(
+            await PasswordResetHttpEndToEndEnvironment.CreateM2ExitAsync(
                 cancellationToken).ConfigureAwait(true);
 
         string adminToken = await LoginAsync(
@@ -50,11 +59,35 @@ public sealed class M1ExitPublicApiEndToEndTests
             user,
             access,
             cancellationToken).ConfigureAwait(true);
-        await ProvisionM2OwnedSupplyFactsAsync(
+        SupplyFixture supply = await ProvisionSupplyThroughPublicApiAsync(
             environment,
+            adminToken,
             access.GroupId,
-            upstreamSentinel.BaseAddress,
+            upstream.BaseAddress,
             cancellationToken).ConfigureAwait(true);
+        await AssertConfiguredButUnhealthyGroupFailsClosedAsync(
+            environment,
+            adminToken,
+            access.GroupId,
+            supply,
+            cancellationToken).ConfigureAwait(true);
+        using (IHost healthHost = environment.CreateSupplyHealthHost())
+        {
+            // Run one deterministic round through the registered production
+            // hosted service. Worker lifecycle and retry mapping stay covered
+            // by the focused Worker tests.
+            await PasswordResetHttpEndToEndEnvironment.RunSupplyHealthRoundAsync(
+                healthHost,
+                cancellationToken).ConfigureAwait(true);
+            long healthyAccountVersion = await WaitForAccountHealthAsync(
+                environment,
+                adminToken,
+                supply.AccountId,
+                "healthy",
+                cancellationToken).ConfigureAwait(true);
+            supply = supply with { AccountVersion = healthyAccountVersion };
+        }
+
         await ActivateGroupAsync(
             environment,
             adminToken,
@@ -72,6 +105,13 @@ public sealed class M1ExitPublicApiEndToEndTests
             user,
             access.GroupId,
             cancellationToken).ConfigureAwait(true);
+        long routedAccountVersion = await AssertProductionRouterLeaseAsync(
+            environment,
+            adminToken,
+            access.GroupId,
+            supply,
+            cancellationToken).ConfigureAwait(true);
+        supply = supply with { AccountVersion = routedAccountVersion };
         await AssertRevocationAndCanonicalAuthorizationAsync(
             environment,
             adminToken,
@@ -83,10 +123,11 @@ public sealed class M1ExitPublicApiEndToEndTests
             environment,
             user.UserId,
             access,
+            supply,
             subscription.SubscriptionId,
             apiKey.ApiKeyId,
             cancellationToken).ConfigureAwait(true);
-        await upstreamSentinel.AssertNoConnectionsAsync(cancellationToken)
+        await upstream.AssertModelsOnlyAsync(cancellationToken)
             .ConfigureAwait(true);
     }
 
@@ -144,7 +185,7 @@ public sealed class M1ExitPublicApiEndToEndTests
         CancellationToken cancellationToken)
     {
         string suffix = Guid.NewGuid().ToString("N")[..12];
-        string email = $"m1-exit-{suffix}@poolai.test";
+        string email = $"m2-exit-{suffix}@poolai.test";
         using HttpRequestMessage create = JsonCommand(
             HttpMethod.Post,
             "/api/v1/admin/users",
@@ -152,11 +193,11 @@ public sealed class M1ExitPublicApiEndToEndTests
             new
             {
                 email,
-                display_name = "M1 Exit User",
+                display_name = "M2 Exit User",
                 role = "user",
                 temporary_password = UserPassword,
             },
-            idempotencyKey: "m1-exit-user-create");
+            idempotencyKey: "m2-exit-user-create");
         using HttpResponseMessage response = await environment.Client.SendAsync(
             create,
             cancellationToken).ConfigureAwait(false);
@@ -200,11 +241,11 @@ public sealed class M1ExitPublicApiEndToEndTests
             adminToken,
             new
             {
-                name = $"M1 Exit {Guid.NewGuid():N}",
-                description = "M1 public API acceptance",
+                name = $"M2 Exit {Guid.NewGuid():N}",
+                description = "M2 public API acceptance",
                 total_tokens = 1_000_000,
             },
-            idempotencyKey: "m1-exit-group-create");
+            idempotencyKey: "m2-exit-group-create");
         using HttpResponseMessage groupResponse = await environment.Client.SendAsync(
             createGroup,
             cancellationToken).ConfigureAwait(false);
@@ -222,10 +263,10 @@ public sealed class M1ExitPublicApiEndToEndTests
             new
             {
                 group_id = groupId,
-                name = "M1 Exit Access",
+                name = "M2 Exit Access",
                 default_duration_days = 30,
             },
-            idempotencyKey: "m1-exit-template-create");
+            idempotencyKey: "m2-exit-template-create");
         using HttpResponseMessage templateResponse = await environment.Client.SendAsync(
             createTemplate,
             cancellationToken).ConfigureAwait(false);
@@ -255,7 +296,7 @@ public sealed class M1ExitPublicApiEndToEndTests
                 template_id = access.TemplateId,
                 reason = "must remain disabled before Supply readiness",
             },
-            idempotencyKey: "m1-exit-disabled-assignment");
+            idempotencyKey: "m2-exit-disabled-assignment");
         using HttpResponseMessage assignmentResponse = await environment.Client.SendAsync(
             assign,
             cancellationToken).ConfigureAwait(false);
@@ -271,7 +312,7 @@ public sealed class M1ExitPublicApiEndToEndTests
             adminToken,
             new { status = "active", reason = "readiness must be observed" },
             contentType: "application/merge-patch+json",
-            idempotencyKey: "m1-exit-activation-not-ready",
+            idempotencyKey: "m2-exit-activation-not-ready",
             ifMatch: "\"v1\"");
         using HttpResponseMessage activationResponse = await environment.Client.SendAsync(
             activate,
@@ -296,87 +337,424 @@ public sealed class M1ExitPublicApiEndToEndTests
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask ProvisionM2OwnedSupplyFactsAsync(
+    private static async ValueTask AssertConfiguredButUnhealthyGroupFailsClosedAsync(
         PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid groupId,
+        SupplyFixture supply,
+        CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage configuration = AuthorizedRequest(
+            HttpMethod.Get,
+            $"/api/v1/admin/groups/{groupId:D}/supply-configuration",
+            adminToken);
+        using HttpResponseMessage configurationResponse =
+            await environment.Client.SendAsync(configuration, cancellationToken)
+                .ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, configurationResponse.StatusCode);
+        Assert.Equal(
+            $"\"v{supply.ConfigurationVersion}\"",
+            configurationResponse.Headers.ETag?.Tag);
+
+        using HttpRequestMessage activate = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/groups/{groupId:D}",
+            adminToken,
+            new { status = "active", reason = "health evidence must be current" },
+            contentType: "application/merge-patch+json",
+            idempotencyKey: "m2-exit-activation-unhealthy",
+            ifMatch: "\"v1\"");
+        using HttpResponseMessage activationResponse = await environment.Client.SendAsync(
+            activate,
+            cancellationToken).ConfigureAwait(false);
+        await AssertProblemAsync(
+            activationResponse,
+            HttpStatusCode.Conflict,
+            "group_activation_not_ready",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<SupplyFixture> ProvisionSupplyThroughPublicApiAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
         Guid groupId,
         string upstreamBaseUrl,
         CancellationToken cancellationToken)
     {
-        Guid channelId = Guid.CreateVersion7();
-        Guid accountId = Guid.CreateVersion7();
-        using NpgsqlConnection connection = await environment.AdministratorDataSource
-            .OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using NpgsqlTransaction transaction = await connection
-            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        using HttpRequestMessage createAccount = JsonCommand(
+            HttpMethod.Post,
+            "/api/v1/admin/accounts",
+            adminToken,
+            new
+            {
+                name = "M2 Exit Account",
+                provider = "openai_compatible",
+                base_url = upstreamBaseUrl,
+                credential = UpstreamCredential,
+                max_concurrency = 4,
+                priority = 10,
+                weight = 100,
+            },
+            idempotencyKey: "m2-exit-account-create");
+        using HttpResponseMessage accountResponse = await environment.Client.SendAsync(
+            createAccount,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.Created, accountResponse.StatusCode);
+        Assert.Equal("\"v1\"", accountResponse.Headers.ETag?.Tag);
+        string accountBody = await accountResponse.Content.ReadAsStringAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.DoesNotContain(UpstreamCredential, accountBody, StringComparison.Ordinal);
+        using JsonDocument account = JsonDocument.Parse(accountBody);
+        Guid accountId = account.RootElement.GetProperty("id").GetGuid();
+        Assert.Equal("disabled", account.RootElement.GetProperty("status").GetString());
+        Assert.Equal(
+            "unknown",
+            account.RootElement.GetProperty("health").GetProperty("status").GetString());
 
-        using (NpgsqlCommand channel = new("""
-            INSERT INTO public.channels (
-                id, provider, name, model_rules, capabilities, status
-            ) VALUES (
-                $1, 'openai_compatible', 'M1 Exit channel',
-                pg_catalog.jsonb_build_object('gpt-test', 'gpt-test'),
-                '{
-                  "responses": true,
-                  "chat_completions": true,
-                  "function_tools": true,
-                  "streaming": true
-                }'::jsonb,
-                'active'
-            );
-            """, connection, transaction))
+        using HttpRequestMessage activateAccount = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/accounts/{accountId:D}",
+            adminToken,
+            new { status = "active", reason = "M2 Exit controlled health validation" },
+            contentType: "application/merge-patch+json",
+            idempotencyKey: "m2-exit-account-activate",
+            ifMatch: "\"v1\"");
+        using HttpResponseMessage activatedAccount = await environment.Client.SendAsync(
+            activateAccount,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, activatedAccount.StatusCode);
+        Assert.Equal("\"v2\"", activatedAccount.Headers.ETag?.Tag);
+
+        using HttpRequestMessage createChannel = JsonCommand(
+            HttpMethod.Post,
+            "/api/v1/admin/channels",
+            adminToken,
+            new
+            {
+                name = "M2 Exit Channel",
+                provider = "openai_compatible",
+                capabilities = new
+                {
+                    responses = true,
+                    chat_completions = true,
+                    function_tools = true,
+                    streaming = true,
+                },
+                model_mappings = new[]
+                {
+                    new
+                    {
+                        client_model = "gpt-test",
+                        upstream_model = "gpt-test",
+                    },
+                },
+            },
+            idempotencyKey: "m2-exit-channel-create");
+        using HttpResponseMessage channelResponse = await environment.Client.SendAsync(
+            createChannel,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.Created, channelResponse.StatusCode);
+        Assert.Equal("\"v1\"", channelResponse.Headers.ETag?.Tag);
+        using JsonDocument channel = await ReadJsonAsync(channelResponse, cancellationToken)
+            .ConfigureAwait(false);
+        Guid channelId = channel.RootElement.GetProperty("id").GetGuid();
+        Assert.Equal("disabled", channel.RootElement.GetProperty("status").GetString());
+
+        using HttpRequestMessage activateChannel = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/channels/{channelId:D}",
+            adminToken,
+            new { status = "active", reason = "M2 Exit model mapping validated" },
+            contentType: "application/merge-patch+json",
+            idempotencyKey: "m2-exit-channel-activate",
+            ifMatch: "\"v1\"");
+        using HttpResponseMessage activatedChannel = await environment.Client.SendAsync(
+            activateChannel,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, activatedChannel.StatusCode);
+        Assert.Equal("\"v2\"", activatedChannel.Headers.ETag?.Tag);
+
+        using HttpRequestMessage createConfiguration = JsonCommand(
+            HttpMethod.Post,
+            $"/api/v1/admin/groups/{groupId:D}/supply-configuration",
+            adminToken,
+            new
+            {
+                channel_id = channelId,
+                account_bindings = new[]
+                {
+                    new
+                    {
+                        account_id = accountId,
+                        enabled = true,
+                        priority_override = (int?)null,
+                        weight_override = (int?)null,
+                    },
+                },
+            },
+            idempotencyKey: "m2-exit-supply-configuration-create");
+        using HttpResponseMessage configurationResponse = await environment.Client.SendAsync(
+            createConfiguration,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.Created, configurationResponse.StatusCode);
+        using JsonDocument configuration = await ReadJsonAsync(
+            configurationResponse,
+            cancellationToken).ConfigureAwait(false);
+        long configurationVersion =
+            configuration.RootElement.GetProperty("version").GetInt64();
+        Assert.True(configurationVersion > 1);
+        Assert.Equal(
+            $"\"v{configurationVersion}\"",
+            configurationResponse.Headers.ETag?.Tag);
+        Assert.Equal(groupId, configuration.RootElement.GetProperty("group_id").GetGuid());
+        Assert.Equal(channelId, configuration.RootElement.GetProperty("channel_id").GetGuid());
+        JsonElement binding = Assert.Single(
+            configuration.RootElement.GetProperty("account_bindings")
+                .EnumerateArray().ToArray());
+        Assert.Equal(accountId, binding.GetProperty("account_id").GetGuid());
+        Assert.True(binding.GetProperty("enabled").GetBoolean());
+        return new SupplyFixture(
+            accountId,
+            channelId,
+            AccountVersion: 2,
+            ConfigurationVersion: configurationVersion);
+    }
+
+    private static async ValueTask<long> WaitForAccountHealthAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid accountId,
+        string expectedHealth,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = TimeProvider.System.GetUtcNow().AddSeconds(20);
+        string lastBody = string.Empty;
+        while (TimeProvider.System.GetUtcNow() < deadline)
         {
-            channel.Parameters.AddWithValue(channelId);
-            Assert.Equal(
-                1,
-                await channel.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+            using HttpRequestMessage get = AuthorizedRequest(
+                HttpMethod.Get,
+                $"/api/v1/admin/accounts/{accountId:D}",
+                adminToken);
+            using HttpResponseMessage response = await environment.Client.SendAsync(
+                get,
+                cancellationToken).ConfigureAwait(false);
+            lastBody = await response.Content.ReadAsStringAsync(cancellationToken)
+                .ConfigureAwait(false);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using JsonDocument account = JsonDocument.Parse(lastBody);
+            if (string.Equals(
+                    expectedHealth,
+                    account.RootElement.GetProperty("health")
+                        .GetProperty("status").GetString(),
+                    StringComparison.Ordinal))
+            {
+                Assert.Equal("active", account.RootElement.GetProperty("status").GetString());
+                long version = account.RootElement.GetProperty("version").GetInt64();
+                Assert.True(version > 2);
+                return version;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        using (NpgsqlCommand account = new("""
-            INSERT INTO public.accounts (
-                id, provider, name, auth_type, upstream_base_url,
-                credential_envelope, credential_prefix, status,
-                last_health_status, last_health_at
-            ) VALUES (
-                $1, 'openai_compatible', 'M1 Exit account', 'api_key',
-                $2,
-                pg_catalog.jsonb_build_object('kind', 'noncredential-test-fixture'),
-                'fixture', 'active', 'healthy', pg_catalog.clock_timestamp()
-            );
-            """, connection, transaction))
+        Assert.Fail(
+            $"Account {accountId:D} did not become {expectedHealth}. Last response: {lastBody}");
+        return 0;
+    }
+
+    private static async ValueTask<int> ReadAccountActiveLeasesAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid accountId,
+        CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage get = AuthorizedRequest(
+            HttpMethod.Get,
+            $"/api/v1/admin/accounts/{accountId:D}",
+            adminToken);
+        using HttpResponseMessage response = await environment.Client.SendAsync(
+            get,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using JsonDocument account = await ReadJsonAsync(response, cancellationToken)
+            .ConfigureAwait(false);
+        return account.RootElement.GetProperty("active_leases").GetInt32();
+    }
+
+    private static async ValueTask WaitForAccountActiveLeasesAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid accountId,
+        int expectedCount,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = TimeProvider.System.GetUtcNow().AddSeconds(5);
+        int actual = -1;
+        while (TimeProvider.System.GetUtcNow() < deadline)
         {
-            account.Parameters.AddWithValue(accountId);
-            account.Parameters.AddWithValue(upstreamBaseUrl);
-            Assert.Equal(
-                1,
-                await account.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
+            actual = await ReadAccountActiveLeasesAsync(
+                environment,
+                adminToken,
+                accountId,
+                cancellationToken).ConfigureAwait(false);
+            if (actual == expectedCount)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        using (NpgsqlCommand configuration = new("""
-            INSERT INTO public.group_supply_configurations (group_id, channel_id)
-            VALUES ($1, $2);
-            """, connection, transaction))
-        {
-            configuration.Parameters.AddWithValue(groupId);
-            configuration.Parameters.AddWithValue(channelId);
-            Assert.Equal(
-                1,
-                await configuration.ExecuteNonQueryAsync(cancellationToken)
-                    .ConfigureAwait(false));
-        }
+        Assert.Equal(expectedCount, actual);
+    }
 
-        using (NpgsqlCommand binding = new("""
-            INSERT INTO public.group_accounts (group_id, account_id, is_enabled)
-            VALUES ($1, $2, true);
-            """, connection, transaction))
+    private static async ValueTask<long> UpdateAccountWhileLeasedAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid accountId,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        object body = new
         {
-            binding.Parameters.AddWithValue(groupId);
-            binding.Parameters.AddWithValue(accountId);
-            Assert.Equal(
-                1,
-                await binding.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
-        }
+            priority = 11,
+            reason = "M2 Exit live lease response proof",
+        };
+        string ifMatch = $"\"v{expectedVersion}\"";
+        const string IdempotencyKey = "m2-exit-account-update-while-leased";
+        using HttpRequestMessage update = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/accounts/{accountId:D}",
+            adminToken,
+            body,
+            contentType: "application/merge-patch+json",
+            idempotencyKey: IdempotencyKey,
+            ifMatch: ifMatch);
+        using HttpResponseMessage response = await environment.Client.SendAsync(
+            update,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        long updatedVersion = expectedVersion + 1;
+        Assert.Equal($"\"v{updatedVersion}\"", response.Headers.ETag?.Tag);
+        using JsonDocument updated = await ReadJsonAsync(response, cancellationToken)
+            .ConfigureAwait(false);
+        Assert.Equal(1, updated.RootElement.GetProperty("active_leases").GetInt32());
+        Assert.Equal(updatedVersion, updated.RootElement.GetProperty("version").GetInt64());
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        using HttpRequestMessage replay = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/accounts/{accountId:D}",
+            adminToken,
+            body,
+            contentType: "application/merge-patch+json",
+            idempotencyKey: IdempotencyKey,
+            ifMatch: ifMatch);
+        using HttpResponseMessage replayResponse = await environment.Client.SendAsync(
+            replay,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.OK, replayResponse.StatusCode);
+        Assert.Equal($"\"v{updatedVersion}\"", replayResponse.Headers.ETag?.Tag);
+        using JsonDocument replayed = await ReadJsonAsync(
+            replayResponse,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(1, replayed.RootElement.GetProperty("active_leases").GetInt32());
+        Assert.Equal(updatedVersion, replayed.RootElement.GetProperty("version").GetInt64());
+        return updatedVersion;
+    }
+
+    private static async ValueTask<long> AssertProductionRouterLeaseAsync(
+        PasswordResetHttpEndToEndEnvironment environment,
+        string adminToken,
+        Guid groupId,
+        SupplyFixture supply,
+        CancellationToken cancellationToken)
+    {
+        IAccountRouter router = environment.Services.GetRequiredService<IAccountRouter>();
+        RouteAccountCommand firstCommand = new(
+            new EntityId(groupId),
+            "gpt-test",
+            new EntityId(Guid.CreateVersion7()),
+            new EntityId(Guid.CreateVersion7()),
+            GroupPolicyVersion: 2,
+            SessionAffinityHash: "0123456789abcdef0123456789abcdef");
+        Result<IAccountLease> firstResult = await router.RouteAsync(
+            firstCommand,
+            cancellationToken).ConfigureAwait(false);
+        Assert.True(
+            firstResult.IsSuccess,
+            firstResult.IsFailure ? firstResult.Error.Code : string.Empty);
+        IAccountLease firstLease = firstResult.Value;
+        await using ConfiguredAsyncDisposable firstLeaseLifetime =
+            firstLease.ConfigureAwait(false);
+        Assert.Equal(groupId, firstLease.Route.GroupId.Value);
+        Assert.Equal(supply.ChannelId, firstLease.Route.ChannelId.Value);
+        Assert.Equal(supply.AccountId, firstLease.Route.AccountId.Value);
+        Assert.Equal(
+            supply.ConfigurationVersion,
+            firstLease.Route.SupplyConfigurationVersion);
+        Assert.Equal(2, firstLease.Route.ChannelVersion);
+        Assert.Equal(supply.AccountVersion, firstLease.Route.AccountVersion);
+        Assert.Equal(
+            1,
+            await ReadAccountActiveLeasesAsync(
+                environment,
+                adminToken,
+                supply.AccountId,
+                cancellationToken).ConfigureAwait(false));
+        long updatedAccountVersion = await UpdateAccountWhileLeasedAsync(
+            environment,
+            adminToken,
+            supply.AccountId,
+            supply.AccountVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        Result<AccountRoute> renewed = await firstLease.RenewAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(
+            renewed.IsSuccess,
+            renewed.IsFailure ? renewed.Error.Code : string.Empty);
+        Assert.Equal(supply.AccountId, renewed.Value.AccountId.Value);
+        Result<bool> firstReleased = await firstLease.ReleaseAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(firstReleased.IsSuccess);
+        Assert.True(firstReleased.Value);
+        await WaitForAccountActiveLeasesAsync(
+            environment,
+            adminToken,
+            supply.AccountId,
+            expectedCount: 0,
+            cancellationToken).ConfigureAwait(false);
+
+        RouteAccountCommand secondCommand = firstCommand with
+        {
+            RequestId = new EntityId(Guid.CreateVersion7()),
+            AttemptId = new EntityId(Guid.CreateVersion7()),
+        };
+        Result<IAccountLease> secondResult = await router.RouteAsync(
+            secondCommand,
+            cancellationToken).ConfigureAwait(false);
+        Assert.True(
+            secondResult.IsSuccess,
+            secondResult.IsFailure ? secondResult.Error.Code : string.Empty);
+        IAccountLease secondLease = secondResult.Value;
+        await using ConfiguredAsyncDisposable secondLeaseLifetime =
+            secondLease.ConfigureAwait(false);
+        Assert.Equal(firstLease.Route.AccountId, secondLease.Route.AccountId);
+        Assert.Equal(firstLease.Route.GroupId, secondLease.Route.GroupId);
+        Assert.Equal(updatedAccountVersion, secondLease.Route.AccountVersion);
+        Result<bool> secondReleased = await secondLease.ReleaseAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(secondReleased.IsSuccess);
+        Assert.True(secondReleased.Value);
+        await WaitForAccountActiveLeasesAsync(
+            environment,
+            adminToken,
+            supply.AccountId,
+            expectedCount: 0,
+            cancellationToken).ConfigureAwait(false);
+        return updatedAccountVersion;
     }
 
     private static async ValueTask ActivateGroupAsync(
@@ -391,7 +769,7 @@ public sealed class M1ExitPublicApiEndToEndTests
             adminToken,
             new { status = "active", reason = "database-observed Supply readiness" },
             contentType: "application/merge-patch+json",
-            idempotencyKey: "m1-exit-activation-ready",
+            idempotencyKey: "m2-exit-activation-ready",
             ifMatch: "\"v1\"");
         using HttpResponseMessage response = await environment.Client.SendAsync(
             activate,
@@ -401,6 +779,14 @@ public sealed class M1ExitPublicApiEndToEndTests
         using JsonDocument activated = await ReadJsonAsync(response, cancellationToken)
             .ConfigureAwait(false);
         Assert.Equal("active", activated.RootElement.GetProperty("status").GetString());
+        Assert.False(
+            activated.RootElement.TryGetProperty(
+                "activation_supply_readiness_token",
+                out _));
+        Assert.False(
+            activated.RootElement.TryGetProperty(
+                "activation_supply_readiness_observed_at",
+                out _));
     }
 
     private static async ValueTask<SubscriptionFixture> AssignSubscriptionAsync(
@@ -418,9 +804,9 @@ public sealed class M1ExitPublicApiEndToEndTests
             {
                 user_id = user.UserId,
                 template_id = access.TemplateId,
-                reason = "M1 access approval",
+                reason = "M2 access approval",
             },
-            idempotencyKey: "m1-exit-subscription-assign");
+            idempotencyKey: "m2-exit-subscription-assign");
         using HttpResponseMessage response = await environment.Client.SendAsync(
             assign,
             cancellationToken).ConfigureAwait(false);
@@ -455,7 +841,7 @@ public sealed class M1ExitPublicApiEndToEndTests
     {
         object body = new
         {
-            name = "M1 Exit key",
+            name = "M2 Exit key",
             group_id = groupId,
             allowed_cidrs = Array.Empty<string>(),
         };
@@ -464,7 +850,7 @@ public sealed class M1ExitPublicApiEndToEndTests
             "/api/v1/me/api-keys",
             user.AccessToken,
             body,
-            idempotencyKey: "m1-exit-api-key-create");
+            idempotencyKey: "m2-exit-api-key-create");
         using HttpResponseMessage response = await environment.Client.SendAsync(
             create,
             cancellationToken).ConfigureAwait(false);
@@ -482,7 +868,7 @@ public sealed class M1ExitPublicApiEndToEndTests
             "/api/v1/me/api-keys",
             user.AccessToken,
             body,
-            idempotencyKey: "m1-exit-api-key-create");
+            idempotencyKey: "m2-exit-api-key-create");
         using HttpResponseMessage replayResponse = await environment.Client.SendAsync(
             replay,
             cancellationToken).ConfigureAwait(false);
@@ -545,8 +931,8 @@ public sealed class M1ExitPublicApiEndToEndTests
             subscription.SubscriptionId,
             "\"v1\"",
             "suspended",
-            "M1 suspension proof",
-            "m1-exit-subscription-suspend",
+            "M2 suspension proof",
+            "m2-exit-subscription-suspend",
             "\"v2\"",
             cancellationToken).ConfigureAwait(false);
         await AssertSelfSubscriptionStateAsync(
@@ -570,7 +956,7 @@ public sealed class M1ExitPublicApiEndToEndTests
                     cancellationToken).ConfigureAwait(false),
                 allowed_cidrs = Array.Empty<string>(),
             },
-            idempotencyKey: "m1-exit-key-while-suspended");
+            idempotencyKey: "m2-exit-key-while-suspended");
         using HttpResponseMessage deniedResponse = await environment.Client.SendAsync(
             deniedKey,
             cancellationToken).ConfigureAwait(false);
@@ -586,8 +972,8 @@ public sealed class M1ExitPublicApiEndToEndTests
             subscription.SubscriptionId,
             "\"v2\"",
             "active",
-            "M1 restoration proof",
-            "m1-exit-subscription-resume",
+            "M2 restoration proof",
+            "m2-exit-subscription-resume",
             "\"v3\"",
             cancellationToken).ConfigureAwait(false);
 
@@ -595,9 +981,9 @@ public sealed class M1ExitPublicApiEndToEndTests
             HttpMethod.Delete,
             $"/api/v1/me/api-keys/{apiKey.ApiKeyId:D}",
             user.AccessToken);
-        revoke.Headers.TryAddWithoutValidation("Idempotency-Key", "m1-exit-api-key-revoke");
+        revoke.Headers.TryAddWithoutValidation("Idempotency-Key", "m2-exit-api-key-revoke");
         revoke.Headers.TryAddWithoutValidation("If-Match", "\"v1\"");
-        revoke.Headers.TryAddWithoutValidation("X-Change-Reason", "M1 revocation proof");
+        revoke.Headers.TryAddWithoutValidation("X-Change-Reason", "M2 revocation proof");
         using HttpResponseMessage revokedResponse = await environment.Client.SendAsync(
             revoke,
             cancellationToken).ConfigureAwait(false);
@@ -626,9 +1012,9 @@ public sealed class M1ExitPublicApiEndToEndTests
             HttpMethod.Patch,
             $"/api/v1/admin/users/{user.UserId:D}",
             adminToken,
-            new { status = "disabled", reason = "M1 canonical revocation proof" },
+            new { status = "disabled", reason = "M2 canonical revocation proof" },
             contentType: "application/merge-patch+json",
-            idempotencyKey: "m1-exit-user-disable",
+            idempotencyKey: "m2-exit-user-disable",
             ifMatch: userEtag);
         using HttpResponseMessage disabledResponse = await environment.Client.SendAsync(
             disableUser,
@@ -770,6 +1156,7 @@ public sealed class M1ExitPublicApiEndToEndTests
         PasswordResetHttpEndToEndEnvironment environment,
         Guid userId,
         AccessFixture access,
+        SupplyFixture supply,
         Guid subscriptionId,
         Guid apiKeyId,
         CancellationToken cancellationToken)
@@ -811,13 +1198,46 @@ public sealed class M1ExitPublicApiEndToEndTests
                           'subscription_assigned',
                           'subscription_updated'
                       )),
-                (SELECT count(*) FROM public.idempotency_records);
+                (SELECT count(*) FROM public.idempotency_records),
+                (SELECT count(*) FROM public.accounts),
+                (SELECT count(*) FROM public.accounts
+                    WHERE id = $6
+                      AND provider = 'openai_compatible'
+                      AND status = 'active'
+                      AND last_health_status = 'healthy'
+                      AND version = $8
+                      AND pg_catalog.strpos(
+                          credential_envelope::text, $9) = 0),
+                (SELECT count(*) FROM public.channels),
+                (SELECT count(*) FROM public.channels
+                    WHERE id = $7
+                      AND provider = 'openai_compatible'
+                      AND status = 'active'
+                      AND version = 2),
+                (SELECT count(*) FROM public.group_supply_configurations),
+                (SELECT count(*) FROM public.group_supply_configurations
+                    WHERE group_id = $2
+                      AND channel_id = $7
+                      AND version = $10),
+                (SELECT count(*) FROM public.group_accounts),
+                (SELECT count(*) FROM public.group_accounts
+                    WHERE group_id = $2
+                      AND account_id = $6
+                      AND is_enabled),
+                (SELECT count(*) FROM public.groups
+                    WHERE id = $2
+                      AND activation_supply_readiness_token LIKE 'v1.%');
             """);
         command.Parameters.AddWithValue(userId);
         command.Parameters.AddWithValue(access.GroupId);
         command.Parameters.AddWithValue(access.TemplateId);
         command.Parameters.AddWithValue(subscriptionId);
         command.Parameters.AddWithValue(apiKeyId);
+        command.Parameters.AddWithValue(supply.AccountId);
+        command.Parameters.AddWithValue(supply.ChannelId);
+        command.Parameters.AddWithValue(supply.AccountVersion);
+        command.Parameters.AddWithValue(UpstreamCredential);
+        command.Parameters.AddWithValue(supply.ConfigurationVersion);
         using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
         Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
@@ -829,6 +1249,10 @@ public sealed class M1ExitPublicApiEndToEndTests
         Assert.Equal(10, reader.GetInt64(5));
         Assert.Equal(8, reader.GetInt64(6));
         Assert.True(reader.GetInt64(7) >= 9);
+        for (int index = 8; index <= 16; index++)
+        {
+            Assert.Equal(1, reader.GetInt64(index));
+        }
     }
 
     private static async ValueTask<string> LoginAsync(
@@ -904,32 +1328,45 @@ public sealed class M1ExitPublicApiEndToEndTests
         return request;
     }
 
-    private sealed class NoUpstreamConnectionSentinel : IAsyncDisposable
+    private sealed class LoopbackModelsUpstream : IAsyncDisposable
     {
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource shutdown = new();
-        private readonly Task observeTask;
-        private int acceptedConnections;
+        private readonly Task serveTask;
+        private readonly Lock requestsGate = new();
+        private readonly List<UpstreamRequest> requests = [];
 
-        internal NoUpstreamConnectionSentinel()
+        internal LoopbackModelsUpstream()
         {
             listener.Start();
             int port = ((IPEndPoint)listener.LocalEndpoint).Port;
             BaseAddress = $"http://127.0.0.1:{port}";
-            observeTask = ObserveConnectionsAsync(shutdown.Token);
+            serveTask = ServeAsync(shutdown.Token);
         }
 
         internal string BaseAddress { get; }
 
-        internal async ValueTask AssertNoConnectionsAsync(
+        internal ValueTask AssertModelsOnlyAsync(
             CancellationToken cancellationToken)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken)
-                .ConfigureAwait(false);
-            Assert.Equal(0, Volatile.Read(ref acceptedConnections));
-            Assert.False(
-                listener.Pending(),
-                "The M1 Exit journey queued an unexpected upstream connection.");
+            cancellationToken.ThrowIfCancellationRequested();
+            UpstreamRequest[] observed;
+            lock (requestsGate)
+            {
+                observed = [.. requests];
+            }
+
+            Assert.NotEmpty(observed);
+            Assert.All(
+                observed,
+                static request =>
+                {
+                    Assert.Equal("GET /models HTTP/1.1", request.RequestLine);
+                    Assert.Equal(
+                        $"Bearer {UpstreamCredential}",
+                        request.Authorization);
+                });
+            return ValueTask.CompletedTask;
         }
 
         public async ValueTask DisposeAsync()
@@ -938,7 +1375,7 @@ public sealed class M1ExitPublicApiEndToEndTests
             listener.Stop();
             try
             {
-                await observeTask.ConfigureAwait(false);
+                await serveTask.ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
             {
@@ -952,16 +1389,65 @@ public sealed class M1ExitPublicApiEndToEndTests
             }
         }
 
-        private async Task ObserveConnectionsAsync(CancellationToken cancellationToken)
+        private async Task ServeAsync(CancellationToken cancellationToken)
         {
             while (true)
             {
                 using TcpClient connection = await listener
                     .AcceptTcpClientAsync(cancellationToken)
                     .ConfigureAwait(false);
-                _ = Interlocked.Increment(ref acceptedConnections);
+                await HandleAsync(connection, cancellationToken).ConfigureAwait(false);
             }
         }
+
+        private async ValueTask HandleAsync(
+            TcpClient connection,
+            CancellationToken cancellationToken)
+        {
+            using NetworkStream network = connection.GetStream();
+            using StreamReader reader = new(
+                network,
+                Encoding.ASCII,
+                detectEncodingFromByteOrderMarks: false,
+                bufferSize: 1024,
+                leaveOpen: true);
+            string requestLine = await reader.ReadLineAsync(cancellationToken)
+                .ConfigureAwait(false) ?? string.Empty;
+            string? authorization = null;
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)
+                   is { Length: > 0 } header)
+            {
+                if (header.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+                {
+                    authorization = header["Authorization:".Length..].Trim();
+                }
+            }
+
+            lock (requestsGate)
+            {
+                requests.Add(new UpstreamRequest(requestLine, authorization));
+            }
+
+            bool isModelsRequest = string.Equals(
+                requestLine,
+                "GET /models HTTP/1.1",
+                StringComparison.Ordinal);
+            byte[] body = Encoding.UTF8.GetBytes(
+                isModelsRequest ? """{"data":[]}""" : """{"error":"not_found"}""");
+            string status = isModelsRequest
+                ? "HTTP/1.1 200 OK"
+                : "HTTP/1.1 404 Not Found";
+            byte[] headers = Encoding.ASCII.GetBytes(
+                $"{status}\r\nContent-Type: application/json\r\n"
+                + $"Content-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+            await network.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+            await network.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            await network.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private sealed record UpstreamRequest(
+            string RequestLine,
+            string? Authorization);
     }
 
     private sealed record UserFixture(Guid UserId, string AccessToken);
@@ -971,6 +1457,12 @@ public sealed class M1ExitPublicApiEndToEndTests
     private sealed record SubscriptionFixture(Guid SubscriptionId);
 
     private sealed record ApiKeyFixture(Guid ApiKeyId);
+
+    private sealed record SupplyFixture(
+        Guid AccountId,
+        Guid ChannelId,
+        long AccountVersion,
+        long ConfigurationVersion);
 
 }
 

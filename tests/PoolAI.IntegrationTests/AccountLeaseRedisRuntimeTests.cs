@@ -183,6 +183,98 @@ public sealed class AccountLeaseRedisRuntimeTests(PostgresRuntimeFixture fixture
 
     [Fact]
     [Trait("Category", "Redis")]
+#pragma warning disable MA0051 // The live lease-count proof keeps acquisition and release visible.
+    public async Task AccountControlPlaneReaderCountsOnlyLiveRedisLeases()
+    {
+        EntityId firstAccountId = EntityId.New();
+        EntityId secondAccountId = EntityId.New();
+        EntityId emptyAccountId = EntityId.New();
+        string firstKey = $"lease:account:v1:{{{firstAccountId.Value:D}}}";
+        string secondKey = $"lease:account:v1:{{{secondAccountId.Value:D}}}";
+        ServiceProvider services = BuildServices(
+            _fixture.RedisConnectionString,
+            []);
+        await using ConfiguredAsyncDisposable serviceLease =
+            services.ConfigureAwait(true);
+        ICoordinationLeaseSet leaseSet =
+            services.GetRequiredService<ICoordinationLeaseSet>();
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        CoordinationLeaseAcquireResult first = await leaseSet.AcquireAsync(
+            new CoordinationLeaseAcquireRequest(
+                firstKey,
+                "10101010101010101010101010101010",
+                Limit: 10),
+            cancellationToken).ConfigureAwait(true);
+        CoordinationLeaseAcquireResult second = await leaseSet.AcquireAsync(
+            new CoordinationLeaseAcquireRequest(
+                firstKey,
+                "20202020202020202020202020202020",
+                Limit: 10),
+            cancellationToken).ConfigureAwait(true);
+        CoordinationLeaseAcquireResult third = await leaseSet.AcquireAsync(
+            new CoordinationLeaseAcquireRequest(
+                secondKey,
+                "30303030303030303030303030303030",
+                Limit: 10),
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(CoordinationLeaseAcquireDisposition.Acquired, first.Disposition);
+        Assert.Equal(CoordinationLeaseAcquireDisposition.Acquired, second.Disposition);
+        Assert.Equal(CoordinationLeaseAcquireDisposition.Acquired, third.Disposition);
+
+        ConnectionMultiplexer redis = await ConnectionMultiplexer
+            .ConnectAsync(_fixture.RedisConnectionString)
+            .ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable redisLease = redis.ConfigureAwait(true);
+        await redis.GetDatabase().SortedSetAddAsync(
+            FullLeaseKey(firstAccountId),
+            "40404040404040404040404040404040",
+            score: 0).ConfigureAwait(true);
+
+        IAccountActiveLeaseReader reader =
+            services.GetRequiredService<IAccountActiveLeaseReader>();
+        Result<IReadOnlyList<AccountActiveLeaseCount>> initial =
+            await reader.ReadAsync(
+                [firstAccountId, secondAccountId, emptyAccountId],
+                cancellationToken).ConfigureAwait(true);
+
+        Assert.True(initial.IsSuccess);
+        Assert.Collection(
+            initial.Value,
+            count =>
+            {
+                Assert.Equal(firstAccountId, count.AccountId);
+                Assert.Equal(2, count.ActiveLeases);
+            },
+            count =>
+            {
+                Assert.Equal(secondAccountId, count.AccountId);
+                Assert.Equal(1, count.ActiveLeases);
+            },
+            count =>
+            {
+                Assert.Equal(emptyAccountId, count.AccountId);
+                Assert.Equal(0, count.ActiveLeases);
+            });
+
+        Assert.Equal(
+            CoordinationLeaseReleaseResult.Released,
+            await leaseSet.ReleaseAsync(
+                new CoordinationLeaseOwner(
+                    firstKey,
+                    "10101010101010101010101010101010"),
+                cancellationToken).ConfigureAwait(true));
+        Result<IReadOnlyList<AccountActiveLeaseCount>> afterRelease =
+            await reader.ReadAsync(
+                [firstAccountId],
+                cancellationToken).ConfigureAwait(true);
+
+        Assert.True(afterRelease.IsSuccess);
+        Assert.Equal(1, Assert.Single(afterRelease.Value).ActiveLeases);
+    }
+#pragma warning restore MA0051
+
+    [Fact]
+    [Trait("Category", "Redis")]
     public async Task CallerCancellationPropagatesAcrossAccountLeaseOperations()
     {
         EntityId accountId = EntityId.New();
@@ -628,11 +720,19 @@ public sealed class AccountLeaseRedisRuntimeTests(PostgresRuntimeFixture fixture
             .GetRequiredService<IGroupRequestRateLimiter>()
             .AcquireAsync(groupId, requestsPerMinute: 1, cancellationToken)
             .ConfigureAwait(true);
+        Result<IReadOnlyList<AccountActiveLeaseCount>> activeLeases =
+            await services
+                .GetRequiredService<IAccountActiveLeaseReader>()
+                .ReadAsync([candidate.AccountId], cancellationToken)
+                .ConfigureAwait(true);
 
         Assert.Equal("coordination_unavailable", route.Error.Code);
         Assert.Equal(1, route.Error.RetryAfterSeconds);
         Assert.Equal("coordination_unavailable", rpm.Error.Code);
         Assert.Equal(1, rpm.Error.RetryAfterSeconds);
+        Assert.True(activeLeases.IsFailure);
+        Assert.Equal("coordination_unavailable", activeLeases.Error.Code);
+        Assert.Equal(1, activeLeases.Error.RetryAfterSeconds);
     }
 
     private static ServiceProvider BuildServices(

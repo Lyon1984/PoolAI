@@ -76,6 +76,7 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IAuditAppender>(),
                 serviceProvider.GetRequiredService<IOutboxAppender>(),
                 serviceProvider.GetRequiredService<IAccountCredentialProtector>(),
+                serviceProvider.GetRequiredService<IAccountActiveLeaseReader>(),
                 serviceProvider.GetRequiredService<AccountControlPlanePolicy>()));
         services.AddSingleton(static serviceProvider =>
             new ChannelControlPlaneService(

@@ -8,6 +8,7 @@ using PoolAI.Modules.Routing.Application;
 using PoolAI.Modules.Routing.Infrastructure;
 using PoolAI.Modules.Routing.Infrastructure.Workers;
 using PoolAI.Modules.Routing.Worker;
+using PoolAI.Modules.Supply.Abstractions;
 
 namespace PoolAI.Modules.Routing;
 
@@ -18,6 +19,8 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
         AddModuleMarker(services);
         AddHealthCore(services);
+        services.AddSingleton<IAccountActiveLeaseReader,
+            AccountActiveLeaseReader>();
         services.AddSingleton<IRouteAffinityStore, CoordinationRouteAffinityStore>();
         services.AddSingleton<IAccountRouter, AccountRouter>();
         services.AddSingleton<IGroupRequestRateLimiter, GroupRequestRateLimiter>();

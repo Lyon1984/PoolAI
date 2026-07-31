@@ -84,7 +84,10 @@ public sealed class AccountEndpointContractTests
         Assert.NotEqual("account-test-client", createCommand.UserAgent);
 
         factory.UseCases.GetResult = Result.Success(
-            View(version: 2, prefix: "sha256:222222222222"));
+            View(
+                version: 2,
+                prefix: "sha256:222222222222",
+                activeLeases: 2));
         using HttpClient auditor = AuthenticatedClient(factory, "auditor");
         PropagateTrace(auditor, traceScope.TraceId);
         using HttpResponseMessage get = await auditor.GetAsync(
@@ -95,10 +98,19 @@ public sealed class AccountEndpointContractTests
         string getBody = await get.Content.ReadAsStringAsync(
             TestContext.Current.CancellationToken);
         AssertSecretFree(getBody, CreateCredential, UpdateCredential);
-        AssertAccountShape(getBody, "sha256:222222222222", version: 2);
+        AssertAccountShape(
+            getBody,
+            "sha256:222222222222",
+            version: 2,
+            activeLeases: 2);
 
         factory.UseCases.ListResult = Result.Success(new AccountPage(
-            [View(version: 3, prefix: "sha256:333333333333")],
+            [
+                View(
+                    version: 3,
+                    prefix: "sha256:333333333333",
+                    activeLeases: 3),
+            ],
             NextCursor: "next-account",
             HasMore: true));
         using HttpResponseMessage list = await auditor.GetAsync(
@@ -114,6 +126,7 @@ public sealed class AccountEndpointContractTests
                 document.RootElement.GetProperty("data").EnumerateArray());
             Assert.Equal("sha256:333333333333",
                 data.GetProperty("credential_prefix").GetString());
+            Assert.Equal(3, data.GetProperty("active_leases").GetInt64());
             Assert.Equal("next-account",
                 document.RootElement.GetProperty("page")
                     .GetProperty("next_cursor").GetString());
@@ -671,6 +684,7 @@ public sealed class AccountEndpointContractTests
             submittedUrl,
             submittedCredential,
             "private-marker");
+        response.Dispose();
         RecordedActivity[] requestTraces = traces.Snapshots
             .Where(snapshot => string.Equals(
                 snapshot.TraceId,
@@ -721,7 +735,8 @@ public sealed class AccountEndpointContractTests
         string prefix,
         UpstreamProvider provider = UpstreamProvider.OpenAiCompatible,
         AccountLifecycle status = AccountLifecycle.Disabled,
-        AccountHealth health = AccountHealth.Unknown) => new(
+        AccountHealth health = AccountHealth.Unknown,
+        int activeLeases = 0) => new(
         AccountId,
         "Primary",
         provider,
@@ -732,7 +747,7 @@ public sealed class AccountEndpointContractTests
             health,
             RetryAt: null,
             LastCheckedAt: null),
-        ActiveLeases: 0,
+        ActiveLeases: activeLeases,
         MaxConcurrency: 4,
         Priority: 2,
         Weight: 100,
@@ -743,7 +758,8 @@ public sealed class AccountEndpointContractTests
     private static void AssertAccountShape(
         string json,
         string prefix,
-        long version)
+        long version,
+        int activeLeases = 0)
     {
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement account = document.RootElement;
@@ -753,7 +769,7 @@ public sealed class AccountEndpointContractTests
         Assert.Equal("api_key", account.GetProperty("account_type").GetString());
         Assert.Equal(prefix, account.GetProperty("credential_prefix").GetString());
         Assert.Equal(version, account.GetProperty("version").GetInt64());
-        Assert.Equal(0, account.GetProperty("active_leases").GetInt64());
+        Assert.Equal(activeLeases, account.GetProperty("active_leases").GetInt64());
     }
 
     private static void AssertSecretFree(string value, params string[] forbidden)

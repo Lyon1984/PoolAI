@@ -13,6 +13,15 @@ paths = [
 regexes = ['''^(m1-exit-key-while-suspended|m1-exit-api-key-revoke)$''']
 
 [[allowlists]]
+description = "M2 Exit deterministic idempotency keys are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^tests/PoolAI\.EndToEndTests/M2ExitPublicApiEndToEndTests\.cs$''',
+]
+regexes = ['''^(m2-exit-activation-unhealthy|m2-exit-key-while-suspended|m2-exit-api-key-revoke)$''']
+
+[[allowlists]]
 description = "Canonical traceability contract paths are not an API credential"
 condition = "AND"
 regexTarget = "match"

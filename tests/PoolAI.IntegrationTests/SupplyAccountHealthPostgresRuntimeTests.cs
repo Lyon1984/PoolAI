@@ -1,4 +1,5 @@
 #pragma warning disable MA0051 // Each PostgreSQL evidence scenario keeps its transition sequence visible.
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using PoolAI.BuildingBlocks;
@@ -162,6 +163,102 @@ public sealed class SupplyAccountHealthPostgresRuntimeTests(
         Assert.Equal(2, row.Version);
         Assert.Equal(1, await AuditCountAsync(accountId, cancellationToken)
             .ConfigureAwait(true));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task SevenFractionalDigitsAreCanonicalizedBeforeWriteValidationAndAudit()
+    {
+        // Governing contract: docs/database/README.md item 27 and ADR 0011.
+        // Accepted health timestamps, persisted state, and audit must agree.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId accountId = EntityId.New();
+        await CreateAccountAsync(accountId, cancellationToken).ConfigureAwait(true);
+        DateTimeOffset expectedObservedAt =
+            new DateTimeOffset(2026, 7, 30, 3, 30, 0, TimeSpan.Zero)
+                .AddTicks(1_234_560);
+        DateTimeOffset requestedObservedAt = expectedObservedAt.AddTicks(7);
+        DateTimeOffset expectedRetryAt =
+            expectedObservedAt.AddMinutes(1).AddTicks(30);
+        DateTimeOffset requestedRetryAt = expectedRetryAt.AddTicks(9);
+
+        Result<AccountHealthTransitionResult> result = await WorkerWriter()
+            .RecordAsync(
+                Transition(
+                    accountId,
+                    AccountHealth.Cooling,
+                    requestedObservedAt,
+                    requestedRetryAt,
+                    expectedVersion: 1,
+                    expectedCredentialRevision: 1),
+                cancellationToken).ConfigureAwait(true);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            AccountHealthTransitionDisposition.Applied,
+            result.Value.Disposition);
+        Assert.Equal(expectedObservedAt, result.Value.Current.ObservedAt);
+        Assert.Equal(expectedRetryAt, result.Value.Current.RetryAt);
+        AccountRow row = await ReadAccountAsync(accountId, cancellationToken)
+            .ConfigureAwait(true);
+        Assert.Equal(expectedObservedAt, row.ObservedAt);
+        Assert.Equal(expectedRetryAt, row.RetryAt);
+        HealthAuditRow audit = Assert.Single(await ReadHealthAuditsAsync(
+            accountId,
+            cancellationToken).ConfigureAwait(true));
+        using JsonDocument metadata = JsonDocument.Parse(audit.Metadata);
+        Assert.Equal(
+            expectedObservedAt,
+            metadata.RootElement.GetProperty("observed_at").GetDateTimeOffset());
+        Assert.Equal(
+            expectedRetryAt,
+            metadata.RootElement.GetProperty("retry_at").GetDateTimeOffset());
+
+        DateTimeOffset expectedFreshObservedAt =
+            expectedObservedAt.AddSeconds(1).AddTicks(40);
+        DateTimeOffset requestedFreshObservedAt =
+            expectedFreshObservedAt.AddTicks(7);
+        Result<AccountHealthTransitionResult> duplicate = await WorkerWriter()
+            .RecordAsync(
+                Transition(
+                    accountId,
+                    AccountHealth.Cooling,
+                    requestedFreshObservedAt,
+                    requestedRetryAt,
+                    expectedVersion: 2,
+                    expectedCredentialRevision: 1),
+                cancellationToken).ConfigureAwait(true);
+
+        Assert.True(duplicate.IsSuccess);
+        Assert.Equal(
+            AccountHealthTransitionDisposition.Duplicate,
+            duplicate.Value.Disposition);
+        Assert.Equal(
+            expectedFreshObservedAt,
+            duplicate.Value.Current.ObservedAt);
+        Assert.Equal(expectedRetryAt, duplicate.Value.Current.RetryAt);
+        Assert.Equal(1, await AuditCountAsync(accountId, cancellationToken)
+            .ConfigureAwait(true));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task SubMicrosecondDistanceFromMinimumFailsValidation()
+    {
+        // Governing contract: docs/database/README.md item 27 and ADR 0011.
+        // Invalid health timestamps fail validation before any database write.
+        Result<AccountHealthTransitionResult> result = await WorkerWriter()
+            .RecordAsync(
+                Transition(
+                    EntityId.New(),
+                    AccountHealth.Healthy,
+                    DateTimeOffset.MinValue.AddTicks(7),
+                    expectedVersion: 1,
+                    expectedCredentialRevision: 1),
+                TestContext.Current.CancellationToken).ConfigureAwait(true);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("validation_failed", result.Error.Code);
     }
 
     [Fact]
