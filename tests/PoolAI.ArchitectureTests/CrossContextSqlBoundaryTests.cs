@@ -116,6 +116,8 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_quota_adjust_usage"] = GroupQuota,
         ["poolai_group_create"] = GroupQuota,
         ["poolai_group_update"] = GroupQuota,
+        ["poolai_group_quota_adjust_total"] = GroupQuota,
+        ["poolai_group_quota_reset"] = GroupQuota,
     };
 
     private static readonly Dictionary<string, RegisteredAccess> RegisteredBusinessAccesses =
@@ -205,6 +207,12 @@ public sealed class CrossContextSqlBoundaryTests
         "poolai_supply_rewrap_account_credential->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_emit_quota_event->poolai_business_error",
         "poolai_group_create->poolai_quota_initialize",
+        "poolai_group_quota_adjust_total->poolai_business_error",
+        "poolai_group_quota_adjust_total->poolai_quota_adjust_total",
+        "poolai_group_quota_adjust_total->poolai_quota_remaining",
+        "poolai_group_quota_reset->poolai_business_error",
+        "poolai_group_quota_reset->poolai_quota_reset",
+        "poolai_group_quota_reset->poolai_quota_remaining",
         "poolai_quota_adjust_total->poolai_business_error",
         "poolai_quota_adjust_total->poolai_emit_quota_event",
         "poolai_quota_adjust_total->poolai_quota_remaining",
@@ -250,6 +258,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0010_supply_account_credentials_m2_e1.sql:$permission_audit$:d47e055c58fb077526c58fe1250d118e3cbf6bfa0a3eb47b40fbdc0e1a9e301d",
         "0011_supply_control_plane_m2_e2.sql:$permission_audit$:1f5d5ee0b8d2230dc59850c53806cb64b114bd645cddf1b21e7dcb03c44edccb",
         "0012_supply_account_health_m2_e4.sql:$permission_audit$:4224d77efb2e437de44c45d705897b50a3c4bf85df6c06f615fb8a2f51512996",
+        "0013_group_quota_period_m3_e1.sql:$permission_audit$:1bab610e50606405fcb4c7e0b1572cfadaeaacea4d9ffb15b1f2744bb9d23894",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -1007,6 +1016,31 @@ public sealed class CrossContextSqlBoundaryTests
                 "for update",
                 "v_now := pg_catalog.clock_timestamp()");
         }
+
+        Dictionary<string, string> periodManagement =
+            ReadFunctions("0013_group_quota_period_m3_e1.sql");
+        AssertInOrder(
+            NormalizeSql(periodManagement["poolai_group_quota_adjust_total"]),
+            "from public.group_token_quotas as quota",
+            "for update",
+            "from public.group_quota_events as quota_event",
+            "from public.groups as current_group",
+            "for share",
+            "from public.group_quota_periods as current_period",
+            "for update",
+            "v_before_state := pg_catalog.jsonb_build_object",
+            "from public.poolai_quota_adjust_total");
+        AssertInOrder(
+            NormalizeSql(periodManagement["poolai_group_quota_reset"]),
+            "from public.group_token_quotas as quota",
+            "for update",
+            "from public.group_quota_events as quota_event",
+            "from public.groups as current_group",
+            "for share",
+            "from public.group_quota_periods as current_period",
+            "for update",
+            "v_before_state := pg_catalog.jsonb_build_object",
+            "from public.poolai_quota_reset");
     }
 
     private static Dictionary<string, string> ReadFunctions(string migration)
