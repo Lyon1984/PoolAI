@@ -60,6 +60,30 @@ public sealed class QuotaMutationDenialRateLimiterTests
     }
 
     [Fact]
+    public async Task AdapterFailsClosedOnAnUnknownCounterDisposition()
+    {
+        RecordingCounter counter = new()
+        {
+            Next = new FixedWindowCounterResult(
+                (FixedWindowCounterDisposition)int.MaxValue,
+                Current: 1,
+                RetryAfter: TimeSpan.Zero),
+        };
+        OperationsQuotaMutationDenialRateLimiter limiter = new(
+            counter,
+            new QuotaMutationDenialRateLimitOptions(5));
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await limiter.AcquireAsync(
+                new EntityId(Guid.Parse("01900000-0000-7000-8000-000000000123")),
+                CancellationToken.None).ConfigureAwait(true));
+
+        Assert.Equal(
+            "The fixed-window counter returned an unknown disposition.",
+            exception.Message);
+    }
+
+    [Fact]
     public void OptionsUseTheFrozenDefaultAndBounds()
     {
         IConfiguration empty = new ConfigurationBuilder().Build();

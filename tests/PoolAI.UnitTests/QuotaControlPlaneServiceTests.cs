@@ -250,6 +250,91 @@ public sealed class QuotaControlPlaneServiceTests
     }
 
     [Fact]
+    public async Task MalformedDenialGateDecisionFailsClosedBeforeEveryDatabaseWrite()
+    {
+        // Governing contract: AC-004 requires the shared Redis denial gate to
+        // fail closed. No malformed adapter decision may fall through to a
+        // denial audit or quota mutation.
+        QuotaMutationDenialRateLimitDecision[] malformed =
+        [
+            new(QuotaMutationDenialRateLimitDisposition.Allowed, 1),
+            new(QuotaMutationDenialRateLimitDisposition.Rejected, null),
+            new(QuotaMutationDenialRateLimitDisposition.Rejected, 0),
+            new(QuotaMutationDenialRateLimitDisposition.Unavailable, null),
+            new(QuotaMutationDenialRateLimitDisposition.Unavailable, 2),
+            new((QuotaMutationDenialRateLimitDisposition)int.MaxValue, null),
+        ];
+
+        foreach (QuotaMutationDenialRateLimitDecision decision in malformed)
+        {
+            RecordingQuotaRepository repository = new();
+            RecordingQuotaMutationDenialRateLimiter limiter = new()
+            {
+                NextDecision = decision,
+            };
+            TestContext context = CreateContext(repository, limiter);
+
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                    await context.Service.ExecuteAsync(
+                        Adjust(
+                            new GroupActor(ActorId, GroupControlRole.Operator, 1),
+                            "malformed-denial-decision"),
+                        CancellationToken.None).ConfigureAwait(true));
+
+            Assert.Equal(
+                "The quota-mutation denial limiter returned an invalid decision.",
+                exception.Message);
+            Assert.Equal([ActorId], limiter.Actors);
+            Assert.Equal(0, context.Units.BeginCalls);
+            Assert.Equal(0, context.Units.CommitCalls);
+            Assert.Empty(context.Audit.Entries);
+            Assert.Empty(context.Idempotency.Requests);
+            Assert.Equal(0, repository.AdjustCalls);
+            Assert.Equal(0, repository.ResetCalls);
+        }
+    }
+
+    [Fact]
+    public async Task UnknownIdempotencyAuditStatusFailsClosedWithoutAuditCommit()
+    {
+        // Governing contract: AC-004 permits only missing, invalid, multiple,
+        // or valid classifications in denial audit metadata. A corrupted
+        // boundary value must never be serialized as a plausible status.
+        QuotaMutationIdempotencyKeyAuditInput input =
+            (QuotaMutationIdempotencyKeyAuditInput)typeof(
+                QuotaMutationIdempotencyKeyAuditInput)
+                .GetConstructor(
+                    System.Reflection.BindingFlags.Instance
+                        | System.Reflection.BindingFlags.NonPublic,
+                    binder: null,
+                    [typeof(QuotaMutationIdempotencyKeyStatus), typeof(string)],
+                    modifiers: null)!
+                .Invoke([(QuotaMutationIdempotencyKeyStatus)int.MaxValue, null]);
+        RecordingQuotaRepository repository = new();
+        TestContext context = CreateContext(repository);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await context.Service.ExecuteAsync(
+                new AuthorizeQuotaMutationCommand(
+                    EntityId.New(),
+                    new GroupActor(ActorId, GroupControlRole.Operator, 1),
+                    GroupId,
+                    QuotaMutationOperation.AdjustTotal,
+                    input,
+                    "127.0.0.1",
+                    "sha256:test"),
+                CancellationToken.None).ConfigureAwait(true));
+
+        Assert.Equal(1, context.Units.BeginCalls);
+        Assert.Equal(0, context.Units.CommitCalls);
+        Assert.Empty(context.Audit.Entries);
+        Assert.Empty(context.Idempotency.Requests);
+        Assert.Equal(0, repository.AdjustCalls);
+        Assert.Equal(0, repository.ResetCalls);
+    }
+
+    [Fact]
     public async Task AdminBypassesTheDenialGate()
     {
         RecordingQuotaRepository repository = new()

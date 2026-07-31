@@ -7,12 +7,12 @@
         "PoolAI.Modules.GroupQuota"
       ],
       "pathEndsWith": [],
-      "linesCovered": 3628,
-      "linesValid": 3628,
+      "linesCovered": 3911,
+      "linesValid": 3911,
       "lineRate": 100,
-      "branchesCovered": 1286,
-      "branchesValid": 1337,
-      "branchRate": 96.18548990276739
+      "branchesCovered": 1404,
+      "branchesValid": 1459,
+      "branchRate": 96.23029472241261
     },
     "auth": {
       "pathIncludes": [
@@ -37,9 +37,9 @@
         "/AccountCredentialEnvelopeOptions.cs",
         "/AccountCredentialProtector.cs"
       ],
-      "linesCovered": 1777,
-      "linesValid": 1932,
-      "lineRate": 91.97722567287785,
+      "linesCovered": 1778,
+      "linesValid": 1933,
+      "lineRate": 91.98137609932748,
       "branchesCovered": 648,
       "branchesValid": 790,
       "branchRate": 82.02531645569621

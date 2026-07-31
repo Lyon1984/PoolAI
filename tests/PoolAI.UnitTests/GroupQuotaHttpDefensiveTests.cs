@@ -121,6 +121,7 @@ public sealed class GroupQuotaHttpDefensiveTests
     [InlineData("""{"name":"Research","total_tokens":-1}""")]
     [InlineData("""{"name":"Research","total_tokens":9007199254740992}""")]
     [InlineData("""{"name":"Research","total_tokens":9.007199254740992e15}""")]
+    [InlineData("""{"name":"Research","total_tokens":999999999999999e1}""")]
     [InlineData("""{"name":"Research","total_tokens":1e999999999999999999}""")]
     public void GroupCreateParserRejectsNonIntegralOrUnsafeTokenInput(
         string json)
@@ -135,6 +136,30 @@ public sealed class GroupQuotaHttpDefensiveTests
         Assert.False(accepted);
         Assert.Null(parsed);
         Assert.Contains("/total_tokens", errors);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("1/")]
+    [InlineData("1x")]
+    [InlineData("1e")]
+    [InlineData("1e+")]
+    [InlineData("1e/")]
+    [InlineData("1ex")]
+    public void SafeIntegerLexemeParserFailsClosedOnMalformedRawInput(string raw)
+    {
+        // Governing contract: AC-026 requires invalid token inputs to fail
+        // without truncation. These cases exercise the parser's defensive
+        // boundary even though the current JSON reader rejects them first.
+        SafeIntegerLexemeParser parser = typeof(GroupQuotaHttp)
+            .GetMethod(
+                "TryParsePositiveSafeInteger",
+                System.Reflection.BindingFlags.Static
+                    | System.Reflection.BindingFlags.NonPublic)!
+            .CreateDelegate<SafeIntegerLexemeParser>();
+
+        Assert.False(parser(raw.AsSpan(), out long value));
+        Assert.Equal(0, value);
     }
 
     [Fact]
@@ -468,6 +493,10 @@ public sealed class GroupQuotaHttpDefensiveTests
             new Claim("token_version", "1"),
         ],
         authenticationType: "unit-test"));
+
+    private delegate bool SafeIntegerLexemeParser(
+        ReadOnlySpan<char> raw,
+        out long value);
 
     private static GroupQuotaView QuotaView(GroupPoolQuotaStatus status)
     {
