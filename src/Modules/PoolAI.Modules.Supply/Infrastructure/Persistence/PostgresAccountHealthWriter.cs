@@ -45,9 +45,14 @@ internal sealed class PostgresAccountHealthWriter(
         ArgumentNullException.ThrowIfNull(transition);
         if (!IsValid(transition))
         {
-            return Result.Failure<AccountHealthTransitionResult>(
-                "validation_failed",
-                "The Account health transition is invalid.");
+            return InvalidTransition();
+        }
+
+        AccountHealthTransition postgresTransition =
+            NormalizeForPostgres(transition);
+        if (!IsValid(postgresTransition))
+        {
+            return InvalidTransition();
         }
 
         IUnitOfWork unitOfWork = await _unitOfWorkFactory
@@ -59,7 +64,7 @@ internal sealed class PostgresAccountHealthWriter(
             PostgresUnitOfWorkAccessor.Require(unitOfWork.Context);
         FunctionResult functionResult = await ExecuteAsync(
             session,
-            transition,
+            postgresTransition,
             cancellationToken).ConfigureAwait(false);
 
         if (string.Equals(
@@ -84,11 +89,11 @@ internal sealed class PostgresAccountHealthWriter(
 
         AccountHealthTransitionResult result = ToTransitionResult(
             functionResult,
-            transition);
+            postgresTransition);
         if (result.WasChanged)
         {
             await _auditAppender.AppendAsync(
-                CreateAuditEntry(transition, result),
+                CreateAuditEntry(postgresTransition, result),
                 unitOfWork.Context,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -96,6 +101,11 @@ internal sealed class PostgresAccountHealthWriter(
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return Result.Success(result);
     }
+
+    private static Result<AccountHealthTransitionResult> InvalidTransition() =>
+        Result.Failure<AccountHealthTransitionResult>(
+            "validation_failed",
+            "The Account health transition is invalid.");
 
     private static bool IsValid(AccountHealthTransition transition)
     {
@@ -117,6 +127,24 @@ internal sealed class PostgresAccountHealthWriter(
                 && retryAt != DateTimeOffset.MinValue
                 && retryAt != DateTimeOffset.MaxValue
             : transition.RetryAt is null;
+    }
+
+    private static AccountHealthTransition NormalizeForPostgres(
+        AccountHealthTransition transition) =>
+        transition with
+        {
+            ObservedAt = PostgresTimestamp(transition.ObservedAt),
+            RetryAt = transition.RetryAt is { } retryAt
+                ? PostgresTimestamp(retryAt)
+                : null,
+        };
+
+    private static DateTimeOffset PostgresTimestamp(DateTimeOffset value)
+    {
+        DateTimeOffset utc = value.ToUniversalTime();
+        long normalizedTicks =
+            utc.Ticks - utc.Ticks % TimeSpan.TicksPerMicrosecond;
+        return new DateTimeOffset(normalizedTicks, TimeSpan.Zero);
     }
 
     private static async ValueTask<FunctionResult> ExecuteAsync(

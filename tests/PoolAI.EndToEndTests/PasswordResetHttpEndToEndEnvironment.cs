@@ -1,19 +1,23 @@
 extern alias PoolAiApi;
 
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using PoolAI.BuildingBlocks;
 using PoolAI.Database.Migrations;
+using PoolAI.Infrastructure.Postgres;
 using PoolAI.Modules.Identity.Application.Ports;
 using PoolAI.Modules.Identity.Infrastructure.Security;
-using PoolAI.Modules.Supply.Abstractions;
+using PoolAI.Modules.Operations;
+using PoolAI.Modules.Routing;
+using PoolAI.Modules.Routing.Infrastructure.Workers;
+using PoolAI.Modules.Supply;
 using Testcontainers.PostgreSql;
 using Testcontainers.Redis;
 
@@ -30,19 +34,19 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
     private RedisContainer? redis;
     private RealPasswordResetApiFactory? apiFactory;
     private readonly bool bootstrapAdminOnly;
-    private readonly bool useM1ExitSupplyReadiness;
+    private Dictionary<string, string?> apiConfiguration = null!;
+    private string workerConnectionString = string.Empty;
 
-    private PasswordResetHttpEndToEndEnvironment(
-        bool bootstrapAdminOnly = false,
-        bool useM1ExitSupplyReadiness = false)
+    private PasswordResetHttpEndToEndEnvironment(bool bootstrapAdminOnly = false)
     {
         this.bootstrapAdminOnly = bootstrapAdminOnly;
-        this.useM1ExitSupplyReadiness = useM1ExitSupplyReadiness;
     }
 
     internal NpgsqlDataSource AdministratorDataSource { get; private set; } = null!;
 
     internal HttpClient Client { get; private set; } = null!;
+
+    internal IServiceProvider Services => apiFactory!.Services;
 
     internal Guid ActiveUserId { get; } = Guid.CreateVersion7();
 
@@ -76,12 +80,10 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
         }
     }
 
-    internal static async ValueTask<PasswordResetHttpEndToEndEnvironment> CreateM1ExitAsync(
+    internal static async ValueTask<PasswordResetHttpEndToEndEnvironment> CreateM2ExitAsync(
         CancellationToken cancellationToken)
     {
-        PasswordResetHttpEndToEndEnvironment environment = new(
-            bootstrapAdminOnly: true,
-            useM1ExitSupplyReadiness: true);
+        PasswordResetHttpEndToEndEnvironment environment = new(bootstrapAdminOnly: true);
         try
         {
             await environment.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -92,6 +94,44 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             await environment.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    internal IHost CreateSupplyHealthHost()
+    {
+        Dictionary<string, string?> configurationValues = new(
+            apiConfiguration,
+            StringComparer.OrdinalIgnoreCase)
+        {
+            ["Data:Postgres:ConnectionString"] = workerConnectionString,
+        };
+        HostApplicationBuilder builder = Host.CreateApplicationBuilder(
+            new HostApplicationBuilderSettings
+            {
+                EnvironmentName = Environments.Development,
+            });
+        builder.Configuration.Sources.Clear();
+        builder.Configuration.AddInMemoryCollection(configurationValues);
+        builder.Logging.ClearProviders();
+        builder.Services
+            .AddPoolAiPostgresRuntime(workerConnectionString)
+            .AddSupplyModule(builder.Configuration, builder.Environment.EnvironmentName)
+            .AddRoutingHealthModule(builder.Configuration)
+            .AddOperationsModule(
+                builder.Configuration,
+                builder.Environment.EnvironmentName);
+        return builder.Build();
+    }
+
+    internal static ValueTask RunSupplyHealthRoundAsync(
+        IHost healthHost,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(healthHost);
+        AccountHealthWorkerService worker = healthHost.Services
+            .GetServices<IHostedService>()
+            .OfType<AccountHealthWorkerService>()
+            .Single();
+        return worker.RunSingleRoundAsync(cancellationToken);
     }
 
     internal async ValueTask<FactCounts> ReadFactCountsAsync(
@@ -231,7 +271,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
                 connections.Migrator,
                 new AdminBootstrapRequest(
                     AdminEmail,
-                    "M1 Exit Bootstrap Admin",
+                    "M2 Exit Bootstrap Admin",
                     new AdminBootstrapSecrets(OriginalPassword, SecretHex())),
                 cancellationToken).ConfigureAwait(false);
             AdminUserId = bootstrap.UserId;
@@ -241,13 +281,12 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             await InsertUsersAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        Dictionary<string, string?> configuration = BuildApiConfiguration(
+        apiConfiguration = BuildApiConfiguration(
             connections.Api,
             redis.GetConnectionString(),
             suffix);
-        apiFactory = new RealPasswordResetApiFactory(
-            configuration,
-            useM1ExitSupplyReadiness ? connections.Api : null);
+        workerConnectionString = connections.Worker;
+        apiFactory = new RealPasswordResetApiFactory(apiConfiguration);
         Client = apiFactory.CreateClient();
     }
 
@@ -477,8 +516,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
         long IdempotencyRecords);
 
     private sealed class RealPasswordResetApiFactory(
-        IReadOnlyDictionary<string, string?> configurationValues,
-        string? m1ExitSupplyConnectionString = null)
+        IReadOnlyDictionary<string, string?> configurationValues)
         : WebApplicationFactory<PoolAiApi::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -491,189 +529,6 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
 
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(configurationValues));
-            if (m1ExitSupplyConnectionString is not null)
-            {
-                builder.ConfigureServices(services =>
-                {
-                    ServiceDescriptor productionReadiness = Assert.Single(
-                        services,
-                        descriptor =>
-                            descriptor.ServiceType == typeof(IGroupSupplyReadiness));
-                    Func<IServiceProvider, object>? readinessFactory =
-                        productionReadiness.ImplementationFactory;
-                    Assert.NotNull(readinessFactory);
-                    Assert.Equal(ServiceLifetime.Singleton, productionReadiness.Lifetime);
-                    using NpgsqlDataSource probeDataSource =
-                        NpgsqlDataSource.Create(m1ExitSupplyConnectionString);
-                    using ServiceProvider probeProvider = new ServiceCollection()
-                        .AddSingleton(probeDataSource)
-                        .BuildServiceProvider();
-                    object productionInstance = Assert.IsAssignableFrom<object>(
-                        readinessFactory(probeProvider));
-                    Assert.Equal(
-                        "PoolAI.Modules.Supply.Infrastructure.Persistence.PostgresGroupSupplyReadiness",
-                        productionInstance.GetType().FullName);
-                    Assert.Equal(
-                        "PoolAI.Modules.Supply",
-                        productionInstance.GetType().Assembly.GetName().Name);
-                    services.RemoveAll<IGroupSupplyReadiness>();
-                    services.AddSingleton<IGroupSupplyReadiness>(
-                        new M1ExitPostgresSupplyReadiness(m1ExitSupplyConnectionString));
-                });
-            }
-        }
-    }
-
-    private sealed class M1ExitPostgresSupplyReadiness(string connectionString)
-        : IGroupSupplyReadiness
-    {
-        private const string ReadinessQuery = """
-            WITH observation AS MATERIALIZED (
-                SELECT pg_catalog.clock_timestamp() AS observed_at
-            ),
-            eligible AS MATERIALIZED (
-                SELECT configuration.version AS configuration_version,
-                       configuration.channel_id,
-                       configuration.updated_at AS configuration_updated_at,
-                       channel.version AS channel_version,
-                       channel.provider AS channel_provider,
-                       channel.status AS channel_status,
-                       channel.model_rules AS channel_model_rules,
-                       channel.deleted_at AS channel_deleted_at,
-                       binding.account_id,
-                       binding.priority_override,
-                       binding.weight_override,
-                       binding.is_enabled,
-                       binding.updated_at AS binding_updated_at,
-                       account.version AS account_version,
-                       account.provider AS account_provider,
-                       account.status AS account_status,
-                       account.last_health_at AS account_last_health_at,
-                       account.last_health_status,
-                       account.upstream_rate_limited_until,
-                       account.deleted_at AS account_deleted_at,
-                       observation.observed_at
-                FROM public.group_supply_configurations AS configuration
-                JOIN public.channels AS channel
-                  ON channel.id = configuration.channel_id
-                JOIN public.group_accounts AS binding
-                  ON binding.group_id = configuration.group_id
-                JOIN public.accounts AS account
-                  ON account.id = binding.account_id
-                CROSS JOIN observation
-                WHERE configuration.group_id = $1
-                  AND channel.status = 'active'
-                  AND channel.deleted_at IS NULL
-                  AND channel.model_rules <> '{}'::jsonb
-                  AND binding.is_enabled
-                  AND account.status = 'active'
-                  AND account.deleted_at IS NULL
-                  AND account.last_health_status IN ('healthy', 'degraded')
-                  AND (
-                      account.upstream_rate_limited_until IS NULL
-                      OR account.upstream_rate_limited_until <= observation.observed_at
-                  )
-                  AND account.provider = channel.provider
-            )
-            SELECT configuration_version,
-                   observed_at,
-                   pg_catalog.jsonb_build_object(
-                       'group_id', $1::uuid,
-                       'configuration', pg_catalog.jsonb_build_object(
-                           'version', configuration_version,
-                           'channel_id', channel_id,
-                           'updated_at', configuration_updated_at
-                       ),
-                       'channel', pg_catalog.jsonb_build_object(
-                           'id', channel_id,
-                           'version', channel_version,
-                           'provider', channel_provider,
-                           'status', channel_status,
-                           'model_rules', channel_model_rules,
-                           'deleted_at', channel_deleted_at
-                       ),
-                       'eligible_accounts', pg_catalog.jsonb_agg(
-                           pg_catalog.jsonb_build_object(
-                               'binding', pg_catalog.jsonb_build_object(
-                                   'account_id', account_id,
-                                   'priority_override', priority_override,
-                                   'weight_override', weight_override,
-                                   'is_enabled', is_enabled,
-                                   'updated_at', binding_updated_at
-                               ),
-                               'account', pg_catalog.jsonb_build_object(
-                                   'id', account_id,
-                                   'version', account_version,
-                                   'provider', account_provider,
-                                   'status', account_status,
-                                   'last_health_at', account_last_health_at,
-                                   'last_health_status', last_health_status,
-                                   'upstream_rate_limited_until',
-                                       upstream_rate_limited_until,
-                                   'deleted_at', account_deleted_at
-                               )
-                           )
-                           ORDER BY account_id
-                       ),
-                       'observed_at', observed_at
-                   )::text
-            FROM eligible
-            GROUP BY configuration_version,
-                     channel_id,
-                     configuration_updated_at,
-                     channel_version,
-                     channel_provider,
-                     channel_status,
-                     channel_model_rules,
-                     channel_deleted_at,
-                     observed_at;
-            """;
-
-        public async ValueTask<Result<SupplyReadinessSnapshot>> ObserveAsync(
-            EntityId groupId,
-            CancellationToken cancellationToken)
-        {
-            using NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
-            using NpgsqlCommand command = dataSource.CreateCommand(ReadinessQuery);
-            command.Parameters.AddWithValue(groupId.Value);
-            using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                return Result.Failure<SupplyReadinessSnapshot>(
-                    "group_activation_not_ready",
-                    "The test Supply facts are not ready.");
-            }
-
-            long version = reader.GetInt64(0);
-            DateTimeOffset observedAt = reader.GetFieldValue<DateTimeOffset>(1);
-            string canonicalSnapshot = reader.GetString(2);
-            return Result.Success(new SupplyReadinessSnapshot(
-                groupId,
-                IsReady: true,
-                ReadinessToken(canonicalSnapshot),
-                version,
-                observedAt));
-        }
-
-        private static string ReadinessToken(string canonicalSnapshot)
-        {
-            byte[] source = Encoding.UTF8.GetBytes(canonicalSnapshot);
-            byte[] digest = SHA256.HashData(source);
-            try
-            {
-                return string.Concat(
-                    "v1.",
-                    Convert.ToBase64String(digest)
-                        .TrimEnd('=')
-                        .Replace('+', '-')
-                        .Replace('/', '_'));
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(source);
-                CryptographicOperations.ZeroMemory(digest);
-            }
         }
     }
 

@@ -308,6 +308,14 @@ public sealed class RoutingBoundaryTests
             "HostCapability.Api | HostCapability.Worker",
             graph.RoutingRegistration,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "IAccountActiveLeaseReader",
+            graph.RoutingRegistration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AccountActiveLeaseReader",
+            graph.RoutingRegistration,
+            StringComparison.Ordinal);
     }
 
     private static void AssertWorkerRoutingGraph(RoutingHostGraph graph)
@@ -337,6 +345,8 @@ public sealed class RoutingBoundaryTests
             "IRouteAffinityStore",
             "GroupRequestRateLimiter",
             "IGroupRequestRateLimiter",
+            "AccountActiveLeaseReader",
+            "IAccountActiveLeaseReader",
             "PoolAI.Modules.Gateway",
             "PoolAI.Adapters.OpenAI",
             "Endpoints",

@@ -97,6 +97,7 @@ public sealed partial class AccountControlPlaneServiceTests
         Assert.Equal(UpstreamProvider.OpenAiCompatible, result.Value.Value.Provider);
         Assert.Equal("sha256:4d26f2d12368", result.Value.Value.CredentialPrefix);
         Assert.Equal(0, result.Value.Value.ActiveLeases);
+        Assert.Equal(0, environment.ActiveLeases.ReadCalls);
         Assert.Equal(1, environment.UnitOfWork.BeginCalls);
         Assert.Equal(1, environment.UnitOfWork.CommitCalls);
         Assert.Single(environment.Audit.Entries);
@@ -165,12 +166,14 @@ public sealed partial class AccountControlPlaneServiceTests
             TestContext.Current.CancellationToken);
         Assert.True(found.IsSuccess);
         Assert.Equal("https://api.example.com/v1", found.Value.BaseUrl.OriginalString);
+        int readCallsBeforeMissing = environment.ActiveLeases.ReadCalls;
         environment.Repository.GetResult = null;
         AssertFailure(
             await environment.Service.ExecuteAsync(
                 new GetAccountQuery(Admin, accountId),
                 TestContext.Current.CancellationToken),
             AccountErrorCodes.ResourceNotFound);
+        Assert.Equal(readCallsBeforeMissing, environment.ActiveLeases.ReadCalls);
 
         UpdateAccountCommand valid = UpdateCommand(accountId);
         foreach (UpdateAccountCommand invalid in new[]
@@ -212,12 +215,17 @@ public sealed partial class AccountControlPlaneServiceTests
             updated,
             original,
             CurrentVersion: 2));
+        environment.ActiveLeases.Counts[accountId] = 9;
+        int readCallsBeforeUpdate = environment.ActiveLeases.ReadCalls;
         Result<AccountCommandOutcome<AccountView>> update =
             await environment.Service.ExecuteAsync(
                 valid,
                 TestContext.Current.CancellationToken);
         Assert.True(update.IsSuccess);
         Assert.Equal("\"v2\"", update.Value.ETag);
+        Assert.Equal(9, update.Value.Value.ActiveLeases);
+        Assert.Equal(readCallsBeforeUpdate + 1, environment.ActiveLeases.ReadCalls);
+        Assert.Equal(2, environment.UnitOfWork.BeginCalls);
         Assert.True(environment.Repository.LastUpdate!.CredentialSpecified);
         Assert.Equal("credential rotation", environment.Repository.LastUpdate.Reason);
         Assert.Single(environment.Audit.Entries);
@@ -259,6 +267,131 @@ public sealed partial class AccountControlPlaneServiceTests
         Assert.Equal("\"v2\"", retiredResult.Value.ETag);
         Assert.Single(retiredEnvironment.Audit.Entries);
         Assert.Single(retiredEnvironment.Outbox.Events);
+    }
+
+    [Fact]
+    public async Task ReadQueriesUseLiveLeaseCountsAndFailClosedOnInvalidSnapshots()
+    {
+        EntityId firstId = EntityId.New();
+        EntityId secondId = EntityId.New();
+        AccountResource first = Account(
+            firstId,
+            UpstreamProvider.OpenAi,
+            "First",
+            "https://first.example/v1",
+            "sha256:111111111111");
+        AccountResource second = Account(
+            secondId,
+            UpstreamProvider.OpenAiCompatible,
+            "Second",
+            "https://second.example/v1",
+            "sha256:222222222222");
+        TestEnvironment environment = new();
+        environment.Repository.ListResult = new AccountSlice(
+            [first, second],
+            HasMore: false);
+        environment.Repository.GetResult = second;
+        environment.ActiveLeases.Counts[firstId] = 2;
+        environment.ActiveLeases.Counts[secondId] = 7;
+
+        Result<AccountPage> page = await environment.Service.ExecuteAsync(
+            new ListAccountsQuery(Admin, Cursor: null),
+            TestContext.Current.CancellationToken);
+        Result<AccountView> account = await environment.Service.ExecuteAsync(
+            new GetAccountQuery(Admin, secondId),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(page.IsSuccess);
+        Assert.Collection(
+            page.Value.Data,
+            value => Assert.Equal(2, value.ActiveLeases),
+            value => Assert.Equal(7, value.ActiveLeases));
+        Assert.True(account.IsSuccess);
+        Assert.Equal(7, account.Value.ActiveLeases);
+        Assert.Equal(2, environment.ActiveLeases.ReadCalls);
+        Assert.Equal([secondId], environment.ActiveLeases.LastAccountIds);
+
+        environment.Repository.ListResult = new AccountSlice([], HasMore: false);
+        Assert.True((await environment.Service.ExecuteAsync(
+            new ListAccountsQuery(Admin, Cursor: null),
+            TestContext.Current.CancellationToken)).IsSuccess);
+        Assert.Equal(2, environment.ActiveLeases.ReadCalls);
+
+        TestEnvironment unavailable = new();
+        unavailable.Repository.ListResult = new AccountSlice([first], HasMore: false);
+        unavailable.Repository.GetResult = first;
+        unavailable.ActiveLeases.ReadFactory = _ =>
+            Result.Failure<IReadOnlyList<AccountActiveLeaseCount>>(
+                "synthetic_failure",
+                "Synthetic Redis failure.");
+        Result<AccountPage> failedPage = await unavailable.Service.ExecuteAsync(
+            new ListAccountsQuery(Admin, Cursor: null),
+            TestContext.Current.CancellationToken);
+        Result<AccountView> failedGet = await unavailable.Service.ExecuteAsync(
+            new GetAccountQuery(Admin, firstId),
+            TestContext.Current.CancellationToken);
+
+        AssertFailure(failedPage, AccountErrorCodes.CoordinationUnavailable);
+        Assert.Equal(1, failedPage.Error.RetryAfterSeconds);
+        AssertFailure(failedGet, AccountErrorCodes.CoordinationUnavailable);
+        Assert.Equal(1, failedGet.Error.RetryAfterSeconds);
+
+        unavailable.ActiveLeases.ReadFactory = accountIds =>
+            Result.Success<IReadOnlyList<AccountActiveLeaseCount>>(
+            [
+                new(accountIds[0], ActiveLeases: 1),
+                new(EntityId.New(), ActiveLeases: 1),
+            ]);
+        Result<AccountView> malformed = await unavailable.Service.ExecuteAsync(
+            new GetAccountQuery(Admin, firstId),
+            TestContext.Current.CancellationToken);
+        AssertFailure(malformed, AccountErrorCodes.CoordinationUnavailable);
+    }
+
+    [Fact]
+    public async Task UpdateReplaysBeforeRedisAndFailsClosedBeforeMutationWhenRedisIsUnavailable()
+    {
+        EntityId accountId = EntityId.New();
+        TestEnvironment replay = new();
+        replay.Idempotency.AcquireResult =
+            CommandIdempotencyAcquireResult.Replay(
+                AccountSuccessReplay(
+                    accountId,
+                    statusCode: 200,
+                    provider: "openai",
+                    status: "active",
+                    health: "healthy",
+                    activeLeases: 4));
+        replay.ActiveLeases.ReadFactory = _ =>
+            Result.Failure<IReadOnlyList<AccountActiveLeaseCount>>(
+                "coordination_unavailable",
+                "Synthetic Redis failure.",
+                retryAfterSeconds: 1);
+
+        Result<AccountCommandOutcome<AccountView>> replayed =
+            await replay.Service.ExecuteAsync(
+                UpdateCommand(accountId),
+                TestContext.Current.CancellationToken);
+
+        Assert.True(replayed.IsSuccess);
+        Assert.True(replayed.Value.IsReplay);
+        Assert.Equal(4, replayed.Value.Value.ActiveLeases);
+        Assert.Equal(0, replay.ActiveLeases.ReadCalls);
+        Assert.Equal(0, replay.Repository.UpdateCalls);
+
+        TestEnvironment unavailable = new();
+        unavailable.ActiveLeases.ReadFactory = replay.ActiveLeases.ReadFactory;
+        Result<AccountCommandOutcome<AccountView>> failed =
+            await unavailable.Service.ExecuteAsync(
+                UpdateCommand(accountId),
+                TestContext.Current.CancellationToken);
+
+        AssertFailure(failed, AccountErrorCodes.CoordinationUnavailable);
+        Assert.Equal(1, failed.Error.RetryAfterSeconds);
+        Assert.Equal(1, unavailable.ActiveLeases.ReadCalls);
+        Assert.Equal(0, unavailable.Repository.UpdateCalls);
+        Assert.Equal(1, unavailable.UnitOfWork.BeginCalls);
+        Assert.Equal(0, unavailable.UnitOfWork.CommitCalls);
     }
 
     private static CreateAccountCommand CreateCommand() => new(
@@ -355,6 +488,7 @@ public sealed partial class AccountControlPlaneServiceTests
                 Audit,
                 Outbox,
                 Protector,
+                ActiveLeases,
                 new AccountControlPlanePolicy(
                     Enumerable.Range(1, 32)
                         .Select(static value => (byte)value)
@@ -373,7 +507,40 @@ public sealed partial class AccountControlPlaneServiceTests
 
         internal FakeCredentialProtector Protector { get; } = new();
 
+        internal FakeActiveLeaseReader ActiveLeases { get; } = new();
+
         internal AccountControlPlaneService Service { get; }
+    }
+
+    private sealed class FakeActiveLeaseReader : IAccountActiveLeaseReader
+    {
+        internal Dictionary<EntityId, int> Counts { get; } = [];
+
+        internal Func<
+            IReadOnlyList<EntityId>,
+            Result<IReadOnlyList<AccountActiveLeaseCount>>>? ReadFactory { get; set; }
+
+        internal int ReadCalls { get; private set; }
+
+        internal IReadOnlyList<EntityId> LastAccountIds { get; private set; } = [];
+
+        public ValueTask<Result<IReadOnlyList<AccountActiveLeaseCount>>> ReadAsync(
+            IReadOnlyList<EntityId> accountIds,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ReadCalls++;
+            LastAccountIds = accountIds.ToArray();
+            Result<IReadOnlyList<AccountActiveLeaseCount>> result =
+                ReadFactory?.Invoke(accountIds)
+                ?? Result.Success<IReadOnlyList<AccountActiveLeaseCount>>(
+                    accountIds
+                        .Select(accountId => new AccountActiveLeaseCount(
+                            accountId,
+                            Counts.GetValueOrDefault(accountId)))
+                        .ToArray());
+            return ValueTask.FromResult(result);
+        }
     }
 
     private sealed class FakeAccountRepository : IAccountControlPlaneRepository

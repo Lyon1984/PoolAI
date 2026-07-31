@@ -257,15 +257,12 @@ public sealed class AccountProbeLeaseAndWorkerContractTests
             new FakeTimeProvider(Now),
             NullLogger<AccountHealthWorkerService>.Instance);
 
-        await service.StartAsync(TestContext.Current.CancellationToken);
-        SupplyHealthReadinessSummary summary = await readiness.FirstUpdate.Task
-            .WaitAsync(
-                TimeSpan.FromSeconds(2),
-                TestContext.Current.CancellationToken);
+        await service.RunSingleRoundAsync(TestContext.Current.CancellationToken);
+        SupplyHealthReadinessSummary summary =
+            await readiness.FirstUpdate.Task;
         await jobLock.Disposed.Task.WaitAsync(
             TimeSpan.FromSeconds(2),
             TestContext.Current.CancellationToken);
-        await service.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(SupplyHealthCycleStatus.Succeeded, summary.CycleStatus);
         Assert.Equal(SupplyHealthFailureCode.None, summary.FailureCode);

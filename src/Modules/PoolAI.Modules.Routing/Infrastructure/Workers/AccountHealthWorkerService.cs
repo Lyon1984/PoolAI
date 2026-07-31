@@ -27,6 +27,9 @@ internal sealed partial class AccountHealthWorkerService(
     private readonly ILogger<AccountHealthWorkerService> _logger =
         logger ?? throw new ArgumentNullException(nameof(logger));
 
+    internal ValueTask RunSingleRoundAsync(CancellationToken cancellationToken) =>
+        RunRoundAsync(cancellationToken);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)

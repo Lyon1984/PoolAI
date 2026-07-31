@@ -32,6 +32,7 @@ internal sealed class AccountControlPlaneService :
     private readonly IAuditAppender _auditAppender;
     private readonly IOutboxAppender _outboxAppender;
     private readonly IAccountCredentialProtector _credentialProtector;
+    private readonly IAccountActiveLeaseReader _activeLeaseReader;
     private readonly AccountControlPlanePolicy _policy;
 
     internal AccountControlPlaneService(
@@ -41,6 +42,7 @@ internal sealed class AccountControlPlaneService :
         IAuditAppender auditAppender,
         IOutboxAppender outboxAppender,
         IAccountCredentialProtector credentialProtector,
+        IAccountActiveLeaseReader activeLeaseReader,
         AccountControlPlanePolicy policy)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
@@ -54,6 +56,8 @@ internal sealed class AccountControlPlaneService :
             ?? throw new ArgumentNullException(nameof(outboxAppender));
         _credentialProtector = credentialProtector
             ?? throw new ArgumentNullException(nameof(credentialProtector));
+        _activeLeaseReader = activeLeaseReader
+            ?? throw new ArgumentNullException(nameof(activeLeaseReader));
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
     }
 
@@ -80,11 +84,21 @@ internal sealed class AccountControlPlaneService :
         AccountSlice slice = await _repository
             .ListAsync(cursor, query.Limit, cancellationToken)
             .ConfigureAwait(false);
-        AccountView[] accounts = slice.Items.Select(ToView).ToArray();
+        Result<IReadOnlyList<AccountView>> readViews = await ReadViewsAsync(
+            slice.Items,
+            cancellationToken).ConfigureAwait(false);
+        if (readViews.IsFailure)
+        {
+            return CoordinationUnavailable<AccountPage>();
+        }
+
         string? nextCursor = slice.HasMore && slice.Items.Count > 0
             ? EncodeCursor(slice.Items[^1])
             : null;
-        return Result.Success(new AccountPage(accounts, nextCursor, slice.HasMore));
+        return Result.Success(new AccountPage(
+            readViews.Value,
+            nextCursor,
+            slice.HasMore));
     }
 
     public async ValueTask<Result<AccountView>> ExecuteAsync(
@@ -102,11 +116,19 @@ internal sealed class AccountControlPlaneService :
         AccountResource? account = await _repository
             .GetAsync(query.AccountId, cancellationToken)
             .ConfigureAwait(false);
-        return account is null
-            ? Failure<AccountView>(
+        if (account is null)
+        {
+            return Failure<AccountView>(
                 AccountErrorCodes.ResourceNotFound,
-                "The Account does not exist.")
-            : Result.Success(ToView(account));
+                "The Account does not exist.");
+        }
+
+        Result<IReadOnlyList<AccountView>> readViews = await ReadViewsAsync(
+            [account],
+            cancellationToken).ConfigureAwait(false);
+        return readViews.IsFailure
+            ? CoordinationUnavailable<AccountView>()
+            : Result.Success(readViews.Value[0]);
     }
 
     public async ValueTask<Result<AccountCommandOutcome<AccountView>>> ExecuteAsync(
@@ -269,6 +291,24 @@ internal sealed class AccountControlPlaneService :
             ValidateProtection(protection);
         }
 
+        Result<AccountCommandOutcome<AccountView>>? preflight =
+            await PreflightUpdateAsync(
+                command,
+                prepared,
+                cancellationToken).ConfigureAwait(false);
+        if (preflight is not null)
+        {
+            return preflight;
+        }
+
+        Result<int> activeLeaseCount = await ReadActiveLeaseCountAsync(
+            command.AccountId,
+            cancellationToken).ConfigureAwait(false);
+        if (activeLeaseCount.IsFailure)
+        {
+            return CoordinationUnavailable<AccountCommandOutcome<AccountView>>();
+        }
+
         IUnitOfWork unitOfWork = await _unitOfWorkFactory
             .BeginAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -356,7 +396,7 @@ internal sealed class AccountControlPlaneService :
                 cancellationToken).ConfigureAwait(false);
         }
 
-        AccountView view = ToView(account);
+        AccountView view = ToView(account, activeLeaseCount.Value);
         string etag = ETag(account.Version);
         await CompleteSuccessAsync(
             idempotencyLease,
@@ -658,6 +698,28 @@ internal sealed class AccountControlPlaneService :
             unitOfWorkContext,
             cancellationToken);
 
+    private async ValueTask<Result<AccountCommandOutcome<AccountView>>?>
+        PreflightUpdateAsync(
+            UpdateAccountCommand command,
+            PreparedUpdate prepared,
+            CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await _unitOfWorkFactory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        CommandIdempotencyAcquireResult acquire = await AcquireAsync(
+            UpdateScope(command.Actor, command.AccountId),
+            command.IdempotencyKey,
+            command.RequestId,
+            command.Actor,
+            prepared.RequestHash,
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+        return ReplayOrAcquireFailure<AccountView>(acquire, expectedStatus: 200);
+    }
+
     private static Result<AccountCommandOutcome<T>>? ReplayOrAcquireFailure<T>(
         CommandIdempotencyAcquireResult acquire,
         int expectedStatus) => acquire.Disposition switch
@@ -729,6 +791,7 @@ internal sealed class AccountControlPlaneService :
             || !string.Equals(response.ResourceType, "account", StringComparison.Ordinal)
             || response.ResourceId != view.Id
             || !string.Equals(etag, ETag(view.Version), StringComparison.Ordinal)
+            || expectedStatus == 201 && view.ActiveLeases != 0
             || expectedStatus == 201
                 && (!string.Equals(
                         location,
@@ -1158,7 +1221,66 @@ internal sealed class AccountControlPlaneService :
         _ => throw new ArgumentOutOfRangeException(nameof(role)),
     };
 
-    private static AccountView ToView(AccountResource account) => new(
+    private async ValueTask<Result<int>> ReadActiveLeaseCountAsync(
+        EntityId accountId,
+        CancellationToken cancellationToken)
+    {
+        Result<IReadOnlyList<AccountActiveLeaseCount>> result =
+            await _activeLeaseReader.ReadAsync(
+                [accountId],
+                cancellationToken).ConfigureAwait(false);
+        if (result.IsFailure
+            || result.Value.Count != 1
+            || result.Value[0].AccountId != accountId
+            || result.Value[0].ActiveLeases is < 0 or > 10_000)
+        {
+            return CoordinationUnavailable<int>();
+        }
+
+        return Result.Success(result.Value[0].ActiveLeases);
+    }
+
+    private async ValueTask<Result<IReadOnlyList<AccountView>>> ReadViewsAsync(
+        IReadOnlyList<AccountResource> accounts,
+        CancellationToken cancellationToken)
+    {
+        if (accounts.Count == 0)
+        {
+            return Result.Success<IReadOnlyList<AccountView>>(
+                Array.Empty<AccountView>());
+        }
+
+        Result<IReadOnlyList<AccountActiveLeaseCount>> result =
+            await _activeLeaseReader.ReadAsync(
+                accounts.Select(static account => account.Id).ToArray(),
+                cancellationToken).ConfigureAwait(false);
+        if (result.IsFailure || result.Value.Count != accounts.Count)
+        {
+            return CoordinationUnavailable<IReadOnlyList<AccountView>>();
+        }
+
+        AccountView[] views = new AccountView[accounts.Count];
+        for (int index = 0; index < accounts.Count; index++)
+        {
+            AccountActiveLeaseCount count = result.Value[index];
+            if (count.AccountId != accounts[index].Id
+                || count.ActiveLeases is < 0 or > 10_000)
+            {
+                return CoordinationUnavailable<IReadOnlyList<AccountView>>();
+            }
+
+            views[index] = ToView(accounts[index], count.ActiveLeases);
+        }
+
+        return Result.Success<IReadOnlyList<AccountView>>(views);
+    }
+
+    private static AccountView ToView(AccountResource account) =>
+        ToView(account, activeLeases: 0);
+
+    private static AccountView ToView(
+        AccountResource account,
+        int activeLeases) => new(
         account.Id,
         account.Name,
         account.Provider,
@@ -1171,7 +1293,7 @@ internal sealed class AccountControlPlaneService :
                 ? account.UpstreamRateLimitedUntil
                 : null,
             account.LastHealthAt),
-        ActiveLeases: 0,
+        activeLeases,
         account.MaxConcurrency,
         account.Priority,
         account.Weight,
@@ -1436,6 +1558,11 @@ internal sealed class AccountControlPlaneService :
             etag,
             presentation);
 
+    private static Result<T> CoordinationUnavailable<T>() => Failure<T>(
+        AccountErrorCodes.CoordinationUnavailable,
+        "Redis Account lease coordination is temporarily unavailable.",
+        retryAfterSeconds: 1);
+
     private sealed record MutationFailure(
         int Status,
         string Code,
@@ -1515,7 +1642,7 @@ internal sealed class AccountControlPlaneService :
             if (Id == Guid.Empty
                 || string.IsNullOrWhiteSpace(Name)
                 || string.IsNullOrWhiteSpace(CredentialPrefix)
-                || ActiveLeases != 0
+                || ActiveLeases is < 0 or > 10_000
                 || MaxConcurrency is < 1 or > 10000
                 || Priority is < -100000 or > 100000
                 || Weight is < 1 or > 100000

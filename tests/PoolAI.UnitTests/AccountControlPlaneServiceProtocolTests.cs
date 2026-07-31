@@ -479,6 +479,7 @@ public sealed partial class AccountControlPlaneServiceTests
         {
             EntityId accountId = EntityId.New();
             TestEnvironment environment = new();
+            environment.ActiveLeases.Counts[accountId] = 9;
             environment.Idempotency.AcquireResult =
                 CommandIdempotencyAcquireResult.Replay(
                     AccountSuccessReplay(
@@ -503,12 +504,15 @@ public sealed partial class AccountControlPlaneServiceTests
             Assert.Equal(
                 string.Equals(health, "cooling", StringComparison.Ordinal),
                 result.Value.Value.Health.RetryAt is not null);
+            Assert.Equal(0, result.Value.Value.ActiveLeases);
+            Assert.Equal(0, environment.ActiveLeases.ReadCalls);
             Assert.Equal(0, environment.Repository.CreateCalls);
             Assert.Equal(0, environment.UnitOfWork.CommitCalls);
         }
 
         EntityId updateId = EntityId.New();
         TestEnvironment update = new();
+        update.ActiveLeases.Counts[updateId] = 9;
         update.Idempotency.AcquireResult =
             CommandIdempotencyAcquireResult.Replay(
                 AccountSuccessReplay(
@@ -516,7 +520,8 @@ public sealed partial class AccountControlPlaneServiceTests
                     statusCode: 200,
                     provider: "openai",
                     status: "active",
-                    health: "healthy"));
+                    health: "healthy",
+                    activeLeases: 9));
         Result<AccountCommandOutcome<AccountView>> updateResult =
             await update.Service.ExecuteAsync(
                 UpdateCommand(updateId) with { ExpectedVersion = 999 },
@@ -524,6 +529,8 @@ public sealed partial class AccountControlPlaneServiceTests
         Assert.True(updateResult.IsSuccess);
         Assert.True(updateResult.Value.IsReplay);
         Assert.Null(updateResult.Value.Location);
+        Assert.Equal(9, updateResult.Value.Value.ActiveLeases);
+        Assert.Equal(0, update.ActiveLeases.ReadCalls);
         Assert.Equal(0, update.Repository.UpdateCalls);
         Assert.Equal(0, update.UnitOfWork.CommitCalls);
     }
@@ -621,6 +628,15 @@ public sealed partial class AccountControlPlaneServiceTests
                     provider: "openai",
                     status: "active",
                     health: "warming"),
+            },
+            valid with
+            {
+                Body = AccountReplayBody(
+                    accountId,
+                    provider: "openai",
+                    status: "active",
+                    health: "healthy",
+                    activeLeases: 1),
             },
             valid with
             {
@@ -811,7 +827,8 @@ public sealed partial class AccountControlPlaneServiceTests
         int statusCode,
         string provider,
         string status,
-        string health)
+        string health,
+        int activeLeases = 0)
     {
         string? location = statusCode == 201
             ? $"/api/v1/admin/accounts/{accountId.Value:D}"
@@ -819,7 +836,12 @@ public sealed partial class AccountControlPlaneServiceTests
         return new CommandIdempotencyResponse(
             CommandIdempotencyTerminalStatus.Completed,
             statusCode,
-            AccountReplayBody(accountId, provider: provider, status: status, health: health),
+            AccountReplayBody(
+                accountId,
+                provider: provider,
+                status: status,
+                health: health,
+                activeLeases: activeLeases),
             BodyEnvelope: null,
             AccountHeaders("\"v5\"", location),
             ResourceType: "account",
@@ -832,6 +854,7 @@ public sealed partial class AccountControlPlaneServiceTests
         string provider = "openai_compatible",
         string status = "disabled",
         string health = "unknown",
+        int activeLeases = 0,
         Guid? id = null) => JsonSerializer.SerializeToElement(new
         {
             Id = id ?? accountId.Value,
@@ -843,7 +866,7 @@ public sealed partial class AccountControlPlaneServiceTests
             Health = health,
             RetryAt = Now.AddMinutes(5),
             LastCheckedAt = Now,
-            ActiveLeases = 0,
+            ActiveLeases = activeLeases,
             MaxConcurrency = 4,
             Priority = 3,
             Weight = 100,
