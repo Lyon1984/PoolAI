@@ -116,6 +116,9 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_quota_adjust_usage"] = GroupQuota,
         ["poolai_group_create"] = GroupQuota,
         ["poolai_group_update"] = GroupQuota,
+        ["poolai_group_quota_adjust_total"] = GroupQuota,
+        ["poolai_group_quota_reset"] = GroupQuota,
+        ["poolai_bump_current_quota_representation_version"] = GroupQuota,
     };
 
     private static readonly Dictionary<string, RegisteredAccess> RegisteredBusinessAccesses =
@@ -205,6 +208,12 @@ public sealed class CrossContextSqlBoundaryTests
         "poolai_supply_rewrap_account_credential->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_emit_quota_event->poolai_business_error",
         "poolai_group_create->poolai_quota_initialize",
+        "poolai_group_quota_adjust_total->poolai_business_error",
+        "poolai_group_quota_adjust_total->poolai_quota_adjust_total",
+        "poolai_group_quota_adjust_total->poolai_quota_remaining",
+        "poolai_group_quota_reset->poolai_business_error",
+        "poolai_group_quota_reset->poolai_quota_reset",
+        "poolai_group_quota_reset->poolai_quota_remaining",
         "poolai_quota_adjust_total->poolai_business_error",
         "poolai_quota_adjust_total->poolai_emit_quota_event",
         "poolai_quota_adjust_total->poolai_quota_remaining",
@@ -250,6 +259,9 @@ public sealed class CrossContextSqlBoundaryTests
         "0010_supply_account_credentials_m2_e1.sql:$permission_audit$:d47e055c58fb077526c58fe1250d118e3cbf6bfa0a3eb47b40fbdc0e1a9e301d",
         "0011_supply_control_plane_m2_e2.sql:$permission_audit$:1f5d5ee0b8d2230dc59850c53806cb64b114bd645cddf1b21e7dcb03c44edccb",
         "0012_supply_account_health_m2_e4.sql:$permission_audit$:4224d77efb2e437de44c45d705897b50a3c4bf85df6c06f615fb8a2f51512996",
+        "0013_group_quota_period_m3_e1.sql:$permission_audit$:1bab610e50606405fcb4c7e0b1572cfadaeaacea4d9ffb15b1f2744bb9d23894",
+        "0014_group_quota_representation_version_m3_e1.sql:$semantic_epoch$:efd854329413d130fc6578311135490ab5428a88ccb8142f4b943de0c40c5e3f",
+        "0014_group_quota_representation_version_m3_e1.sql:$permission_audit$:fe04cbea6ca21aec3edd7fa746b9e2b1abe8e7fcf0baadcd02fc275d3956177a",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -285,6 +297,7 @@ public sealed class CrossContextSqlBoundaryTests
         "create trigger trg_accounts_guard_credential_authority before update of upstream_base_url, credential_revision on public.accounts for each row execute function public.poolai_supply_guard_account_credential_authority();",
         "create trigger tr_groups_validate_activation before insert or update of status, activation_supply_readiness_token, activation_supply_observed_at on groups for each row execute function poolai_validate_group_activation();",
         "create trigger tr_group_quota_events_append_only before update or delete on group_quota_events for each row execute function poolai_reject_fact_mutation();",
+        "create trigger tr_group_quota_period_counter_representation_version after update of consumed_tokens, reserved_tokens on public.group_quota_periods for each row execute function public.poolai_bump_current_quota_representation_version();",
         "create trigger tr_usage_attempts_append_only before update or delete on usage_attempts for each row execute function poolai_reject_fact_mutation();",
         "create trigger tr_usage_attempt_adjustments_append_only before update or delete on usage_attempt_adjustments for each row execute function poolai_reject_fact_mutation();",
         "create trigger tr_audit_logs_append_only before update or delete on audit_logs for each row execute function poolai_reject_fact_mutation();",
@@ -1006,6 +1019,44 @@ public sealed class CrossContextSqlBoundaryTests
                 "from public.api_keys as current_key",
                 "for update",
                 "v_now := pg_catalog.clock_timestamp()");
+        }
+
+        Dictionary<string, string> periodManagement =
+            ReadFunctions("0014_group_quota_representation_version_m3_e1.sql");
+        AssertInOrder(
+            NormalizeSql(periodManagement["poolai_group_quota_adjust_total"]),
+            "from public.group_token_quotas as quota",
+            "for update",
+            "from public.group_quota_events as quota_event",
+            "from public.groups as current_group",
+            "for share",
+            "from public.group_quota_periods as current_period",
+            "for update",
+            "v_before_state := pg_catalog.jsonb_build_object",
+            "from public.poolai_quota_adjust_total");
+        AssertInOrder(
+            NormalizeSql(periodManagement["poolai_group_quota_reset"]),
+            "from public.group_token_quotas as quota",
+            "for update",
+            "from public.group_quota_events as quota_event",
+            "from public.groups as current_group",
+            "for share",
+            "from public.group_quota_periods as current_period",
+            "for update",
+            "v_before_state := pg_catalog.jsonb_build_object",
+            "from public.poolai_quota_reset");
+
+        foreach (string function in new[]
+                 {
+                     "poolai_group_quota_adjust_total",
+                     "poolai_group_quota_reset",
+                 })
+        {
+            string body = NormalizeSqlPreservingLiterals(periodManagement[function]);
+            Assert.Contains("when not v_quota.enabled then 'disabled'", body, StringComparison.Ordinal);
+            Assert.Contains("'updated_at', v_quota.updated_at", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("when current_group.status", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("current_group.updated_at", body, StringComparison.Ordinal);
         }
     }
 

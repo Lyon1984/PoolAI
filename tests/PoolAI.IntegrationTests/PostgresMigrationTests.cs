@@ -55,6 +55,12 @@ public sealed partial class PostgresMigrationTests
             .ConfigureAwait(true);
         await AssertM1E4ArchiveConcurrencyAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await AssertM3E1RuntimePermissionsAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
+        await AssertM3E1PeriodManagementAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
+        await AssertM3E1ArchiveConcurrencyAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertM1E5RuntimePermissionsAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
         await AssertM1E5TextValidationPermissionsAsync(connectionString, cancellationToken)
@@ -135,6 +141,9 @@ public sealed partial class PostgresMigrationTests
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
         await AssertM1E4RuntimePermissionsAsync(
+            administratorConnectionString,
+            cancellationToken).ConfigureAwait(true);
+        await AssertM3E1RuntimePermissionsAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
         await AssertM1E5RuntimePermissionsAsync(

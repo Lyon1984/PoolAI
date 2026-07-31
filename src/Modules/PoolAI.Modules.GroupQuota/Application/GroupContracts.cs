@@ -78,6 +78,7 @@ public static class GroupErrorCodes
     public const string GroupActivationNotReady = "group_activation_not_ready";
     public const string IdempotencyConflict = "idempotency_conflict";
     public const string InvalidRequest = "invalid_request";
+    public const string RateLimitExceeded = "rate_limit_exceeded";
     public const string ResourceConflict = "resource_conflict";
     public const string ResourceNotFound = "resource_not_found";
     public const string RoleRequired = "role_required";

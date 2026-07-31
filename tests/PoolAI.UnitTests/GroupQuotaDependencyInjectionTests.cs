@@ -49,4 +49,33 @@ public sealed class GroupQuotaDependencyInjectionTests
 
         Assert.StartsWith(expectedMessage, exception.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void QuotaPeriodUseCasesAreRegisteredAsSingletonPorts()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Idempotency:RequestHashPepper"] = Convert.ToBase64String(new byte[32]),
+            })
+            .Build();
+        ServiceCollection services = new();
+        services.AddSingleton(configuration);
+        services.AddGroupQuotaModule();
+
+        foreach (Type port in new[]
+                 {
+                     typeof(IGetGroupQuotaUseCase),
+                     typeof(IAuthorizeQuotaMutationUseCase),
+                     typeof(IAdjustGroupQuotaUseCase),
+                     typeof(IResetGroupQuotaUseCase),
+                 })
+        {
+            ServiceDescriptor descriptor = Assert.Single(
+                services,
+                candidate => candidate.ServiceType == port);
+            Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+            Assert.NotNull(descriptor.ImplementationFactory);
+        }
+    }
 }

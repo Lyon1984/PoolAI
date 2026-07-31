@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,10 +21,18 @@ namespace PoolAI.EndToEndTests;
 
 public sealed class GroupQuotaEndpointContractTests
 {
+    private const string QuotaTotal = "9007199254740991";
+    private const string QuotaConsumed = "9007199254740992";
+    private static readonly string[] MultipleIdempotencyKeys =
+        ["first-key", "second-key"];
+    private const string QuotaReserved =
+        "123456789012345678901234567890";
     private static readonly EntityId ActorId = new(Guid.Parse(
         "019bd5e8-30e0-7d4c-a7f2-bb1db0634080"));
     private static readonly EntityId GroupId = new(Guid.Parse(
         "019bd5e8-30e0-7d4c-a7f2-bb1db0634081"));
+    private static readonly EntityId QuotaPeriodId = new(Guid.Parse(
+        "019bd5e8-30e0-7d4c-a7f2-bb1db0634082"));
     private static readonly DateTimeOffset Timestamp = DateTimeOffset.Parse(
         "2026-07-17T08:00:00Z",
         CultureInfo.InvariantCulture);
@@ -187,6 +196,570 @@ public sealed class GroupQuotaEndpointContractTests
             factory.UseCases.LastCreateCommand);
         Assert.Null(replayCommand.Description);
         Assert.Null(replayCommand.UserAgent);
+    }
+
+#pragma warning disable MA0051 // The mathematical-integer positive/negative matrix is cohesive.
+    [Fact]
+    public async Task AdminCreateTotalTokensRequiresAMathematicallyIntegralSafeJsonNumber()
+    {
+        // Governing contract: AC-026 and the OpenAPI 3.1 JSON Schema accept a
+        // positive mathematical integer in the JavaScript-safe range. JSON
+        // strings, non-integral values, and out-of-range values fail before
+        // the Group create use case.
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        string[] invalidTotalTokens =
+        [
+            "\"1\"",
+            "1.5",
+            "1e-1",
+            "100e-3",
+            "1.0000000000000001",
+            "0",
+            "-1",
+            "9007199254740992",
+            "9.007199254740992e15",
+        ];
+
+        for (int index = 0; index < invalidTotalTokens.Length; index++)
+        {
+            using HttpRequestMessage request = RawJsonCommand(
+                $$"""{"name":"Valid","total_tokens":{{invalidTotalTokens[index]}}}""",
+                $"group-create-invalid-total-{index}");
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+            await AssertProblemAsync(
+                response,
+                "validation_failed",
+                "/total_tokens").ConfigureAwait(true);
+        }
+
+        Assert.Equal(0, factory.UseCases.CreateCalls);
+
+        (string Number, long Expected)[] validTotalTokens =
+        [
+            ("1.0", 1),
+            ("1e3", 1_000),
+            ("10e-1", 1),
+            ("0.001e3", 1),
+            ("9.007199254740991e15", 9_007_199_254_740_991),
+        ];
+        for (int index = 0; index < validTotalTokens.Length; index++)
+        {
+            (string number, long expected) = validTotalTokens[index];
+            using HttpRequestMessage valid = RawJsonCommand(
+                $$"""{"name":"Valid","total_tokens":{{number}}}""",
+                $"group-create-safe-integer-{index}");
+            using HttpResponseMessage validResponse = await client.SendAsync(
+                valid,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.Created, validResponse.StatusCode);
+            Assert.Equal(
+                expected,
+                Assert.IsType<CreateGroupCommand>(
+                    factory.UseCases.LastCreateCommand).TotalTokens);
+        }
+
+        Assert.Equal(validTotalTokens.Length, factory.UseCases.CreateCalls);
+    }
+#pragma warning restore MA0051
+
+    [Fact]
+    public async Task AdminCreateRejectsAdditionalProperties()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = RawJsonCommand(
+            """{"name":"Valid","total_tokens":1,"unexpected":true}""",
+            "group-create-additional-property");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        await AssertProblemAsync(
+            response,
+            "validation_failed",
+            "/unexpected").ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.CreateCalls);
+    }
+
+    [Theory]
+    [InlineData("""{"name":"\uD800","total_tokens":1}""", "/name")]
+    [InlineData("""{"name":"Valid","total_tokens":1,"\uD800":true}""", "/")]
+    public async Task AdminCreateRejectsInvalidUnicodeWithoutServerError(
+        string body,
+        string expectedPointer)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = RawJsonCommand(
+            body,
+            $"group-create-invalid-unicode-{expectedPointer.Length}");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        await AssertProblemAsync(
+            response,
+            "validation_failed",
+            expectedPointer).ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.CreateCalls);
+    }
+
+    [Theory]
+    [InlineData("operator", GroupControlRole.Operator)]
+    [InlineData("auditor", GroupControlRole.Auditor)]
+    public async Task OperatorAndAuditorReadCanonicalBigIntegerQuotaStrings(
+        string role,
+        GroupControlRole expectedRole)
+    {
+        await using GroupApiFactory factory = new();
+        GroupQuotaView quota = LargeQuotaView(
+            GroupPoolQuotaStatus.Exhausted,
+            version: 31);
+        factory.UseCases.GetQuotaResult = Result.Success(quota);
+        using HttpClient client = AuthenticatedClient(factory, role);
+
+        using HttpResponseMessage response = await client.GetAsync(
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("\"v31\"", response.Headers.ETag?.Tag);
+        AssertRequestId(response);
+        using JsonDocument document = await ReadJsonAsync(response).ConfigureAwait(true);
+        JsonElement body = document.RootElement;
+        Assert.Equal(GroupId.Value, body.GetProperty("group_id").GetGuid());
+        Assert.Equal(QuotaPeriodId.Value, body.GetProperty("period_id").GetGuid());
+        Assert.Equal("exhausted", body.GetProperty("status").GetString());
+        Assert.Equal(QuotaTotal, body.GetProperty("total_tokens").GetString());
+        Assert.Equal(QuotaConsumed, body.GetProperty("consumed_tokens").GetString());
+        Assert.Equal(QuotaReserved, body.GetProperty("reserved_tokens").GetString());
+        Assert.Equal("0", body.GetProperty("remaining_tokens").GetString());
+        Assert.Equal("1", body.GetProperty("overage_tokens").GetString());
+        Assert.Equal(
+            Timestamp.AddDays(-1),
+            body.GetProperty("period_started_at").GetDateTimeOffset());
+        Assert.Equal(
+            JsonValueKind.Null,
+            body.GetProperty("period_ended_at").ValueKind);
+        Assert.Equal(Timestamp, body.GetProperty("updated_at").GetDateTimeOffset());
+        Assert.Equal(31, body.GetProperty("version").GetInt64());
+
+        GetGroupQuotaQuery query = Assert.IsType<GetGroupQuotaQuery>(
+            factory.UseCases.LastGetQuotaQuery);
+        Assert.Equal(GroupId, query.GroupId);
+        Assert.Equal(expectedRole, query.Actor.Role);
+        Assert.Equal(ActorId, query.Actor.UserId);
+        Assert.Equal(1, factory.UseCases.GetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task UserQuotaReadIsForbiddenBeforeTheUseCase()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "user");
+
+        using HttpResponseMessage response = await client.GetAsync(
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await AssertProblemAsync(response, "role_required").ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.GetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task QuotaReadRejectsEmptyIdentifiersAndMapsApplicationFailures()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+
+        using HttpResponseMessage emptyId = await client.GetAsync(
+            $"/api/v1/admin/groups/{Guid.Empty:D}/quota",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, emptyId.StatusCode);
+        await AssertProblemAsync(emptyId, "invalid_request", "/groupId")
+            .ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.GetQuotaCalls);
+
+        factory.UseCases.GetQuotaResult = Result.Failure<GroupQuotaView>(
+            GroupErrorCodes.ResourceNotFound,
+            "synthetic missing quota");
+        using HttpResponseMessage missing = await client.GetAsync(
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        await AssertProblemAsync(missing, "resource_not_found")
+            .ConfigureAwait(true);
+        Assert.Equal(1, factory.UseCases.GetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task AdminAdjustMapsHeadersTransportAndQuotaCommand()
+    {
+        await using GroupApiFactory factory = new();
+        factory.UseCases.AdjustQuotaResult = Result.Success(
+            new GroupQuotaCommandOutcome(
+                StatusCodes.Status200OK,
+                IsReplay: false,
+                LargeQuotaView(GroupPoolQuotaStatus.Exhausted, version: 42),
+                "\"v42\""));
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        string userAgent = new('q', 600);
+        using HttpRequestMessage adjust = RawJsonCommand(
+            """{"new_total_tokens":9007199254740991,"reason":"capacity review"}""",
+            "quota-adjust-success",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust",
+            ifMatch: "\"v41\"");
+        adjust.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+        using HttpResponseMessage adjustResponse = await client.SendAsync(
+            adjust,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, adjustResponse.StatusCode);
+        Assert.Equal("\"v42\"", adjustResponse.Headers.ETag?.Tag);
+        string adjustRequestId = AssertRequestId(adjustResponse);
+        AdjustGroupQuotaCommand adjustCommand =
+            Assert.IsType<AdjustGroupQuotaCommand>(
+                factory.UseCases.LastAdjustQuotaCommand);
+        Assert.Equal(Guid.Parse(adjustRequestId), adjustCommand.RequestId.Value);
+        Assert.Equal(ActorId, adjustCommand.Actor.UserId);
+        Assert.Equal(GroupControlRole.Admin, adjustCommand.Actor.Role);
+        Assert.Equal(GroupId, adjustCommand.GroupId);
+        Assert.Equal(41, adjustCommand.ExpectedVersion);
+        Assert.Equal(9_007_199_254_740_991, adjustCommand.NewTotalTokens);
+        Assert.Equal("capacity review", adjustCommand.Reason);
+        Assert.Equal("quota-adjust-success", adjustCommand.IdempotencyKey);
+        Assert.Null(adjustCommand.IpAddress);
+        Assert.Equal(UserAgentDigest(userAgent), adjustCommand.UserAgent);
+        Assert.Equal(1, factory.UseCases.AdjustQuotaCalls);
+    }
+
+    [Fact]
+    public async Task AdminResetMapsHeadersTransportAndQuotaCommand()
+    {
+        await using GroupApiFactory factory = new();
+        factory.UseCases.ResetQuotaResult = Result.Success(
+            new GroupQuotaCommandOutcome(
+                StatusCodes.Status200OK,
+                IsReplay: false,
+                ActiveQuotaView(totalTokens: 7000, version: 43),
+                "\"v43\""));
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        string userAgent = new('q', 600);
+        using HttpRequestMessage reset = RawJsonCommand(
+            """{"total_tokens":7000,"reason":"manual period reset"}""",
+            "quota-reset-success",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/reset",
+            ifMatch: "\"v42\"");
+        reset.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+        using HttpResponseMessage resetResponse = await client.SendAsync(
+            reset,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, resetResponse.StatusCode);
+        Assert.Equal("\"v43\"", resetResponse.Headers.ETag?.Tag);
+        string resetRequestId = AssertRequestId(resetResponse);
+        ResetGroupQuotaCommand resetCommand = Assert.IsType<ResetGroupQuotaCommand>(
+            factory.UseCases.LastResetQuotaCommand);
+        Assert.Equal(Guid.Parse(resetRequestId), resetCommand.RequestId.Value);
+        Assert.Equal(ActorId, resetCommand.Actor.UserId);
+        Assert.Equal(GroupControlRole.Admin, resetCommand.Actor.Role);
+        Assert.Equal(GroupId, resetCommand.GroupId);
+        Assert.Equal(42, resetCommand.ExpectedVersion);
+        Assert.Equal(7000, resetCommand.TotalTokens);
+        Assert.Equal("manual period reset", resetCommand.Reason);
+        Assert.Equal("quota-reset-success", resetCommand.IdempotencyKey);
+        Assert.Null(resetCommand.IpAddress);
+        Assert.Equal(UserAgentDigest(userAgent), resetCommand.UserAgent);
+        Assert.Equal(1, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task QuotaMutationDefensiveOutcomesFailClosedAndMapErrors()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        factory.UseCases.ReturnInvalidQuotaAuthorizationSuccess = true;
+        using HttpRequestMessage invalidAuthorization = RawJsonCommand(
+            """{"new_total_tokens":2,"reason":"authorization defense"}""",
+            "quota-adjust-invalid-authorization",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust",
+            ifMatch: "\"v1\"");
+
+        using HttpResponseMessage invalidAuthorizationResponse =
+            await client.SendAsync(
+                invalidAuthorization,
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            HttpStatusCode.InternalServerError,
+            invalidAuthorizationResponse.StatusCode);
+        await AssertProblemAsync(
+            invalidAuthorizationResponse,
+            "internal_error").ConfigureAwait(true);
+        Assert.Equal(1, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+
+        factory.UseCases.ReturnInvalidQuotaAuthorizationSuccess = false;
+        factory.UseCases.AdjustQuotaResult =
+            Result.Failure<GroupQuotaCommandOutcome>(
+                GroupErrorCodes.VersionConflict,
+                "synthetic stale quota version",
+                etag: "\"v9\"");
+        using HttpRequestMessage stale = RawJsonCommand(
+            """{"new_total_tokens":2,"reason":"stale total"}""",
+            "quota-adjust-stale",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust",
+            ifMatch: "\"v1\"");
+
+        using HttpResponseMessage staleResponse = await client.SendAsync(
+            stale,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.PreconditionFailed, staleResponse.StatusCode);
+        Assert.Equal("\"v9\"", staleResponse.Headers.ETag?.Tag);
+        await AssertProblemAsync(
+            staleResponse,
+            "version_conflict",
+            expectedRetryable: true).ConfigureAwait(true);
+        Assert.Equal(2, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(1, factory.UseCases.AdjustQuotaCalls);
+    }
+
+    [Fact]
+    public async Task QuotaMutationFieldsFailBeforeEitherUseCase()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+
+        await AssertInvalidQuotaMutationFieldsAsync(
+            client,
+            "adjust",
+            "new_total_tokens").ConfigureAwait(true);
+        await AssertInvalidQuotaMutationFieldsAsync(
+            client,
+            "reset",
+            "total_tokens").ConfigureAwait(true);
+
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+        Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Theory]
+    [InlineData("adjust", "new_total_tokens", "1.0", 1L)]
+    [InlineData("adjust", "new_total_tokens", "1e3", 1_000L)]
+    [InlineData("reset", "total_tokens", "10e-1", 1L)]
+    [InlineData(
+        "reset",
+        "total_tokens",
+        "9.007199254740991e15",
+        9_007_199_254_740_991L)]
+    public async Task QuotaMutationAcceptsMathematicallyIntegralJsonForms(
+        string operation,
+        string tokenProperty,
+        string number,
+        long expected)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = RawJsonCommand(
+            QuotaMutationBody(tokenProperty, number),
+            $"quota-{operation}-mathematical-integer",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/{operation}",
+            ifMatch: "\"v1\"");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        if (string.Equals(operation, "adjust", StringComparison.Ordinal))
+        {
+            Assert.Equal(
+                expected,
+                Assert.IsType<AdjustGroupQuotaCommand>(
+                    factory.UseCases.LastAdjustQuotaCommand).NewTotalTokens);
+            Assert.Equal(1, factory.UseCases.AdjustQuotaCalls);
+            Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+        }
+        else
+        {
+            Assert.Equal(
+                expected,
+                Assert.IsType<ResetGroupQuotaCommand>(
+                    factory.UseCases.LastResetQuotaCommand).TotalTokens);
+            Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+            Assert.Equal(1, factory.UseCases.ResetQuotaCalls);
+        }
+    }
+
+    [Fact]
+    public async Task QuotaMutationTransportAndPathFailuresDoNotReachUseCases()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+
+        await AssertQuotaMutationTransportFailuresAsync(
+            client,
+            "adjust",
+            "new_total_tokens").ConfigureAwait(true);
+        await AssertQuotaMutationTransportFailuresAsync(
+            client,
+            "reset",
+            "total_tokens").ConfigureAwait(true);
+
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+        Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Theory]
+    [InlineData("adjust")]
+    [InlineData("reset")]
+    public async Task AdminMalformedQuotaJsonFailsAfterAuthorizationPreflight(
+        string operation)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = RawJsonCommand(
+            "{",
+            $"quota-{operation}-malformed-json",
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/{operation}",
+            ifMatch: "\"v1\"");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await AssertProblemAsync(response, "invalid_request", "/").ConfigureAwait(true);
+        Assert.Equal(1, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+        Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Theory]
+    [InlineData("operator", GroupControlRole.Operator)]
+    [InlineData("auditor", GroupControlRole.Auditor)]
+    [InlineData("user", GroupControlRole.User)]
+    public async Task NonAdminQuotaMutationsReachApplicationPolicyForAuditing(
+        string role,
+        GroupControlRole expectedRole)
+    {
+        // Governing contract: AC-004 requires every authenticated non-Admin
+        // attempt to reach application Policy before transport/body/header
+        // validation, so even this deliberately malformed request is 403 and
+        // can be audited without reading its body.
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, role);
+        using HttpRequestMessage adjust = new(
+            HttpMethod.Post,
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust")
+        {
+            Content = new StringContent("{", Encoding.UTF8, "text/plain"),
+        };
+        using HttpResponseMessage adjustResponse = await client.SendAsync(
+            adjust,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, adjustResponse.StatusCode);
+        await AssertProblemAsync(adjustResponse, "role_required").ConfigureAwait(true);
+        Assert.Equal(
+            expectedRole,
+            factory.UseCases.LastQuotaAuthorizationCommand!.Actor.Role);
+        Assert.Equal(
+            QuotaMutationOperation.AdjustTotal,
+            factory.UseCases.LastQuotaAuthorizationCommand.Operation);
+        Assert.Equal(
+            QuotaMutationIdempotencyKeyStatus.Missing,
+            factory.UseCases.LastQuotaAuthorizationCommand.IdempotencyKeyAudit.Status);
+
+        using HttpRequestMessage reset = new(
+            HttpMethod.Post,
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/reset")
+        {
+            Content = new StringContent("{", Encoding.UTF8, "text/plain"),
+        };
+        using HttpResponseMessage resetResponse = await client.SendAsync(
+            reset,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, resetResponse.StatusCode);
+        await AssertProblemAsync(resetResponse, "role_required").ConfigureAwait(true);
+        Assert.Equal(
+            expectedRole,
+            factory.UseCases.LastQuotaAuthorizationCommand!.Actor.Role);
+        Assert.Equal(
+            QuotaMutationOperation.ResetPeriod,
+            factory.UseCases.LastQuotaAuthorizationCommand.Operation);
+        Assert.Equal(
+            QuotaMutationIdempotencyKeyStatus.Missing,
+            factory.UseCases.LastQuotaAuthorizationCommand.IdempotencyKeyAudit.Status);
+        Assert.Equal(2, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
+        Assert.Equal(0, factory.UseCases.ResetQuotaCalls);
+    }
+
+    [Fact]
+    public async Task QuotaAuthorizationPreflightClassifiesIdempotencyHeadersWithoutReadingBody()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "operator");
+        (string? Single, string[]? Multiple, QuotaMutationIdempotencyKeyStatus Status,
+            string? ValidValue)[] cases =
+        [
+            (null, null, QuotaMutationIdempotencyKeyStatus.Missing, null),
+            (string.Empty, null, QuotaMutationIdempotencyKeyStatus.Missing, null),
+            ("bad key", null, QuotaMutationIdempotencyKeyStatus.Invalid, null),
+            (null, ["first-key", "second-key"],
+                QuotaMutationIdempotencyKeyStatus.Multiple, null),
+            ("valid-audit-key", null, QuotaMutationIdempotencyKeyStatus.Valid,
+                "valid-audit-key"),
+        ];
+
+        foreach ((string? single, string[]? multiple,
+                     QuotaMutationIdempotencyKeyStatus status, string? validValue) in cases)
+        {
+            using HttpRequestMessage request = new(
+                HttpMethod.Post,
+                $"/api/v1/admin/groups/{GroupId.Value:D}/quota/adjust")
+            {
+                Content = new StringContent("{", Encoding.UTF8, "text/plain"),
+            };
+            if (single is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Idempotency-Key", single);
+            }
+            else if (multiple is not null)
+            {
+                request.Headers.TryAddWithoutValidation("Idempotency-Key", multiple);
+            }
+
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            await AssertProblemAsync(response, "role_required").ConfigureAwait(true);
+            QuotaMutationIdempotencyKeyAuditInput input =
+                factory.UseCases.LastQuotaAuthorizationCommand!.IdempotencyKeyAudit;
+            Assert.Equal(status, input.Status);
+            Assert.Equal(validValue, input.ValidValue);
+        }
+
+        Assert.Equal(cases.Length, factory.UseCases.QuotaAuthorizationCalls);
+        Assert.Equal(0, factory.UseCases.AdjustQuotaCalls);
     }
 
     [Fact]
@@ -513,6 +1086,7 @@ public sealed class GroupQuotaEndpointContractTests
             ("version_conflict", HttpStatusCode.PreconditionFailed, "version_conflict", true, false, "\"v23\""),
             ("validation_failed", HttpStatusCode.UnprocessableEntity, "validation_failed", false, false, null),
             ("invalid_request", HttpStatusCode.BadRequest, "invalid_request", false, false, null),
+            ("rate_limit_exceeded", HttpStatusCode.TooManyRequests, "rate_limit_exceeded", true, true, null),
             ("coordination_unavailable", HttpStatusCode.ServiceUnavailable, "coordination_unavailable", true, true, null),
             ("dependency_unavailable", HttpStatusCode.ServiceUnavailable, "dependency_unavailable", true, true, null),
             ("service_unavailable", HttpStatusCode.ServiceUnavailable, "dependency_unavailable", true, true, null),
@@ -525,6 +1099,12 @@ public sealed class GroupQuotaEndpointContractTests
             factory.UseCases.ListResult = Result.Failure<GroupPage>(
                 sourceCode,
                 "synthetic failure",
+                retryAfterSeconds: string.Equals(
+                    sourceCode,
+                    GroupErrorCodes.RateLimitExceeded,
+                    StringComparison.Ordinal)
+                        ? 1
+                        : null,
                 etag: etag);
             using HttpResponseMessage response = await client.GetAsync(
                 "/api/v1/admin/groups",
@@ -732,6 +1312,169 @@ public sealed class GroupQuotaEndpointContractTests
         }
     }
 
+    private static async ValueTask AssertInvalidQuotaMutationFieldsAsync(
+        HttpClient client,
+        string operation,
+        string tokenProperty)
+    {
+        string path =
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/{operation}";
+        (string Body, string Pointer)[] cases =
+        [
+            (QuotaMutationBody(tokenProperty, "\"1\""), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "1.5"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "1e-1"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "100e-3"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "0"), $"/{tokenProperty}"),
+            (QuotaMutationBody(tokenProperty, "-1"), $"/{tokenProperty}"),
+            (
+                QuotaMutationBody(tokenProperty, "9007199254740992"),
+                $"/{tokenProperty}"),
+            (
+                $$"""{"{{tokenProperty}}":1,"reason":"   "}""",
+                "/reason"),
+            (
+                $$"""{"{{tokenProperty}}":1,"reason":"\uD800"}""",
+                "/reason"),
+            (
+                $$"""{"{{tokenProperty}}":1,"reason":"valid","\uD800":true}""",
+                "/"),
+            (
+                $$"""{"{{tokenProperty}}":1,"reason":"valid","unexpected":true}""",
+                "/unexpected"),
+        ];
+
+        for (int index = 0; index < cases.Length; index++)
+        {
+            using HttpRequestMessage request = RawJsonCommand(
+                cases[index].Body,
+                $"quota-{operation}-invalid-field-{index}",
+                path,
+                ifMatch: "\"v1\"");
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                TestContext.Current.CancellationToken).ConfigureAwait(false);
+
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+            await AssertProblemAsync(
+                response,
+                "validation_failed",
+                cases[index].Pointer).ConfigureAwait(false);
+        }
+    }
+
+    private static async ValueTask AssertQuotaMutationTransportFailuresAsync(
+        HttpClient client,
+        string operation,
+        string tokenProperty)
+    {
+        string validBody = QuotaMutationBody(tokenProperty, "1");
+        string path =
+            $"/api/v1/admin/groups/{GroupId.Value:D}/quota/{operation}";
+        using (HttpRequestMessage wrongMedia = RawJsonCommand(
+                   validBody,
+                   $"quota-{operation}-wrong-media",
+                   path,
+                   contentType: "application/merge-patch+json",
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   wrongMedia,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+            await AssertProblemAsync(response, "unsupported_media_type")
+                .ConfigureAwait(false);
+        }
+
+        using (HttpRequestMessage emptyPath = RawJsonCommand(
+                   validBody,
+                   $"quota-{operation}-empty-path",
+                   $"/api/v1/admin/groups/{Guid.Empty:D}/quota/{operation}",
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   emptyPath,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            await AssertProblemAsync(response, "invalid_request", "/groupId")
+                .ConfigureAwait(false);
+        }
+
+        await AssertInvalidQuotaMutationIdempotencyHeadersAsync(
+            client,
+            validBody,
+            path).ConfigureAwait(false);
+
+        using (HttpRequestMessage missingIfMatch = RawJsonCommand(
+                   validBody,
+                   $"quota-{operation}-missing-if-match",
+                   path))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   missingIfMatch,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
+            await AssertProblemAsync(response, "if_match_required")
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static async ValueTask AssertInvalidQuotaMutationIdempotencyHeadersAsync(
+        HttpClient client,
+        string validBody,
+        string path)
+    {
+        using (HttpRequestMessage missing = RawJsonCommand(
+                   validBody,
+                   idempotencyKey: null,
+                   path: path,
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   missing,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
+            await AssertProblemAsync(response, "idempotency_key_required")
+                .ConfigureAwait(false);
+        }
+
+        using (HttpRequestMessage empty = RawJsonCommand(
+                   validBody,
+                   idempotencyKey: string.Empty,
+                   path: path,
+                   ifMatch: "\"v1\""))
+        using (HttpResponseMessage response = await client.SendAsync(
+                   empty,
+                   TestContext.Current.CancellationToken).ConfigureAwait(false))
+        {
+            Assert.Equal(HttpStatusCode.PreconditionRequired, response.StatusCode);
+            await AssertProblemAsync(response, "idempotency_key_required")
+                .ConfigureAwait(false);
+        }
+
+        using HttpRequestMessage multiple = RawJsonCommand(
+            validBody,
+            idempotencyKey: null,
+            path: path,
+            ifMatch: "\"v1\"");
+        multiple.Headers.TryAddWithoutValidation(
+            "Idempotency-Key",
+            MultipleIdempotencyKeys);
+        using HttpResponseMessage multipleResponse = await client.SendAsync(
+            multiple,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        Assert.Equal(HttpStatusCode.BadRequest, multipleResponse.StatusCode);
+        await AssertProblemAsync(
+            multipleResponse,
+            "invalid_request",
+            "/headers/Idempotency-Key").ConfigureAwait(false);
+    }
+
+    private static string QuotaMutationBody(
+        string tokenProperty,
+        string rawTokenValue) =>
+        $$"""{"{{tokenProperty}}":{{rawTokenValue}},"reason":"valid reason"}""";
+
     private static async ValueTask AssertInvalidUpdateFieldsAsync(HttpClient client)
     {
         (object Body, string Pointer)[] cases =
@@ -876,6 +1619,37 @@ public sealed class GroupQuotaEndpointContractTests
         return request;
     }
 
+    private static HttpRequestMessage RawJsonCommand(
+        string body,
+        string? idempotencyKey,
+        string path = "/api/v1/admin/groups",
+        string contentType = "application/json",
+        string? ifMatch = null)
+    {
+        HttpRequestMessage request = new(
+            HttpMethod.Post,
+            path)
+        {
+            Content = new StringContent(
+                body,
+                Encoding.UTF8,
+                contentType),
+        };
+        if (idempotencyKey is not null)
+        {
+            request.Headers.TryAddWithoutValidation(
+                "Idempotency-Key",
+                idempotencyKey);
+        }
+
+        if (ifMatch is not null)
+        {
+            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        }
+
+        return request;
+    }
+
     private static HttpClient AuthenticatedClient(GroupApiFactory factory, string role)
     {
         factory.AccessSessionValidator.CanonicalRole = role switch
@@ -964,6 +1738,38 @@ public sealed class GroupQuotaEndpointContractTests
         Timestamp,
         Timestamp.AddMinutes(version));
 
+    private static GroupQuotaView LargeQuotaView(
+        GroupPoolQuotaStatus status,
+        long version) => new(
+        GroupId,
+        QuotaPeriodId,
+        status,
+        BigInteger.Parse(QuotaTotal, CultureInfo.InvariantCulture),
+        BigInteger.Parse(QuotaConsumed, CultureInfo.InvariantCulture),
+        BigInteger.Parse(QuotaReserved, CultureInfo.InvariantCulture),
+        BigInteger.Zero,
+        BigInteger.One,
+        Timestamp.AddDays(-1),
+        null,
+        version,
+        Timestamp);
+
+    private static GroupQuotaView ActiveQuotaView(
+        long totalTokens,
+        long version) => new(
+        GroupId,
+        QuotaPeriodId,
+        GroupPoolQuotaStatus.Active,
+        new BigInteger(totalTokens),
+        BigInteger.Zero,
+        BigInteger.Zero,
+        new BigInteger(totalTokens),
+        BigInteger.Zero,
+        Timestamp,
+        null,
+        version,
+        Timestamp);
+
     private class GroupApiFactory : PoolAiApiFactory
     {
         internal FakeGroupUseCases UseCases { get; } = new();
@@ -979,11 +1785,19 @@ public sealed class GroupQuotaEndpointContractTests
                 services.RemoveAll<IGetGroupUseCase>();
                 services.RemoveAll<ICreateGroupUseCase>();
                 services.RemoveAll<IUpdateGroupUseCase>();
+                services.RemoveAll<IGetGroupQuotaUseCase>();
+                services.RemoveAll<IAuthorizeQuotaMutationUseCase>();
+                services.RemoveAll<IAdjustGroupQuotaUseCase>();
+                services.RemoveAll<IResetGroupQuotaUseCase>();
                 services.RemoveAll<IGroupActivationOrchestrator>();
                 services.AddSingleton<IListGroupsUseCase>(UseCases);
                 services.AddSingleton<IGetGroupUseCase>(UseCases);
                 services.AddSingleton<ICreateGroupUseCase>(UseCases);
                 services.AddSingleton<IUpdateGroupUseCase>(UseCases);
+                services.AddSingleton<IGetGroupQuotaUseCase>(UseCases);
+                services.AddSingleton<IAuthorizeQuotaMutationUseCase>(UseCases);
+                services.AddSingleton<IAdjustGroupQuotaUseCase>(UseCases);
+                services.AddSingleton<IResetGroupQuotaUseCase>(UseCases);
                 services.AddSingleton<IGroupActivationOrchestrator>(Activation);
             });
         }
@@ -1009,7 +1823,11 @@ public sealed class GroupQuotaEndpointContractTests
         IListGroupsUseCase,
         IGetGroupUseCase,
         ICreateGroupUseCase,
-        IUpdateGroupUseCase
+        IUpdateGroupUseCase,
+        IGetGroupQuotaUseCase,
+        IAuthorizeQuotaMutationUseCase,
+        IAdjustGroupQuotaUseCase,
+        IResetGroupQuotaUseCase
     {
         internal Result<GroupPage> ListResult { get; set; } = Result.Success(
             new GroupPage([View(GroupLifecycle.Disabled, 1, "Default")], null, false));
@@ -1031,6 +1849,25 @@ public sealed class GroupQuotaEndpointContractTests
                 View(GroupLifecycle.Disabled, 2, "Default"),
                 "\"v2\""));
 
+        internal Result<GroupQuotaView> GetQuotaResult { get; set; } =
+            Result.Success(LargeQuotaView(GroupPoolQuotaStatus.Exhausted, 1));
+
+        internal Result<GroupQuotaCommandOutcome> AdjustQuotaResult { get; set; } =
+            Result.Success(new GroupQuotaCommandOutcome(
+                StatusCodes.Status200OK,
+                false,
+                LargeQuotaView(GroupPoolQuotaStatus.Exhausted, 2),
+                "\"v2\""));
+
+        internal Result<GroupQuotaCommandOutcome> ResetQuotaResult { get; set; } =
+            Result.Success(new GroupQuotaCommandOutcome(
+                StatusCodes.Status200OK,
+                false,
+                ActiveQuotaView(totalTokens: 1, version: 2),
+                "\"v2\""));
+
+        internal bool ReturnInvalidQuotaAuthorizationSuccess { get; set; }
+
         internal ListGroupsQuery? LastListQuery { get; private set; }
 
         internal GetGroupQuery? LastGetQuery { get; private set; }
@@ -1039,6 +1876,18 @@ public sealed class GroupQuotaEndpointContractTests
 
         internal UpdateGroupCommand? LastUpdateCommand { get; private set; }
 
+        internal GetGroupQuotaQuery? LastGetQuotaQuery { get; private set; }
+
+        internal AuthorizeQuotaMutationCommand? LastQuotaAuthorizationCommand
+        {
+            get;
+            private set;
+        }
+
+        internal AdjustGroupQuotaCommand? LastAdjustQuotaCommand { get; private set; }
+
+        internal ResetGroupQuotaCommand? LastResetQuotaCommand { get; private set; }
+
         internal int ListCalls { get; private set; }
 
         internal int GetCalls { get; private set; }
@@ -1046,6 +1895,14 @@ public sealed class GroupQuotaEndpointContractTests
         internal int CreateCalls { get; private set; }
 
         internal int UpdateCalls { get; private set; }
+
+        internal int GetQuotaCalls { get; private set; }
+
+        internal int QuotaAuthorizationCalls { get; private set; }
+
+        internal int AdjustQuotaCalls { get; private set; }
+
+        internal int ResetQuotaCalls { get; private set; }
 
         public ValueTask<Result<GroupPage>> ExecuteAsync(
             ListGroupsQuery query,
@@ -1086,6 +1943,68 @@ public sealed class GroupQuotaEndpointContractTests
             LastUpdateCommand = command;
             return ValueTask.FromResult(UpdateResult);
         }
+
+        public ValueTask<Result<GroupQuotaView>> ExecuteAsync(
+            GetGroupQuotaQuery query,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetQuotaCalls++;
+            LastGetQuotaQuery = query;
+            return ValueTask.FromResult(GetQuotaResult);
+        }
+
+        public ValueTask<Result<bool>> ExecuteAsync(
+            AuthorizeQuotaMutationCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            QuotaAuthorizationCalls++;
+            LastQuotaAuthorizationCommand = command;
+            if (ReturnInvalidQuotaAuthorizationSuccess)
+            {
+                return ValueTask.FromResult(Result.Success(false));
+            }
+
+            return ValueTask.FromResult(
+                command.Actor.Role == GroupControlRole.Admin
+                    ? Result.Success(true)
+                    : Result.Failure<bool>(
+                        GroupErrorCodes.RoleRequired,
+                        "The Admin role is required for quota mutations."));
+        }
+
+        public ValueTask<Result<GroupQuotaCommandOutcome>> ExecuteAsync(
+            AdjustGroupQuotaCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AdjustQuotaCalls++;
+            LastAdjustQuotaCommand = command;
+            return ValueTask.FromResult(
+                command.Actor.Role == GroupControlRole.Admin
+                    ? AdjustQuotaResult
+                    : RoleRequiredQuotaMutation());
+        }
+
+        public ValueTask<Result<GroupQuotaCommandOutcome>> ExecuteAsync(
+            ResetGroupQuotaCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ResetQuotaCalls++;
+            LastResetQuotaCommand = command;
+            return ValueTask.FromResult(
+                command.Actor.Role == GroupControlRole.Admin
+                    ? ResetQuotaResult
+                    : RoleRequiredQuotaMutation());
+        }
+
+        private static Result<GroupQuotaCommandOutcome>
+            RoleRequiredQuotaMutation() =>
+            Result.Failure<GroupQuotaCommandOutcome>(
+                GroupErrorCodes.RoleRequired,
+                "The Admin role is required for quota mutations.");
     }
 
     private sealed class FakeActivationOrchestrator : IGroupActivationOrchestrator

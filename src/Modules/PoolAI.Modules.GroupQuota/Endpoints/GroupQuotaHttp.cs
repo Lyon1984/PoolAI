@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -73,9 +74,11 @@ internal static class GroupQuotaHttp
         out string? idempotencyKey,
         out IResult? failure)
     {
-        idempotencyKey = context.Request.Headers["Idempotency-Key"].ToString();
-        if (string.IsNullOrEmpty(idempotencyKey))
+        QuotaMutationIdempotencyKeyAuditInput auditInput =
+            QuotaMutationIdempotencyKeyAudit(context);
+        if (auditInput.Status == QuotaMutationIdempotencyKeyStatus.Missing)
         {
+            idempotencyKey = null;
             failure = Problem(
                 context,
                 StatusCodes.Status428PreconditionRequired,
@@ -86,18 +89,30 @@ internal static class GroupQuotaHttp
             return false;
         }
 
-        if (idempotencyKey.Length > 128
-            || idempotencyKey.Any(static character =>
-                character is < (char)0x21 or > (char)0x7e))
+        if (auditInput.Status != QuotaMutationIdempotencyKeyStatus.Valid)
         {
+            idempotencyKey = null;
             failure = InvalidRequestProblem(
                 context,
                 FieldError("/headers/Idempotency-Key", "The idempotency key is invalid."));
             return false;
         }
 
+        idempotencyKey = auditInput.ValidValue;
         failure = null;
         return true;
+    }
+
+    internal static QuotaMutationIdempotencyKeyAuditInput QuotaMutationIdempotencyKeyAudit(
+        HttpContext context)
+    {
+        var values = context.Request.Headers["Idempotency-Key"];
+        return values.Count switch
+        {
+            0 => QuotaMutationIdempotencyKeyAuditInput.Missing,
+            1 => QuotaMutationIdempotencyKeyAuditInput.FromSingle(values[0]),
+            _ => QuotaMutationIdempotencyKeyAuditInput.Multiple,
+        };
     }
 
     internal static bool TryGetExpectedVersion(
@@ -160,29 +175,163 @@ internal static class GroupQuotaHttp
                 retryable: false);
     }
 
-    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
-        GroupCreateRequest request)
+    internal static async ValueTask<JsonBodyReadResult> ReadJsonBodyAsync(
+        HttpContext context)
     {
-        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
-        if (string.IsNullOrWhiteSpace(request.Name)
-            || request.Name.Trim().Length > 100
-            || request.Name.Any(char.IsControl))
+        try
         {
-            errors["/name"] = ["A Group name of at most 100 characters is required."];
+            using JsonDocument document = await JsonDocument.ParseAsync(
+                context.Request.Body,
+                cancellationToken: context.RequestAborted).ConfigureAwait(false);
+            return new JsonBodyReadResult(document.RootElement.Clone(), Failure: null);
+        }
+        catch (JsonException)
+        {
+            return new JsonBodyReadResult(
+                default,
+                InvalidRequestProblem(
+                    context,
+                    FieldError("/", "The request body must contain valid JSON.")));
+        }
+    }
+
+    internal static async ValueTask<QuotaMutationRequestReadResult>
+        ReadQuotaMutationRequestAsync(
+            HttpContext context,
+            string tokenPropertyName)
+    {
+        IResult? failure = RequireContentType(context, "application/json");
+        if (failure is not null)
+        {
+            return new QuotaMutationRequestReadResult(null, failure);
         }
 
-        if (request.Description.HasValue
-            && request.Description.Value is { Length: > 1000 })
+        JsonBodyReadResult body = await ReadJsonBodyAsync(context).ConfigureAwait(false);
+        if (body.Failure is not null)
         {
-            errors["/description"] = ["A Group description cannot exceed 1000 characters."];
+            return new QuotaMutationRequestReadResult(null, body.Failure);
         }
 
-        if (request.TotalTokens is < 1 or > 9_007_199_254_740_991)
+        if (!TryParseQuotaMutationRequest(
+                body.Body,
+                tokenPropertyName,
+                out ParsedQuotaMutationRequest? parsed,
+                out IReadOnlyDictionary<string, IReadOnlyList<string>> errors))
         {
-            errors["/total_tokens"] = ["total_tokens is outside the supported safe-integer range."];
+            return new QuotaMutationRequestReadResult(
+                null,
+                ValidationProblem(context, errors));
         }
 
-        return errors;
+        return new QuotaMutationRequestReadResult(parsed, Failure: null);
+    }
+
+    internal static bool TryParseGroupCreateRequest(
+        JsonElement request,
+        out ParsedGroupCreateRequest? parsed,
+        out IReadOnlyDictionary<string, IReadOnlyList<string>> errors)
+    {
+        Dictionary<string, IReadOnlyList<string>> failures = new(StringComparer.Ordinal);
+        parsed = null;
+        if (request.ValueKind != JsonValueKind.Object)
+        {
+            failures["/"] = ["The request body must be a JSON object."];
+            errors = failures;
+            return false;
+        }
+
+        if (!HasDecodablePropertyNames(request))
+        {
+            failures["/"] =
+                ["Request property names must contain valid Unicode scalar values."];
+            errors = failures;
+            return false;
+        }
+
+        AddGroupCreateAdditionalPropertyErrors(request, failures);
+        ReadGroupCreateTextFields(
+            request,
+            failures,
+            out string name,
+            out string? description);
+
+        long totalTokens = 0;
+        if (!request.TryGetProperty("total_tokens", out JsonElement totalTokensElement)
+            || !TryReadPositiveSafeInteger(totalTokensElement, out totalTokens))
+        {
+            failures["/total_tokens"] =
+                ["total_tokens must be an integer between 1 and 9007199254740991."];
+        }
+
+        errors = failures;
+        if (failures.Count != 0)
+        {
+            return false;
+        }
+
+        parsed = new ParsedGroupCreateRequest(name, description, totalTokens);
+        return true;
+    }
+
+    internal static bool TryParseQuotaMutationRequest(
+        JsonElement request,
+        string tokenPropertyName,
+        out ParsedQuotaMutationRequest? parsed,
+        out IReadOnlyDictionary<string, IReadOnlyList<string>> errors)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tokenPropertyName);
+        Dictionary<string, IReadOnlyList<string>> failures = new(StringComparer.Ordinal);
+        parsed = null;
+        if (request.ValueKind != JsonValueKind.Object)
+        {
+            failures["/"] = ["The request body must be a JSON object."];
+            errors = failures;
+            return false;
+        }
+
+        if (!HasDecodablePropertyNames(request))
+        {
+            failures["/"] =
+                ["Request property names must contain valid Unicode scalar values."];
+            errors = failures;
+            return false;
+        }
+
+        foreach (JsonProperty property in request.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, tokenPropertyName, StringComparison.Ordinal)
+                && !string.Equals(property.Name, "reason", StringComparison.Ordinal))
+            {
+                failures[JsonPointer(property.Name)] =
+                    ["The request field is not defined by this operation."];
+            }
+        }
+
+        long totalTokens = 0;
+        if (!request.TryGetProperty(tokenPropertyName, out JsonElement totalTokensElement)
+            || !TryReadPositiveSafeInteger(totalTokensElement, out totalTokens))
+        {
+            failures[JsonPointer(tokenPropertyName)] =
+                [$"{tokenPropertyName} must be an integer between 1 and 9007199254740991."];
+        }
+
+        string reason = string.Empty;
+        if (!request.TryGetProperty("reason", out JsonElement reasonElement)
+            || !TryGetJsonString(reasonElement, out reason)
+            || !SatisfiesQuotaReasonContract(reason))
+        {
+            failures["/reason"] =
+                ["The reason must be non-blank and at most 500 characters."];
+        }
+
+        errors = failures;
+        if (failures.Count != 0)
+        {
+            return false;
+        }
+
+        parsed = new ParsedQuotaMutationRequest(totalTokens, reason!);
+        return true;
     }
 
     internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
@@ -272,6 +421,28 @@ internal static class GroupQuotaHttp
         Description = new Optional<string?>(view.Description),
         Version = view.Version,
         CreatedAt = view.CreatedAt,
+        UpdatedAt = view.UpdatedAt,
+    };
+
+    internal static PoolAI.Contracts.Generated.GroupQuota ToContract(GroupQuotaView view) => new()
+    {
+        GroupId = view.GroupId.Value,
+        PeriodId = view.PeriodId.Value,
+        Status = view.Status switch
+        {
+            GroupPoolQuotaStatus.Active => "active",
+            GroupPoolQuotaStatus.Exhausted => "exhausted",
+            GroupPoolQuotaStatus.Disabled => "disabled",
+            _ => throw new ArgumentOutOfRangeException(nameof(view)),
+        },
+        TotalTokens = view.TotalTokens.ToString(CultureInfo.InvariantCulture),
+        ConsumedTokens = view.ConsumedTokens.ToString(CultureInfo.InvariantCulture),
+        ReservedTokens = view.ReservedTokens.ToString(CultureInfo.InvariantCulture),
+        RemainingTokens = view.RemainingTokens.ToString(CultureInfo.InvariantCulture),
+        OverageTokens = view.OverageTokens.ToString(CultureInfo.InvariantCulture),
+        PeriodStartedAt = view.PeriodStartedAt,
+        PeriodEndedAt = new Optional<DateTimeOffset?>(view.PeriodEndedAt),
+        Version = view.Version,
         UpdatedAt = view.UpdatedAt,
     };
 
@@ -379,6 +550,382 @@ internal static class GroupQuotaHttp
             [pointer] = [message],
         };
 
+    private static bool TryReadPositiveSafeInteger(
+        JsonElement element,
+        out long value)
+    {
+        value = 0;
+        if (element.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        return TryParsePositiveSafeInteger(element.GetRawText().AsSpan(), out value);
+    }
+
+    private static bool TryParsePositiveSafeInteger(
+        ReadOnlySpan<char> raw,
+        out long value)
+    {
+        const long maximum = 9_007_199_254_740_991;
+        value = 0;
+        if (raw.IsEmpty || raw[0] == '-')
+        {
+            return false;
+        }
+
+        int exponentMarker = raw.IndexOfAny('e', 'E');
+        ReadOnlySpan<char> coefficient = exponentMarker < 0
+            ? raw
+            : raw[..exponentMarker];
+        long exponent = 0;
+        if (exponentMarker >= 0
+            && !TryReadBoundedExponent(
+                raw[(exponentMarker + 1)..],
+                checked((long)raw.Length + 17),
+                out exponent))
+        {
+            return false;
+        }
+
+        if (!TryAnalyzeCoefficient(
+                coefficient,
+                out int coefficientDigitCount,
+                out int leadingZeroCount,
+                out int trailingZeroCount))
+        {
+            return false;
+        }
+
+        if (!TryNormalizeIntegerShape(
+                coefficient,
+                exponent,
+                coefficientDigitCount,
+                leadingZeroCount,
+                trailingZeroCount,
+                out int significantDigitCount,
+                out long scale))
+        {
+            return false;
+        }
+
+        return TryAccumulatePositiveSafeInteger(
+            coefficient,
+            leadingZeroCount,
+            significantDigitCount,
+            scale,
+            maximum,
+            out value);
+    }
+
+    private static bool TryNormalizeIntegerShape(
+        ReadOnlySpan<char> coefficient,
+        long exponent,
+        int coefficientDigitCount,
+        int leadingZeroCount,
+        int trailingZeroCount,
+        out int significantDigitCount,
+        out long scale)
+    {
+        int decimalPoint = coefficient.IndexOf('.');
+        int fractionDigitCount = decimalPoint < 0
+            ? 0
+            : coefficient.Length - decimalPoint - 1;
+        scale = exponent - fractionDigitCount;
+        int removedTrailingZeros = 0;
+        if (scale < 0)
+        {
+            long requiredTrailingZeros = -scale;
+            if (requiredTrailingZeros > trailingZeroCount)
+            {
+                significantDigitCount = 0;
+                return false;
+            }
+
+            removedTrailingZeros = checked((int)requiredTrailingZeros);
+            scale = 0;
+        }
+
+        significantDigitCount = coefficientDigitCount
+            - leadingZeroCount
+            - removedTrailingZeros;
+        long finalDigitCount = significantDigitCount + scale;
+        return significantDigitCount > 0
+            && finalDigitCount is > 0 and <= 16;
+    }
+
+    private static bool TryAnalyzeCoefficient(
+        ReadOnlySpan<char> coefficient,
+        out int digitCount,
+        out int leadingZeroCount,
+        out int trailingZeroCount)
+    {
+        digitCount = 0;
+        leadingZeroCount = 0;
+        trailingZeroCount = 0;
+        bool foundNonZero = false;
+        foreach (char character in coefficient)
+        {
+            if (character == '.')
+            {
+                continue;
+            }
+
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+
+            digitCount++;
+            if (!foundNonZero)
+            {
+                if (character == '0')
+                {
+                    leadingZeroCount++;
+                    continue;
+                }
+
+                foundNonZero = true;
+            }
+
+            trailingZeroCount = character == '0'
+                ? trailingZeroCount + 1
+                : 0;
+        }
+
+        return foundNonZero;
+    }
+
+    private static bool TryAccumulatePositiveSafeInteger(
+        ReadOnlySpan<char> coefficient,
+        int leadingZeroCount,
+        int significantDigitCount,
+        long scale,
+        long maximum,
+        out long value)
+    {
+        value = 0;
+        foreach (char character in coefficient)
+        {
+            if (character == '.')
+            {
+                continue;
+            }
+
+            if (leadingZeroCount > 0)
+            {
+                leadingZeroCount--;
+                continue;
+            }
+
+            if (significantDigitCount == 0)
+            {
+                break;
+            }
+
+            int digit = character - '0';
+            if (value > (maximum - digit) / 10)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = (value * 10) + digit;
+            significantDigitCount--;
+        }
+
+        for (long index = 0; index < scale; index++)
+        {
+            if (value > maximum / 10)
+            {
+                value = 0;
+                return false;
+            }
+
+            value *= 10;
+        }
+
+        return value >= 1 && value <= maximum;
+    }
+
+    private static bool TryReadBoundedExponent(
+        ReadOnlySpan<char> raw,
+        long maximumMagnitude,
+        out long exponent)
+    {
+        exponent = 0;
+        if (raw.IsEmpty)
+        {
+            return false;
+        }
+
+        bool negative = raw[0] == '-';
+        int start = negative || raw[0] == '+' ? 1 : 0;
+        if (start == raw.Length)
+        {
+            return false;
+        }
+
+        long magnitude = 0;
+        for (int index = start; index < raw.Length; index++)
+        {
+            char character = raw[index];
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+
+            int digit = character - '0';
+            magnitude = magnitude > (maximumMagnitude - digit) / 10
+                ? maximumMagnitude
+                : (magnitude * 10) + digit;
+        }
+
+        exponent = negative ? -magnitude : magnitude;
+        return true;
+    }
+
+    internal static bool SatisfiesQuotaReasonContract(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        int scalarCount = 0;
+        ReadOnlySpan<char> remaining = value.AsSpan();
+        while (!remaining.IsEmpty)
+        {
+            if (Rune.DecodeFromUtf16(
+                    remaining,
+                    out _,
+                    out int consumed) != OperationStatus.Done)
+            {
+                return false;
+            }
+
+            scalarCount++;
+            if (scalarCount > 500)
+            {
+                return false;
+            }
+
+            remaining = remaining[consumed..];
+        }
+
+        return true;
+    }
+
+    private static bool TryGetJsonString(
+        JsonElement element,
+        out string value)
+    {
+        value = string.Empty;
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        try
+        {
+            // JsonElement.GetString() is non-null for String; malformed
+            // escaped surrogates are reported by the exception path below.
+            value = element.GetString()!;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            // System.Text.Json defers decoding escaped isolated UTF-16 surrogates
+            // until GetString(). Treat them as field validation failures.
+            return false;
+        }
+    }
+
+    private static bool HasDecodablePropertyNames(JsonElement element)
+    {
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            try
+            {
+                _ = property.Name;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void ReadGroupCreateTextFields(
+        JsonElement request,
+        Dictionary<string, IReadOnlyList<string>> failures,
+        out string name,
+        out string? description)
+    {
+        name = string.Empty;
+        if (!request.TryGetProperty("name", out JsonElement nameElement)
+            || !TryGetJsonString(nameElement, out name)
+            || string.IsNullOrWhiteSpace(name)
+            || name.Trim().Length > 100
+            || name.Any(char.IsControl))
+        {
+            failures["/name"] = ["A Group name of at most 100 characters is required."];
+        }
+
+        description = null;
+        if (!request.TryGetProperty("description", out JsonElement descriptionElement))
+        {
+            return;
+        }
+
+        if (descriptionElement.ValueKind == JsonValueKind.String)
+        {
+            if (TryGetJsonString(descriptionElement, out string decodedDescription))
+            {
+                description = decodedDescription;
+            }
+            else
+            {
+                failures["/description"] =
+                    ["A Group description must be a string or null."];
+            }
+        }
+        else if (descriptionElement.ValueKind != JsonValueKind.Null)
+        {
+            failures["/description"] = ["A Group description must be a string or null."];
+        }
+
+        if (description is { Length: > 1000 })
+        {
+            failures["/description"] = ["A Group description cannot exceed 1000 characters."];
+        }
+    }
+
+    private static void AddGroupCreateAdditionalPropertyErrors(
+        JsonElement request,
+        Dictionary<string, IReadOnlyList<string>> failures)
+    {
+        foreach (JsonProperty property in request.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, "name", StringComparison.Ordinal)
+                && !string.Equals(property.Name, "description", StringComparison.Ordinal)
+                && !string.Equals(property.Name, "total_tokens", StringComparison.Ordinal))
+            {
+                failures[JsonPointer(property.Name)] =
+                    ["The request field is not defined by this operation."];
+            }
+        }
+    }
+
+    private static string JsonPointer(string propertyName) =>
+        string.Concat(
+            "/",
+            propertyName
+                .Replace("~", "~0", StringComparison.Ordinal)
+                .Replace("/", "~1", StringComparison.Ordinal));
+
     private static HttpError MapError(ResultError error) => error.Code switch
     {
         "role_required" or "forbidden" => new(
@@ -397,6 +944,8 @@ internal static class GroupQuotaHttp
             error.Code, 422, "Validation failed", "One or more request fields failed validation.", false),
         "invalid_request" => new(
             error.Code, 400, "Invalid request", "The request is invalid.", false),
+        "rate_limit_exceeded" => new(
+            error.Code, 429, "Rate limit exceeded", "Too many requests were received for this operation.", true, error.RetryAfterSeconds),
         "coordination_unavailable" => new(
             error.Code, 503, "Coordination unavailable", "Required coordination is temporarily unavailable.", true, 1),
         "dependency_unavailable" or "service_unavailable" => new(
@@ -465,4 +1014,21 @@ internal static class GroupQuotaHttp
         bool Retryable,
         long? RetryAfterSeconds = null,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? Errors = null);
+
+    internal sealed record ParsedGroupCreateRequest(
+        string Name,
+        string? Description,
+        long TotalTokens);
+
+    internal sealed record ParsedQuotaMutationRequest(
+        long TotalTokens,
+        string Reason);
+
+    internal readonly record struct JsonBodyReadResult(
+        JsonElement Body,
+        IResult? Failure);
+
+    internal readonly record struct QuotaMutationRequestReadResult(
+        ParsedQuotaMutationRequest? Request,
+        IResult? Failure);
 }

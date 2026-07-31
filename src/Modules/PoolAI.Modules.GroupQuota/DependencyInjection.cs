@@ -21,7 +21,12 @@ public static class DependencyInjection
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(static serviceProvider =>
             CreatePolicy(serviceProvider.GetRequiredService<IConfiguration>()));
+        services.AddSingleton(static serviceProvider =>
+            QuotaMutationDenialRateLimitOptions.FromConfiguration(
+                serviceProvider.GetRequiredService<IConfiguration>()));
         services.AddGroupQuotaInfrastructure();
+        services.AddSingleton<IQuotaMutationDenialRateLimiter,
+            OperationsQuotaMutationDenialRateLimiter>();
         services.AddSingleton(static serviceProvider => new GroupControlPlaneService(
             serviceProvider.GetRequiredService<IGroupRepository>(),
             serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
@@ -41,6 +46,23 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         services.AddSingleton<IUpdateGroupUseCase>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
+        services.AddSingleton(static serviceProvider => new QuotaControlPlaneService(
+            serviceProvider.GetRequiredService<IQuotaRepository>(),
+            serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.ICommandIdempotencyStore>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IAuditAppender>(),
+            serviceProvider.GetRequiredService<IQuotaMutationDenialRateLimiter>(),
+            serviceProvider.GetRequiredService<GroupQuotaPolicy>()));
+        services.AddSingleton<IGetGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IAuthorizeQuotaMutationUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IAdjustGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IResetGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
         services.AddSingleton<IGroupStatusReader>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         services.AddSingleton<IGroupActivationIdempotencyPreflight>(static serviceProvider =>

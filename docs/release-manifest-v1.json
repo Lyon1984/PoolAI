@@ -8,8 +8,8 @@
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 12,
-    "maximum_compatible_version": 12,
+    "minimum_compatible_version": 14,
+    "maximum_compatible_version": 14,
     "migrations": [
       {
         "version": 1,
@@ -82,6 +82,18 @@
         "name": "0012_supply_account_health_m2_e4.sql",
         "source": "docs/database/0012_supply_account_health_m2_e4.sql",
         "sha256": "d41abf363c856172c27812313213c76a54c0ce458d250249adc02ad127ef4dc7"
+      },
+      {
+        "version": 13,
+        "name": "0013_group_quota_period_m3_e1.sql",
+        "source": "docs/database/0013_group_quota_period_m3_e1.sql",
+        "sha256": "30abc7bb2858f022247a721503bd58135b715670aec13ca670a2a33cccfe4c44"
+      },
+      {
+        "version": 14,
+        "name": "0014_group_quota_representation_version_m3_e1.sql",
+        "source": "docs/database/0014_group_quota_representation_version_m3_e1.sql",
+        "sha256": "abbf0ac2c5265f830b65fcc447f78b30940183ff0236fc65491f7e920fae9e89"
       }
     ]
   },
@@ -90,7 +102,7 @@
     "contract_version": 1,
     "key_schema_version": "r1",
     "contract_source": "docs/runtime/redis-contract.md",
-    "contract_sha256": "c42684aeb9b7459170bc44a878d373e0206b8b839a71a471a0d929aa6488d59d",
+    "contract_sha256": "8959068f90fa4fa2be7b5b3a6dfc2211abf0227dd63311c227d66975057b12c8",
     "scripts": [
       {
         "name": "fixed_window_increment",
