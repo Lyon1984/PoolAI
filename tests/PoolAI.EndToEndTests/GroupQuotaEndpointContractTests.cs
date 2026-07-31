@@ -198,8 +198,8 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Null(replayCommand.UserAgent);
     }
 
-    [Fact]
 #pragma warning disable MA0051 // The mathematical-integer positive/negative matrix is cohesive.
+    [Fact]
     public async Task AdminCreateTotalTokensRequiresAMathematicallyIntegralSafeJsonNumber()
     {
         // Governing contract: AC-026 and the OpenAPI 3.1 JSON Schema accept a
