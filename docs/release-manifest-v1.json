@@ -8,8 +8,8 @@
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 13,
-    "maximum_compatible_version": 13,
+    "minimum_compatible_version": 14,
+    "maximum_compatible_version": 14,
     "migrations": [
       {
         "version": 1,
@@ -88,6 +88,12 @@
         "name": "0013_group_quota_period_m3_e1.sql",
         "source": "docs/database/0013_group_quota_period_m3_e1.sql",
         "sha256": "30abc7bb2858f022247a721503bd58135b715670aec13ca670a2a33cccfe4c44"
+      },
+      {
+        "version": 14,
+        "name": "0014_group_quota_representation_version_m3_e1.sql",
+        "source": "docs/database/0014_group_quota_representation_version_m3_e1.sql",
+        "sha256": "931a35ed64ae6e711ddbc4cf9ca18503ac62f46da6688c6a0efcd91592eb3fea"
       }
     ]
   },

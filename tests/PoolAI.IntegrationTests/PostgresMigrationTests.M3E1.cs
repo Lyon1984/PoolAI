@@ -184,6 +184,46 @@ public sealed partial class PostgresMigrationTests
                     .ConfigureAwait(false)));
         }
 
+        using (NpgsqlCommand representationTrigger = dataSource.CreateCommand("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc AS function
+                JOIN pg_catalog.pg_roles AS owner
+                  ON owner.oid = function.proowner
+                WHERE function.oid =
+                    'public.poolai_bump_current_quota_representation_version()'::regprocedure
+                  AND function.prorettype = 'pg_catalog.trigger'::regtype
+                  AND function.prosecdef
+                  AND owner.rolname = 'poolai_runtime_owner'
+                  AND owner.rolcanlogin = false
+                  AND function.proconfig @> ARRAY[
+                      'search_path=pg_catalog, public, pg_temp'
+                  ]::text[]
+                  AND NOT pg_catalog.has_function_privilege(
+                      'poolai_api', function.oid, 'EXECUTE')
+                  AND NOT pg_catalog.has_function_privilege(
+                      'poolai_worker', function.oid, 'EXECUTE')
+            ) AND EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_trigger AS trigger
+                WHERE NOT trigger.tgisinternal
+                  AND trigger.tgname =
+                      'tr_group_quota_period_counter_representation_version'
+                  AND trigger.tgrelid = 'public.group_quota_periods'::regclass
+                  AND trigger.tgfoid =
+                      'public.poolai_bump_current_quota_representation_version()'::regprocedure
+                  AND trigger.tgtype = 17
+                  AND trigger.tgnargs = 0
+                  AND trigger.tgattr::text = '5 6'
+            );
+            """))
+        {
+            Assert.True(
+                Assert.IsType<bool>(await representationTrigger
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
+        }
+
         using NpgsqlCommand auditorConstraint = dataSource.CreateCommand("""
             SELECT pg_catalog.pg_get_constraintdef(catalog_constraint.oid)
             FROM pg_catalog.pg_constraint AS catalog_constraint
@@ -335,6 +375,29 @@ public sealed partial class PostgresMigrationTests
             await seedFacts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // Migration 0014: a true current-period consumed/reserved change advances
+        // the quota representation version exactly once. The direct fixture write
+        // above is deliberately outside the API role so this assertion isolates
+        // the row trigger from application behavior.
+        using (NpgsqlCommand representationVersion = connection.CreateCommand())
+        {
+            representationVersion.CommandText = """
+                SELECT quota.version::text || ':'
+                    || (quota.updated_at >= period.updated_at)::text
+                FROM public.group_token_quotas AS quota
+                JOIN public.group_quota_periods AS period
+                  ON period.id = quota.current_period_id
+                 AND period.group_id = quota.group_id
+                WHERE quota.group_id =
+                    '01900000-0000-7000-8000-00000000d010';
+                """;
+            Assert.Equal(
+                "2:true",
+                Assert.IsType<string>(await representationVersion
+                    .ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)));
+        }
+
         M1E4Mutation activatedGroup = await ExecuteM1E4MutationAsync(
             connection,
             null,
@@ -399,12 +462,12 @@ public sealed partial class PostgresMigrationTests
             null,
             periodGroupId,
             90,
-            1,
+            2,
             new Guid("01900000-0000-7000-8000-00000000d020"),
             new Guid("01900000-0000-7000-8000-00000000d021"),
             "m3-e1-total-adjust",
             cancellationToken).ConfigureAwait(false);
-        Assert.Equal("90:100:20:0:2", adjusted.Result);
+        Assert.Equal("90:100:20:0:3", adjusted.Result);
         AssertM3E1BeforeState(
             adjusted.BeforeState,
             new Guid("01900000-0000-7000-8000-00000000d010"),
@@ -415,14 +478,14 @@ public sealed partial class PostgresMigrationTests
             "20",
             "80",
             "0",
-            1);
+            2);
 
         M3E1QuotaMutation replayedAdjustment = await ExecuteM3E1AdjustmentAsync(
             connection,
             null,
             new Guid("01900000-0000-7000-8000-00000000d010"),
             90,
-            1,
+            2,
             new Guid("01900000-0000-7000-8000-00000000d020"),
             new Guid("01900000-0000-7000-8000-00000000d021"),
             "m3-e1-total-adjust",
@@ -438,7 +501,7 @@ public sealed partial class PostgresMigrationTests
             "20",
             "0",
             "10",
-            2);
+            3);
 
         await AssertM3E1BusinessErrorAsync(
             connection,
@@ -446,7 +509,7 @@ public sealed partial class PostgresMigrationTests
             SELECT *
             FROM public.poolai_group_quota_adjust_total(
                 '01900000-0000-7000-8000-00000000d010',
-                91, 1,
+                91, 2,
                 '01900000-0000-7000-8000-00000000d000',
                 '01900000-0000-7000-8000-00000000d020',
                 '01900000-0000-7000-8000-00000000d021',
@@ -460,7 +523,7 @@ public sealed partial class PostgresMigrationTests
             SELECT *
             FROM public.poolai_group_quota_adjust_total(
                 '01900000-0000-7000-8000-00000000d010',
-                95, 1,
+                95, 2,
                 '01900000-0000-7000-8000-00000000d000',
                 '01900000-0000-7000-8000-00000000d022',
                 '01900000-0000-7000-8000-00000000d023',
@@ -478,7 +541,7 @@ public sealed partial class PostgresMigrationTests
                 SELECT *
                 FROM public.poolai_group_quota_adjust_total(
                     '01900000-0000-7000-8000-00000000d010',
-                    $1, 2,
+                    $1, 3,
                     '01900000-0000-7000-8000-00000000d000',
                     $2, $3, $4, 'M3-E1 invalid total');
                 """;
@@ -499,7 +562,7 @@ public sealed partial class PostgresMigrationTests
                 SELECT *
                 FROM public.poolai_group_quota_reset(
                     '01900000-0000-7000-8000-00000000d010',
-                    $1, $2, 2,
+                    $1, $2, 3,
                     '01900000-0000-7000-8000-00000000d000',
                     $3, $4, $5, 'M3-E1 invalid reset');
                 """;
@@ -533,12 +596,12 @@ public sealed partial class PostgresMigrationTests
             new Guid("01900000-0000-7000-8000-00000000d010"),
             new Guid("01900000-0000-7000-8000-00000000d030"),
             300,
-            2,
+            3,
             new Guid("01900000-0000-7000-8000-00000000d031"),
             new Guid("01900000-0000-7000-8000-00000000d032"),
             "m3-e1-period-reset",
             cancellationToken).ConfigureAwait(false);
-        Assert.Equal("2:300:0:0:300:3", reset.Result);
+        Assert.Equal("2:300:0:0:300:4", reset.Result);
         AssertM3E1BeforeState(
             reset.BeforeState,
             new Guid("01900000-0000-7000-8000-00000000d010"),
@@ -549,7 +612,7 @@ public sealed partial class PostgresMigrationTests
             "20",
             "0",
             "10",
-            2);
+            3);
 
         DateTime dispatchStartedAt;
         using (NpgsqlCommand dispatch = connection.CreateCommand())
@@ -626,7 +689,7 @@ public sealed partial class PostgresMigrationTests
             new Guid("01900000-0000-7000-8000-00000000d010"),
             new Guid("01900000-0000-7000-8000-00000000d030"),
             300,
-            2,
+            3,
             new Guid("01900000-0000-7000-8000-00000000d031"),
             new Guid("01900000-0000-7000-8000-00000000d032"),
             "m3-e1-period-reset",
@@ -636,13 +699,13 @@ public sealed partial class PostgresMigrationTests
             replayAfterArchive.BeforeState,
             new Guid("01900000-0000-7000-8000-00000000d010"),
             new Guid("01900000-0000-7000-8000-00000000d030"),
-            "disabled",
+            "active",
             "300",
             "0",
             "0",
             "300",
             "0",
-            3);
+            4);
 
         await AssertM3E1BusinessErrorAsync(
             connection,
@@ -651,7 +714,7 @@ public sealed partial class PostgresMigrationTests
             FROM public.poolai_group_quota_reset(
                 '01900000-0000-7000-8000-00000000d010',
                 '01900000-0000-7000-8000-00000000d030',
-                301, 2,
+                301, 3,
                 '01900000-0000-7000-8000-00000000d000',
                 '01900000-0000-7000-8000-00000000d031',
                 '01900000-0000-7000-8000-00000000d032',
@@ -665,7 +728,7 @@ public sealed partial class PostgresMigrationTests
             SELECT *
             FROM public.poolai_group_quota_adjust_total(
                 '01900000-0000-7000-8000-00000000d010',
-                400, 3,
+                400, 4,
                 '01900000-0000-7000-8000-00000000d000',
                 '01900000-0000-7000-8000-00000000d050',
                 '01900000-0000-7000-8000-00000000d051',
@@ -740,7 +803,7 @@ public sealed partial class PostgresMigrationTests
             .ConfigureAwait(false));
         Assert.Contains("\"group_version\": 5", persisted, StringComparison.Ordinal);
         Assert.Contains("\"group_status\": \"archived\"", persisted, StringComparison.Ordinal);
-        Assert.Contains("\"quota_version\": 3", persisted, StringComparison.Ordinal);
+        Assert.Contains("\"quota_version\": 4", persisted, StringComparison.Ordinal);
         Assert.Contains(
             "\"old_period\": [1, \"closed\", \"90\", \"120\", \"0\"]",
             persisted,
@@ -879,7 +942,7 @@ public sealed partial class PostgresMigrationTests
             adjustmentFirst.BeforeState,
             adjustmentFirstGroup,
             new Guid("01900000-0000-7000-8000-00000000d111"),
-            "disabled",
+            "active",
             "200",
             "0",
             "0",
@@ -1023,7 +1086,7 @@ public sealed partial class PostgresMigrationTests
             resetFirst.BeforeState,
             resetFirstGroup,
             new Guid("01900000-0000-7000-8000-00000000d131"),
-            "disabled",
+            "active",
             "200",
             "0",
             "0",
