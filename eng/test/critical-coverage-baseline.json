@@ -7,12 +7,12 @@
         "PoolAI.Modules.GroupQuota"
       ],
       "pathEndsWith": [],
-      "linesCovered": 2120,
-      "linesValid": 2120,
+      "linesCovered": 3628,
+      "linesValid": 3628,
       "lineRate": 100,
-      "branchesCovered": 767,
-      "branchesValid": 826,
-      "branchRate": 92.85714285714286
+      "branchesCovered": 1286,
+      "branchesValid": 1337,
+      "branchRate": 96.18548990276739
     },
     "auth": {
       "pathIncludes": [

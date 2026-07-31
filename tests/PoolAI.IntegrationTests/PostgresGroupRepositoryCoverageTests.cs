@@ -1,7 +1,7 @@
 #pragma warning disable MA0051 // The contract scenarios keep their complete PostgreSQL transaction flow visible.
 using System.Numerics;
-using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -413,6 +413,932 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
+    public async Task QuotaPeriodRepositoryParsesCanonicalRowsAndRecoversItsSavepoint()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId actorId = await SeedAdminActorAsync(
+            "quota-period-repository",
+            cancellationToken).ConfigureAwait(true);
+        GroupActor actor = new(actorId, GroupControlRole.Admin, TokenVersion: 1);
+        await using ServiceProvider services = BuildGroupServices();
+        ICreateGroupUseCase create = services.GetRequiredService<ICreateGroupUseCase>();
+        IGetGroupQuotaUseCase getQuota =
+            services.GetRequiredService<IGetGroupQuotaUseCase>();
+        IAdjustGroupQuotaUseCase adjust =
+            services.GetRequiredService<IAdjustGroupQuotaUseCase>();
+        IResetGroupQuotaUseCase reset =
+            services.GetRequiredService<IResetGroupQuotaUseCase>();
+        string suffix = Guid.NewGuid().ToString("N")[..12];
+        GroupCommandOutcome created = await CreateGroupAsync(
+            create,
+            actor,
+            $"Quota repository {suffix}",
+            "M3-E1 Npgsql row parsing and savepoint coverage",
+            totalTokens: 200,
+            cancellationToken).ConfigureAwait(true);
+        EntityId groupId = created.Value.Id;
+
+        Result<GroupQuotaView> initial = await getQuota.ExecuteAsync(
+            new GetGroupQuotaQuery(actor, groupId),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(initial.IsSuccess, initial.Error.Description);
+        Assert.Equal(GroupPoolQuotaStatus.Disabled, initial.Value.Status);
+        Assert.Equal((BigInteger)200, initial.Value.TotalTokens);
+        Assert.Equal(1, initial.Value.Version);
+
+        string exactReason = string.Concat(
+            "  capacity\n",
+            string.Concat(Enumerable.Repeat("😀", 300)),
+            "  ");
+        Result<GroupQuotaCommandOutcome> adjusted = await adjust.ExecuteAsync(
+            new AdjustGroupQuotaCommand(
+                EntityId.New(),
+                actor,
+                Key("quota-adjust"),
+                groupId,
+                ExpectedVersion: 1,
+                NewTotalTokens: 90,
+                exactReason,
+                "192.0.2.33",
+                "quota-period-repository"),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(adjusted.IsSuccess, adjusted.Error.Description);
+        Assert.Equal(2, adjusted.Value.Value.Version);
+        Assert.Equal((BigInteger)90, adjusted.Value.Value.TotalTokens);
+        Assert.Equal(initial.Value.PeriodId, adjusted.Value.Value.PeriodId);
+
+        Result<GroupQuotaCommandOutcome> resetResult = await reset.ExecuteAsync(
+            new ResetGroupQuotaCommand(
+                EntityId.New(),
+                actor,
+                Key("quota-reset"),
+                groupId,
+                ExpectedVersion: 2,
+                TotalTokens: 300,
+                "manual repository reset",
+                "192.0.2.33",
+                "quota-period-repository"),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(resetResult.IsSuccess, resetResult.Error.Description);
+        Assert.Equal(3, resetResult.Value.Value.Version);
+        Assert.Equal((BigInteger)300, resetResult.Value.Value.TotalTokens);
+        Assert.NotEqual(initial.Value.PeriodId, resetResult.Value.Value.PeriodId);
+
+        string existingEventKey = await ReadQuotaEventKeyAsync(
+            groupId,
+            "total_adjusted",
+            cancellationToken).ConfigureAwait(true);
+        NpgsqlDataSource dataSource = services.GetRequiredService<NpgsqlDataSource>();
+        PostgresQuotaRepository repository = new(dataSource);
+        IUnitOfWorkFactory unitOfWorkFactory =
+            services.GetRequiredService<IUnitOfWorkFactory>();
+        IUnitOfWork unitOfWork = await unitOfWorkFactory
+            .BeginAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+
+        QuotaWriteResult keyReuse = await repository.AdjustTotalAsync(
+            new AdjustQuotaWrite(
+                groupId,
+                NewTotalTokens: 90,
+                ExpectedVersion: 1,
+                actorId,
+                EntityId.New(),
+                EntityId.New(),
+                existingEventKey,
+                exactReason.Trim()),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            QuotaWriteDisposition.IdempotencyConflict,
+            keyReuse.Disposition);
+
+        QuotaWriteResult recovered = await repository.AdjustTotalAsync(
+            new AdjustQuotaWrite(
+                groupId,
+                NewTotalTokens: 250,
+                ExpectedVersion: 3,
+                actorId,
+                EntityId.New(),
+                EntityId.New(),
+                $"quota-repository-recovered-{Guid.NewGuid():N}",
+                "savepoint recovered"),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Written, recovered.Disposition);
+        Assert.Equal(4, Assert.IsType<GroupQuotaResource>(recovered.After).Version);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(true);
+
+        Result<GroupQuotaView> final = await getQuota.ExecuteAsync(
+            new GetGroupQuotaQuery(actor, groupId),
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(final.IsSuccess, final.Error.Description);
+        Assert.Equal(4, final.Value.Version);
+        Assert.Equal((BigInteger)250, final.Value.TotalTokens);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task QuotaPeriodRepositoryMapsEveryDatabaseFailureAndKeepsItsUnitOfWorkUsable()
+    {
+        // Governing contracts: DEC-018 and database README sections 5/7 require
+        // stable CAS/idempotency dispositions and a short, recoverable PostgreSQL UoW.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId actorId = await SeedAdminActorAsync(
+            "quota-period-errors",
+            cancellationToken).ConfigureAwait(true);
+        GroupActor actor = new(actorId, GroupControlRole.Admin, TokenVersion: 1);
+        await using ServiceProvider services = BuildGroupServices();
+        ICreateGroupUseCase create = services.GetRequiredService<ICreateGroupUseCase>();
+        string suffix = Guid.NewGuid().ToString("N")[..12];
+        EntityId validGroupId = (await CreateGroupAsync(
+            create,
+            actor,
+            $"Quota errors valid {suffix}",
+            "recoverable quota repository failures",
+            totalTokens: 400,
+            cancellationToken).ConfigureAwait(true)).Value.Id;
+        EntityId archivedGroupId = (await CreateGroupAsync(
+            create,
+            actor,
+            $"Quota errors archived {suffix}",
+            "archived quota repository failures",
+            totalTokens: 400,
+            cancellationToken).ConfigureAwait(true)).Value.Id;
+        EntityId stalePeriodGroupId = (await CreateGroupAsync(
+            create,
+            actor,
+            $"Quota errors stale period {suffix}",
+            "stale-period quota repository failures",
+            totalTokens: 400,
+            cancellationToken).ConfigureAwait(true)).Value.Id;
+        await SetGroupLifecycleAsync(
+            archivedGroupId,
+            "archived",
+            cancellationToken).ConfigureAwait(true);
+        await SetCurrentPeriodStatusAsync(
+            stalePeriodGroupId,
+            "closed",
+            cancellationToken).ConfigureAwait(true);
+
+        NpgsqlDataSource dataSource = services.GetRequiredService<NpgsqlDataSource>();
+        PostgresQuotaRepository repository = new(dataSource);
+        IUnitOfWorkFactory unitOfWorkFactory =
+            services.GetRequiredService<IUnitOfWorkFactory>();
+        IUnitOfWork unitOfWork = await unitOfWorkFactory
+            .BeginAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        EntityId missingGroupId = EntityId.New();
+
+        QuotaWriteResult missingAdjust = await repository.AdjustTotalAsync(
+            AdjustWrite(missingGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.NotFound, missingAdjust.Disposition);
+        QuotaWriteResult missingReset = await repository.ResetAsync(
+            ResetWrite(missingGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.NotFound, missingReset.Disposition);
+
+        QuotaWriteResult archivedAdjust = await repository.AdjustTotalAsync(
+            AdjustWrite(archivedGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Archived, archivedAdjust.Disposition);
+        QuotaWriteResult archivedReset = await repository.ResetAsync(
+            ResetWrite(archivedGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Archived, archivedReset.Disposition);
+
+        QuotaWriteResult adjustVersion = await repository.AdjustTotalAsync(
+            AdjustWrite(validGroupId, actorId, expectedVersion: 99, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.VersionConflict, adjustVersion.Disposition);
+        Assert.Equal(1, adjustVersion.CurrentVersion);
+        QuotaWriteResult resetVersion = await repository.ResetAsync(
+            ResetWrite(validGroupId, actorId, expectedVersion: 99, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.VersionConflict, resetVersion.Disposition);
+        Assert.Equal(1, resetVersion.CurrentVersion);
+
+        string initializedEventKey = await ReadQuotaEventKeyAsync(
+            validGroupId,
+            "initialized",
+            cancellationToken).ConfigureAwait(true);
+        QuotaWriteResult adjustKeyReuse = await repository.AdjustTotalAsync(
+            AdjustWrite(
+                validGroupId,
+                actorId,
+                expectedVersion: 1,
+                totalTokens: 300,
+                eventKey: initializedEventKey),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            QuotaWriteDisposition.IdempotencyConflict,
+            adjustKeyReuse.Disposition);
+        QuotaWriteResult resetKeyReuse = await repository.ResetAsync(
+            ResetWrite(
+                validGroupId,
+                actorId,
+                expectedVersion: 1,
+                totalTokens: 300,
+                eventKey: initializedEventKey),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            QuotaWriteDisposition.IdempotencyConflict,
+            resetKeyReuse.Disposition);
+
+        QuotaWriteResult stalePeriodAdjust = await repository.AdjustTotalAsync(
+            AdjustWrite(stalePeriodGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Conflict, stalePeriodAdjust.Disposition);
+        QuotaWriteResult stalePeriodReset = await repository.ResetAsync(
+            ResetWrite(stalePeriodGroupId, actorId, expectedVersion: 1, totalTokens: 300),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Conflict, stalePeriodReset.Disposition);
+        await SetCurrentPeriodStatusAsync(
+            stalePeriodGroupId,
+            "current",
+            cancellationToken).ConfigureAwait(true);
+
+        PostgresException invalidAdjust = await Assert.ThrowsAsync<PostgresException>(
+            () => repository.AdjustTotalAsync(
+                AdjustWrite(validGroupId, actorId, expectedVersion: 1, totalTokens: 0),
+                unitOfWork.Context,
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        Assert.Equal("P0001", invalidAdjust.SqlState);
+        Assert.Equal("invalid_quota_total_adjustment", invalidAdjust.MessageText);
+        PostgresException invalidReset = await Assert.ThrowsAsync<PostgresException>(
+            () => repository.ResetAsync(
+                ResetWrite(validGroupId, actorId, expectedVersion: 1, totalTokens: 0),
+                unitOfWork.Context,
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        Assert.Equal("P0001", invalidReset.SqlState);
+        Assert.Equal("invalid_quota_reset", invalidReset.MessageText);
+
+        QuotaWriteResult recoveredAdjust = await repository.AdjustTotalAsync(
+            AdjustWrite(validGroupId, actorId, expectedVersion: 1, totalTokens: 350),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Written, recoveredAdjust.Disposition);
+        Assert.Equal(2, recoveredAdjust.CurrentVersion);
+        QuotaWriteResult recoveredReset = await repository.ResetAsync(
+            ResetWrite(validGroupId, actorId, expectedVersion: 2, totalTokens: 500),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(QuotaWriteDisposition.Written, recoveredReset.Disposition);
+        Assert.Equal(3, recoveredReset.CurrentVersion);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(true);
+
+        GroupQuotaResource? persisted = await repository.GetCurrentAsync(
+            validGroupId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(3, Assert.IsType<GroupQuotaResource>(persisted).Version);
+        Assert.Null(await repository.GetCurrentAsync(
+            EntityId.New(),
+            cancellationToken).ConfigureAwait(true));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task QuotaPostgresAbiReadersEnforceTheirSignedRowCardinality()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        NpgsqlConnection connection = await fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable connectionLease =
+            connection.ConfigureAwait(false);
+
+        using (NpgsqlCommand empty = AdjustFunctionRowCommand(connection, rowCount: 0))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresQuotaAbiContract
+                    .ReadAdjustResultAsync(empty, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using (NpgsqlCommand canonical = AdjustFunctionRowCommand(connection, rowCount: 1))
+        {
+            PostgresQuotaAdjustFunctionRow row = await PostgresQuotaAbiContract
+                .ReadAdjustResultAsync(canonical, cancellationToken).ConfigureAwait(true);
+            Assert.Equal((BigInteger)100, row.TotalTokens);
+            Assert.Equal(2, row.QuotaVersion);
+        }
+
+        using (NpgsqlCommand multiple = AdjustFunctionRowCommand(connection, rowCount: 2))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresQuotaAbiContract
+                    .ReadAdjustResultAsync(multiple, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using (NpgsqlCommand empty = ResetFunctionRowCommand(connection, rowCount: 0))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresQuotaAbiContract
+                    .ReadResetResultAsync(empty, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using (NpgsqlCommand canonical = ResetFunctionRowCommand(connection, rowCount: 1))
+        {
+            PostgresQuotaResetFunctionRow row = await PostgresQuotaAbiContract
+                .ReadResetResultAsync(canonical, cancellationToken).ConfigureAwait(true);
+            Assert.Equal(2, row.PeriodNumber);
+            Assert.Equal((BigInteger)200, row.TotalTokens);
+        }
+
+        using (NpgsqlCommand multiple = ResetFunctionRowCommand(connection, rowCount: 2))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresQuotaAbiContract
+                    .ReadResetResultAsync(multiple, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using (NpgsqlCommand empty = SnapshotRowCommand(
+                   connection,
+                   rowCount: 0,
+                   status: "disabled"))
+        {
+            Assert.Null(await PostgresQuotaAbiContract
+                .ReadSnapshotAsync(empty, cancellationToken).ConfigureAwait(true));
+        }
+
+        using (NpgsqlCommand canonical = SnapshotRowCommand(
+                   connection,
+                   rowCount: 1,
+                   status: "disabled"))
+        {
+            GroupQuotaResource snapshot = Assert.IsType<GroupQuotaResource>(
+                await PostgresQuotaAbiContract
+                    .ReadSnapshotAsync(canonical, cancellationToken).ConfigureAwait(true));
+            Assert.Equal((BigInteger)100, snapshot.TotalTokens);
+            Assert.Equal(GroupPoolQuotaStatus.Disabled, snapshot.Status);
+        }
+
+        using (NpgsqlCommand multiple = SnapshotRowCommand(
+                   connection,
+                   rowCount: 2,
+                   status: "disabled"))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresQuotaAbiContract
+                    .ReadSnapshotAsync(multiple, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using NpgsqlCommand invalidStatus = SnapshotRowCommand(
+            connection,
+            rowCount: 1,
+            status: "contract_drift");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => PostgresQuotaAbiContract
+                .ReadSnapshotAsync(invalidStatus, cancellationToken)
+                .AsTask()).ConfigureAwait(true);
+
+        using NpgsqlCommand closedCurrentPeriod = SnapshotRowCommand(
+            connection,
+            rowCount: 1,
+            status: "disabled",
+            hasPeriodEnd: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => PostgresQuotaAbiContract
+                .ReadSnapshotAsync(closedCurrentPeriod, cancellationToken)
+                .AsTask()).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public void QuotaPostgresAbiBeforeStateParserRejectsNonCanonicalJson()
+    {
+        GroupQuotaResource canonical = PostgresQuotaAbiContract.ParseBeforeState(
+            BeforeStateJson(totalTokens: "100"));
+        Assert.Equal((BigInteger)100, canonical.TotalTokens);
+        Assert.Null(canonical.PeriodEndedAt);
+
+        DateTimeOffset endedAt = new(2026, 7, 31, 1, 2, 3, TimeSpan.Zero);
+        GroupQuotaResource closed = PostgresQuotaAbiContract.ParseBeforeState(
+            BeforeStateJson(totalTokens: "100", periodEndedAt: endedAt));
+        Assert.Equal(endedAt, closed.PeriodEndedAt);
+
+        Assert.Equal(
+            GroupPoolQuotaStatus.Active,
+            PostgresQuotaAbiContract.ParseStatus("active"));
+        Assert.Equal(
+            GroupPoolQuotaStatus.Exhausted,
+            PostgresQuotaAbiContract.ParseStatus("exhausted"));
+        Assert.Equal(
+            GroupPoolQuotaStatus.Disabled,
+            PostgresQuotaAbiContract.ParseStatus("disabled"));
+        Assert.Throws<InvalidOperationException>(
+            static () => PostgresQuotaAbiContract.ParseStatus("contract_drift"));
+        Assert.Throws<InvalidOperationException>(
+            static () => PostgresQuotaAbiContract.ParseBeforeState("[]"));
+        Assert.Throws<InvalidOperationException>(
+            () => PostgresQuotaAbiContract.ParseBeforeState(
+                BeforeStateJson(totalTokens: "100", status: "contract_drift")));
+        Assert.Throws<InvalidOperationException>(
+            () => PostgresQuotaAbiContract.ParseBeforeState(
+                BeforeStateJson(totalTokens: 100)));
+
+        object[] nonCanonicalTokenCounts =
+        [
+            string.Empty,
+            new string('9', 79),
+            "01",
+            "-1",
+            "a1",
+            "1a",
+        ];
+        foreach (object tokenCount in nonCanonicalTokenCounts)
+        {
+            Assert.Throws<InvalidOperationException>(
+                () => PostgresQuotaAbiContract.ParseBeforeState(
+                    BeforeStateJson(totalTokens: tokenCount)));
+        }
+
+        string maximumPrecisionTokenCount = new('9', 78);
+        GroupQuotaResource maximumPrecision =
+            PostgresQuotaAbiContract.ParseBeforeState(
+                BeforeStateJson(totalTokens: maximumPrecisionTokenCount));
+        Assert.Equal(
+            BigInteger.Parse(
+                maximumPrecisionTokenCount,
+                System.Globalization.CultureInfo.InvariantCulture),
+            maximumPrecision.TotalTokens);
+    }
+
+    [Fact]
+    public void QuotaPostgresAbiSnapshotValidatorRejectsEveryInvariantDrift()
+    {
+        GroupQuotaResource disabled = ValidQuotaSnapshot();
+        PostgresQuotaAbiContract.ValidateSnapshot(disabled);
+        PostgresQuotaAbiContract.ValidateSnapshot(disabled with
+        {
+            Status = GroupPoolQuotaStatus.Active,
+        });
+        PostgresQuotaAbiContract.ValidateSnapshot(disabled with
+        {
+            Status = GroupPoolQuotaStatus.Exhausted,
+            ConsumedTokens = 100,
+            RemainingTokens = BigInteger.Zero,
+        });
+
+        GroupQuotaResource[] invalidSnapshots =
+        [
+            disabled with { GroupId = default },
+            disabled with { PeriodId = default },
+            disabled with { TotalTokens = BigInteger.Zero },
+            disabled with { TotalTokens = new BigInteger(9_007_199_254_740_992L) },
+            disabled with { ConsumedTokens = BigInteger.MinusOne },
+            disabled with { ReservedTokens = BigInteger.MinusOne },
+            disabled with { RemainingTokens = 71 },
+            disabled with { OverageTokens = BigInteger.One },
+            disabled with { PeriodEndedAt = disabled.UpdatedAt },
+            disabled with { Version = 0 },
+            disabled with { UpdatedAt = disabled.PeriodStartedAt.AddTicks(-1) },
+            disabled with
+            {
+                Status = GroupPoolQuotaStatus.Active,
+                ConsumedTokens = 100,
+                RemainingTokens = BigInteger.Zero,
+            },
+            disabled with { Status = GroupPoolQuotaStatus.Exhausted },
+            disabled with { Status = (GroupPoolQuotaStatus)int.MaxValue },
+        ];
+        foreach (GroupQuotaResource invalid in invalidSnapshots)
+        {
+            Assert.Throws<InvalidOperationException>(
+                () => PostgresQuotaAbiContract.ValidateSnapshot(invalid));
+        }
+    }
+
+    [Fact]
+    public void QuotaPostgresAbiMutationValidatorsRejectEveryFunctionDrift()
+    {
+        DateTimeOffset startedAt = new(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        EntityId groupId = EntityId.New();
+        EntityId oldPeriodId = EntityId.New();
+        EntityId newPeriodId = EntityId.New();
+        GroupQuotaResource before = ValidQuotaSnapshot(
+            groupId,
+            oldPeriodId,
+            startedAt,
+            updatedAt: startedAt.AddMinutes(10),
+            version: 7);
+        GroupQuotaResource adjusted = before with
+        {
+            TotalTokens = 120,
+            RemainingTokens = 90,
+            Version = 8,
+            UpdatedAt = startedAt.AddMinutes(20),
+        };
+        AdjustQuotaWrite adjustWrite = new(
+            groupId,
+            NewTotalTokens: 120,
+            ExpectedVersion: 7,
+            EntityId.New(),
+            EntityId.New(),
+            EntityId.New(),
+            "quota-abi-adjust",
+            "exercise the signed adjust ABI");
+        PostgresQuotaAdjustFunctionRow adjustRow = new(
+            oldPeriodId,
+            TotalTokens: 120,
+            ConsumedTokens: 20,
+            ReservedTokens: 10,
+            RemainingTokens: 90,
+            QuotaVersion: 8,
+            BeforeState: "{}");
+        PostgresQuotaAbiContract.ValidateAdjustResult(
+            adjustWrite,
+            before,
+            adjusted,
+            adjustRow);
+        Assert.Throws<InvalidOperationException>(
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before: null,
+                adjusted,
+                adjustRow));
+
+        Action[] adjustDrifts =
+        [
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { GroupId = EntityId.New() },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted with { GroupId = EntityId.New() },
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { Version = 6 },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted with { Version = 9 },
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { PeriodId = EntityId.New() },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { ConsumedTokens = 21, RemainingTokens = 69 },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { ReservedTokens = 11, RemainingTokens = 69 },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before with { PeriodStartedAt = startedAt.AddMinutes(-1) },
+                adjusted,
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted with { UpdatedAt = startedAt.AddMinutes(5) },
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { PeriodId = EntityId.New() }),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { TotalTokens = 119 }),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted with { TotalTokens = 121, RemainingTokens = 91 },
+                adjustRow),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { ConsumedTokens = 21 }),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { ReservedTokens = 11 }),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { RemainingTokens = 89 }),
+            () => PostgresQuotaAbiContract.ValidateAdjustResult(
+                adjustWrite,
+                before,
+                adjusted,
+                adjustRow with { QuotaVersion = 9 }),
+        ];
+        foreach (Action drift in adjustDrifts)
+        {
+            Assert.Throws<InvalidOperationException>(drift);
+        }
+
+        GroupQuotaResource reset = before with
+        {
+            PeriodId = newPeriodId,
+            TotalTokens = 200,
+            ConsumedTokens = BigInteger.Zero,
+            ReservedTokens = BigInteger.Zero,
+            RemainingTokens = 200,
+            OverageTokens = BigInteger.Zero,
+            PeriodStartedAt = startedAt.AddMinutes(1),
+            Version = 8,
+            UpdatedAt = startedAt.AddMinutes(20),
+        };
+        ResetQuotaWrite resetWrite = new(
+            groupId,
+            newPeriodId,
+            TotalTokens: 200,
+            ExpectedVersion: 7,
+            EntityId.New(),
+            EntityId.New(),
+            EntityId.New(),
+            "quota-abi-reset",
+            "exercise the signed reset ABI");
+        PostgresQuotaResetFunctionRow resetRow = new(
+            newPeriodId,
+            PeriodNumber: 2,
+            TotalTokens: 200,
+            ConsumedTokens: BigInteger.Zero,
+            ReservedTokens: BigInteger.Zero,
+            RemainingTokens: 200,
+            QuotaVersion: 8,
+            BeforeState: "{}");
+        PostgresQuotaAbiContract.ValidateResetResult(
+            resetWrite,
+            before,
+            reset,
+            resetRow);
+        Assert.Throws<InvalidOperationException>(
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before: null,
+                reset,
+                resetRow));
+
+        Action[] resetDrifts =
+        [
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before with { GroupId = EntityId.New() },
+                reset,
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { GroupId = EntityId.New() },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before with { Version = 6 },
+                reset,
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { Version = 9 },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { PeriodId = oldPeriodId },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { PeriodId = EntityId.New() },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { PeriodId = EntityId.New() }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { PeriodNumber = 0 }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { TotalTokens = 199 }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { TotalTokens = 201, RemainingTokens = 201 },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { ConsumedTokens = BigInteger.One }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { ReservedTokens = BigInteger.One }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { RemainingTokens = 199 }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { ConsumedTokens = BigInteger.One, RemainingTokens = 199 },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { ReservedTokens = BigInteger.One, RemainingTokens = 199 },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset,
+                resetRow with { QuotaVersion = 9 }),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { PeriodStartedAt = startedAt.AddMinutes(-1) },
+                resetRow),
+            () => PostgresQuotaAbiContract.ValidateResetResult(
+                resetWrite,
+                before,
+                reset with { UpdatedAt = startedAt.AddMinutes(5) },
+                resetRow),
+        ];
+        foreach (Action drift in resetDrifts)
+        {
+            Assert.Throws<InvalidOperationException>(drift);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task GroupPostgresAbiContractRejectsHostileRowsAndCodes()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        NpgsqlConnection connection = await fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable connectionLease =
+            connection.ConfigureAwait(false);
+
+        using (NpgsqlCommand empty = GroupFunctionRowCommand(
+                   connection,
+                   rowCount: 0,
+                   nullOptionals: false))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresGroupAbiContract
+                    .ReadFunctionResultAsync(empty, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        using (NpgsqlCommand canonical = GroupFunctionRowCommand(
+                   connection,
+                   rowCount: 1,
+                   nullOptionals: false))
+        {
+            PostgresGroupFunctionRow row = await PostgresGroupAbiContract
+                .ReadFunctionResultAsync(canonical, cancellationToken).ConfigureAwait(true);
+            Assert.Equal("updated", row.Disposition);
+            Assert.True(row.WasChanged);
+            Assert.Equal("{}", row.BeforeState);
+            Assert.Equal(7, row.CurrentVersion);
+        }
+
+        using (NpgsqlCommand nullOptionals = GroupFunctionRowCommand(
+                   connection,
+                   rowCount: 1,
+                   nullOptionals: true))
+        {
+            PostgresGroupFunctionRow row = await PostgresGroupAbiContract
+                .ReadFunctionResultAsync(nullOptionals, cancellationToken).ConfigureAwait(true);
+            Assert.Null(row.BeforeState);
+            Assert.Null(row.CurrentVersion);
+        }
+
+        using (NpgsqlCommand multiple = GroupFunctionRowCommand(
+                   connection,
+                   rowCount: 2,
+                   nullOptionals: false))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PostgresGroupAbiContract
+                    .ReadFunctionResultAsync(multiple, cancellationToken)
+                    .AsTask()).ConfigureAwait(true);
+        }
+
+        Assert.Equal(
+            GroupWriteDisposition.Written,
+            PostgresGroupAbiContract.MapUpdateDisposition("updated", isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.NotFound,
+            PostgresGroupAbiContract.MapUpdateDisposition("not_found", isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.VersionConflict,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "version_conflict",
+                isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.LifecycleConflict,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "invalid_transition",
+                isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.ActivationNotReady,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "invalid_transition",
+                isActivation: true));
+        Assert.Equal(
+            GroupWriteDisposition.ArchiveBlocked,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "archive_blocked",
+                isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.ValidationFailed,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "validation_failed",
+                isActivation: false));
+        Assert.Equal(
+            GroupWriteDisposition.ActivationNotReady,
+            PostgresGroupAbiContract.MapUpdateDisposition(
+                "validation_failed",
+                isActivation: true));
+        Assert.Throws<InvalidOperationException>(
+            static () => PostgresGroupAbiContract.MapUpdateDisposition(
+                "contract_drift",
+                isActivation: false));
+
+        Assert.Equal(
+            GroupLifecycle.Disabled,
+            PostgresGroupAbiContract.ParseLifecycle("disabled"));
+        Assert.Equal(
+            GroupLifecycle.Active,
+            PostgresGroupAbiContract.ParseLifecycle("active"));
+        Assert.Equal(
+            GroupLifecycle.Archived,
+            PostgresGroupAbiContract.ParseLifecycle("archived"));
+        Assert.Throws<InvalidOperationException>(
+            static () => PostgresGroupAbiContract.ParseLifecycle("contract_drift"));
+
+        Assert.Equal(
+            "disabled",
+            PostgresGroupAbiContract.LifecycleCode(GroupLifecycle.Disabled));
+        Assert.Equal(
+            "active",
+            PostgresGroupAbiContract.LifecycleCode(GroupLifecycle.Active));
+        Assert.Equal(
+            "archived",
+            PostgresGroupAbiContract.LifecycleCode(GroupLifecycle.Archived));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            static () => PostgresGroupAbiContract.LifecycleCode(
+                (GroupLifecycle)int.MaxValue));
+
+        Assert.Equal(
+            GroupPoolQuotaStatus.Active,
+            PostgresGroupAbiContract.ParseQuotaStatus("active"));
+        Assert.Equal(
+            GroupPoolQuotaStatus.Exhausted,
+            PostgresGroupAbiContract.ParseQuotaStatus("exhausted"));
+        Assert.Equal(
+            GroupPoolQuotaStatus.Disabled,
+            PostgresGroupAbiContract.ParseQuotaStatus("disabled"));
+        Assert.Throws<InvalidOperationException>(
+            static () => PostgresGroupAbiContract.ParseQuotaStatus("contract_drift"));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
     public async Task FunctionFailuresRollbackSavepointsAndContractDriftFailsClosed()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
@@ -540,48 +1466,6 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
         Assert.Throws<InvalidOperationException>(
             static () => PostgresGroupRepository.MapCreateDisposition("contract_drift"));
 
-        Assert.IsType<InvalidOperationException>(InvokePrivateStaticFailure(
-            typeof(PostgresGroupRepository),
-            "MapDisposition",
-            "contract_drift",
-            false));
-        Assert.IsType<InvalidOperationException>(InvokePrivateStaticFailure(
-            typeof(PostgresGroupRepository),
-            "ParseLifecycle",
-            "contract_drift"));
-        Assert.IsType<ArgumentOutOfRangeException>(InvokePrivateStaticFailure(
-            typeof(PostgresGroupRepository),
-            "LifecycleCode",
-            (GroupLifecycle)int.MaxValue));
-        Assert.IsType<InvalidOperationException>(InvokePrivateStaticFailure(
-            typeof(PostgresGroupPoolSummaryReader),
-            "ParseLifecycle",
-            "contract_drift"));
-        Assert.IsType<InvalidOperationException>(InvokePrivateStaticFailure(
-            typeof(PostgresGroupPoolSummaryReader),
-            "ParseQuotaStatus",
-            "contract_drift"));
-
-        NpgsqlConnection connection = await dataSource
-            .OpenConnectionAsync(cancellationToken).ConfigureAwait(true);
-        await using ConfiguredAsyncDisposable connectionLease =
-            connection.ConfigureAwait(false);
-        using NpgsqlCommand noResult = connection.CreateCommand();
-        noResult.CommandText = """
-            SELECT
-                'updated'::text,
-                false,
-                NULL::text,
-                NULL::bigint
-            WHERE false;
-            """;
-        Task noResultTask = InvokePrivateValueTaskAsTask(
-            typeof(PostgresGroupRepository),
-            "ReadFunctionResultAsync",
-            noResult,
-            cancellationToken);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => noResultTask)
-            .ConfigureAwait(true);
     }
 
     private ServiceProvider BuildGroupServices()
@@ -701,6 +1585,186 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
     private static string Key(string purpose) =>
         $"group-repository-{purpose}-{Guid.NewGuid():N}";
 
+    private static NpgsqlCommand AdjustFunctionRowCommand(
+        NpgsqlConnection connection,
+        int rowCount)
+    {
+        NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                $1::uuid,
+                100::numeric,
+                20::numeric,
+                10::numeric,
+                70::numeric,
+                2::bigint,
+                '{}'::text
+            FROM generate_series(1, CAST($2 AS integer));
+            """;
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(rowCount);
+        return command;
+    }
+
+    private static NpgsqlCommand GroupFunctionRowCommand(
+        NpgsqlConnection connection,
+        int rowCount,
+        bool nullOptionals)
+    {
+        NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                'updated'::text,
+                true,
+                CASE
+                    WHEN $2 THEN NULL::text
+                    ELSE '{}'::text
+                END,
+                CASE
+                    WHEN $2 THEN NULL::bigint
+                    ELSE 7::bigint
+                END
+            FROM generate_series(1, CAST($1 AS integer));
+            """;
+        command.Parameters.AddWithValue(rowCount);
+        command.Parameters.AddWithValue(nullOptionals);
+        return command;
+    }
+
+    private static NpgsqlCommand ResetFunctionRowCommand(
+        NpgsqlConnection connection,
+        int rowCount)
+    {
+        NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                $1::uuid,
+                2::bigint,
+                200::numeric,
+                0::numeric,
+                0::numeric,
+                200::numeric,
+                3::bigint,
+                '{}'::text
+            FROM generate_series(1, CAST($2 AS integer));
+            """;
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(rowCount);
+        return command;
+    }
+
+    private static NpgsqlCommand SnapshotRowCommand(
+        NpgsqlConnection connection,
+        int rowCount,
+        string status,
+        bool hasPeriodEnd = false)
+    {
+        NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                $1::uuid,
+                $2::uuid,
+                CAST($3 AS text),
+                100::numeric,
+                20::numeric,
+                10::numeric,
+                70::numeric,
+                0::numeric,
+                '2026-07-31T00:00:00Z'::timestamptz,
+                CASE
+                    WHEN $5 THEN '2026-07-31T00:00:30Z'::timestamptz
+                    ELSE NULL::timestamptz
+                END,
+                1::bigint,
+                '2026-07-31T00:01:00Z'::timestamptz
+            FROM generate_series(1, CAST($4 AS integer));
+            """;
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(Guid.CreateVersion7());
+        command.Parameters.AddWithValue(status);
+        command.Parameters.AddWithValue(rowCount);
+        command.Parameters.AddWithValue(hasPeriodEnd);
+        return command;
+    }
+
+    private static string BeforeStateJson(
+        object totalTokens,
+        string status = "disabled",
+        object? periodEndedAt = null) => JsonSerializer.Serialize(
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["group_id"] = Guid.CreateVersion7(),
+                ["period_id"] = Guid.CreateVersion7(),
+                ["status"] = status,
+                ["total_tokens"] = totalTokens,
+                ["consumed_tokens"] = "20",
+                ["reserved_tokens"] = "10",
+                ["remaining_tokens"] = "70",
+                ["overage_tokens"] = "0",
+                ["period_started_at"] =
+                    new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero),
+                ["period_ended_at"] = periodEndedAt,
+                ["version"] = 1,
+                ["updated_at"] =
+                    new DateTimeOffset(2026, 7, 31, 0, 1, 0, TimeSpan.Zero),
+            });
+
+    private static GroupQuotaResource ValidQuotaSnapshot(
+        EntityId? groupId = null,
+        EntityId? periodId = null,
+        DateTimeOffset? startedAt = null,
+        DateTimeOffset? updatedAt = null,
+        long version = 1)
+    {
+        DateTimeOffset actualStartedAt = startedAt
+            ?? new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        return new GroupQuotaResource(
+            groupId ?? EntityId.New(),
+            periodId ?? EntityId.New(),
+            GroupPoolQuotaStatus.Disabled,
+            TotalTokens: 100,
+            ConsumedTokens: 20,
+            ReservedTokens: 10,
+            RemainingTokens: 70,
+            OverageTokens: BigInteger.Zero,
+            actualStartedAt,
+            PeriodEndedAt: null,
+            version,
+            updatedAt ?? actualStartedAt.AddMinutes(1));
+    }
+
+    private static AdjustQuotaWrite AdjustWrite(
+        EntityId groupId,
+        EntityId actorId,
+        long expectedVersion,
+        long totalTokens,
+        string? eventKey = null) => new(
+            groupId,
+            totalTokens,
+            expectedVersion,
+            actorId,
+            EntityId.New(),
+            EntityId.New(),
+            eventKey ?? $"quota-adjust-{Guid.NewGuid():N}",
+            "quota repository database failure coverage");
+
+    private static ResetQuotaWrite ResetWrite(
+        EntityId groupId,
+        EntityId actorId,
+        long expectedVersion,
+        long totalTokens,
+        string? eventKey = null,
+        EntityId? newPeriodId = null) => new(
+            groupId,
+            newPeriodId ?? EntityId.New(),
+            totalTokens,
+            expectedVersion,
+            actorId,
+            EntityId.New(),
+            EntityId.New(),
+            eventKey ?? $"quota-reset-{Guid.NewGuid():N}",
+            "quota repository database failure coverage");
+
     private static void AssertFailure<T>(
         Result<T> result,
         string code,
@@ -728,6 +1792,25 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
             .ExecuteScalarAsync(cancellationToken).ConfigureAwait(true));
     }
 
+    private async ValueTask<string> ReadQuotaEventKeyAsync(
+        EntityId groupId,
+        string eventType,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT idempotency_key
+            FROM public.group_quota_events
+            WHERE group_id = $1
+              AND event_type = $2
+            ORDER BY event_sequence DESC
+            LIMIT 1;
+            """);
+        command.Parameters.AddWithValue(groupId.Value);
+        command.Parameters.AddWithValue(eventType);
+        return Assert.IsType<string>(await command
+            .ExecuteScalarAsync(cancellationToken).ConfigureAwait(true));
+    }
+
     private async ValueTask<bool> GroupExistsAsync(
         EntityId groupId,
         CancellationToken cancellationToken)
@@ -742,38 +1825,6 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
         command.Parameters.AddWithValue(groupId.Value);
         return Assert.IsType<bool>(await command
             .ExecuteScalarAsync(cancellationToken).ConfigureAwait(true));
-    }
-
-    private static Exception InvokePrivateStaticFailure(
-        Type declaringType,
-        string methodName,
-        params object?[] arguments)
-    {
-        MethodInfo? method = declaringType.GetMethod(
-            methodName,
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-        TargetInvocationException invocation = Assert.Throws<TargetInvocationException>(
-            () => method.Invoke(null, arguments));
-        return Assert.IsAssignableFrom<Exception>(invocation.InnerException);
-    }
-
-    private static Task InvokePrivateValueTaskAsTask(
-        Type declaringType,
-        string methodName,
-        params object?[] arguments)
-    {
-        MethodInfo? method = declaringType.GetMethod(
-            methodName,
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-        object? awaitable = method.Invoke(null, arguments);
-        Assert.NotNull(awaitable);
-        MethodInfo? asTask = awaitable.GetType().GetMethod(
-            nameof(ValueTask.AsTask),
-            BindingFlags.Public | BindingFlags.Instance);
-        Assert.NotNull(asTask);
-        return Assert.IsAssignableFrom<Task>(asTask.Invoke(awaitable, null));
     }
 
     private async ValueTask<string> ReadIdempotencyTerminalAsync(
@@ -933,6 +1984,53 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
             NpgsqlDbType = NpgsqlDbType.Numeric,
             Value = (BigInteger)consumedTokens,
         });
+        Assert.Equal(
+            1,
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    private async ValueTask SetGroupLifecycleAsync(
+        EntityId groupId,
+        string lifecycle,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+            UPDATE public.groups
+            SET status = $2,
+                deleted_at = CASE
+                    WHEN $2 = 'archived' THEN clock_timestamp()
+                    ELSE NULL
+                END,
+                updated_at = clock_timestamp()
+            WHERE id = $1;
+            """);
+        command.Parameters.AddWithValue(groupId.Value);
+        command.Parameters.AddWithValue(lifecycle);
+        Assert.Equal(
+            1,
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true));
+    }
+
+    private async ValueTask SetCurrentPeriodStatusAsync(
+        EntityId groupId,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+            UPDATE public.group_quota_periods AS period
+            SET status = $2,
+                closed_at = CASE
+                    WHEN $2 = 'closed' THEN clock_timestamp()
+                    ELSE NULL
+                END,
+                updated_at = clock_timestamp()
+            FROM public.group_token_quotas AS quota
+            WHERE quota.group_id = $1
+              AND period.id = quota.current_period_id
+              AND period.group_id = quota.group_id;
+            """);
+        command.Parameters.AddWithValue(groupId.Value);
+        command.Parameters.AddWithValue(status);
         Assert.Equal(
             1,
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(true));

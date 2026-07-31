@@ -272,7 +272,7 @@ public sealed partial class PostgresMigrationTests
                     '01900000-0000-7000-8000-00000000d000',
                     '01900000-0000-7000-8000-00000000d010',
                     '01900000-0000-7000-8000-00000000d016',
-                    'M3-E1 Template', 'revoked',
+                    'M3-E1 Template', 'active',
                     clock_timestamp() - interval '1 day',
                     clock_timestamp() + interval '30 days',
                     '01900000-0000-7000-8000-00000000d000',
@@ -348,10 +348,56 @@ public sealed partial class PostgresMigrationTests
             cancellationToken).ConfigureAwait(false);
         AssertM1E4Mutation(activatedGroup, "updated", true, 2);
 
+        // DEC-012: a Subscription renewal must not behave like a Group period
+        // reset. Exercise the production Subscription entry point, then compare
+        // every identity/version field that defines the canonical current period.
+        Guid periodGroupId = new("01900000-0000-7000-8000-00000000d010");
+        M3E1QuotaPeriodIdentity beforeSubscriptionRenewal =
+            await ReadM3E1QuotaPeriodIdentityAsync(
+                connection,
+                periodGroupId,
+                cancellationToken).ConfigureAwait(false);
+        M1E4Mutation renewedSubscription = await ExecuteM1E4MutationAsync(
+            connection,
+            null,
+            """
+            SELECT disposition, was_changed, before_state::text, current_version
+            FROM public.poolai_subscription_update(
+                '01900000-0000-7000-8000-00000000d017', 1,
+                false, NULL, true, clock_timestamp() + interval '60 days',
+                NULL, false,
+                '01900000-0000-7000-8000-00000000d000',
+                'DEC-012 subscription renewal');
+            """,
+            cancellationToken).ConfigureAwait(false);
+        AssertM1E4Mutation(renewedSubscription, "updated", true, 2);
+        Assert.Equal(
+            beforeSubscriptionRenewal,
+            await ReadM3E1QuotaPeriodIdentityAsync(
+                connection,
+                periodGroupId,
+                cancellationToken).ConfigureAwait(false));
+
+        // Restore the fixture's revoked Subscription through the same production
+        // entry point so the later Group archive assertion keeps its original scope.
+        M1E4Mutation revokedSubscription = await ExecuteM1E4MutationAsync(
+            connection,
+            null,
+            """
+            SELECT disposition, was_changed, before_state::text, current_version
+            FROM public.poolai_subscription_update(
+                '01900000-0000-7000-8000-00000000d017', 2,
+                false, NULL, false, NULL, 'revoked', false,
+                '01900000-0000-7000-8000-00000000d000',
+                'restore M3-E1 archive fixture');
+            """,
+            cancellationToken).ConfigureAwait(false);
+        AssertM1E4Mutation(revokedSubscription, "updated", true, 3);
+
         M3E1QuotaMutation adjusted = await ExecuteM3E1AdjustmentAsync(
             connection,
             null,
-            new Guid("01900000-0000-7000-8000-00000000d010"),
+            periodGroupId,
             90,
             1,
             new Guid("01900000-0000-7000-8000-00000000d020"),
@@ -1183,6 +1229,45 @@ public sealed partial class PostgresMigrationTests
         return result;
     }
 
+    private static async ValueTask<M3E1QuotaPeriodIdentity>
+        ReadM3E1QuotaPeriodIdentityAsync(
+            NpgsqlConnection connection,
+            Guid groupId,
+            CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                quota.current_period_id,
+                quota.version,
+                current_period.id,
+                current_period.version,
+                (
+                    SELECT count(*)
+                    FROM public.group_quota_periods AS period
+                    WHERE period.group_id = quota.group_id
+                )
+            FROM public.group_token_quotas AS quota
+            JOIN public.group_quota_periods AS current_period
+              ON current_period.id = quota.current_period_id
+             AND current_period.group_id = quota.group_id
+            WHERE quota.group_id = $1;
+            """;
+        command.Parameters.AddWithValue(groupId);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        M3E1QuotaPeriodIdentity result = new(
+            reader.GetGuid(0),
+            reader.GetInt64(1),
+            reader.GetGuid(2),
+            reader.GetInt64(3),
+            reader.GetInt64(4));
+        Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return result;
+    }
+
     private static void AssertM3E1BeforeState(
         string json,
         Guid expectedGroupId,
@@ -1234,4 +1319,11 @@ public sealed partial class PostgresMigrationTests
     private readonly record struct M3E1QuotaMutation(
         string Result,
         string BeforeState);
+
+    private sealed record M3E1QuotaPeriodIdentity(
+        Guid QuotaCurrentPeriodId,
+        long QuotaVersion,
+        Guid CurrentPeriodId,
+        long CurrentPeriodVersion,
+        long PeriodCount);
 }

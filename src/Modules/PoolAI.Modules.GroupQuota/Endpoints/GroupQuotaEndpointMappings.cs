@@ -35,6 +35,17 @@ public static class GroupQuotaEndpointMappings
         groups.MapMethods("/{groupId:guid}", [HttpMethods.Patch], UpdateGroupAsync)
             .RequireAuthorization(RequireAdmin)
             .WithName("adminUpdateGroup");
+        groups.MapGet("/{groupId:guid}/quota", GetGroupQuotaAsync)
+            .RequireAuthorization(RequireAnyReadRole)
+            .WithName("adminGetGroupQuota");
+        // All four canonical roles reach the application Policy so rejected
+        // mutation attempts can be audited as required by AC-004.
+        groups.MapPost("/{groupId:guid}/quota/adjust", AdjustGroupQuotaAsync)
+            .RequireAuthorization(RequireAnySystemRole)
+            .WithName("adminAdjustGroupQuota");
+        groups.MapPost("/{groupId:guid}/quota/reset", ResetGroupQuotaAsync)
+            .RequireAuthorization(RequireAnySystemRole)
+            .WithName("adminResetGroupQuota");
         return endpoints;
     }
 
@@ -43,6 +54,9 @@ public static class GroupQuotaEndpointMappings
 
     private static void RequireAnyReadRole(AuthorizationPolicyBuilder policy) =>
         policy.RequireAuthenticatedUser().RequireRole("admin", "operator", "auditor");
+
+    private static void RequireAnySystemRole(AuthorizationPolicyBuilder policy) =>
+        policy.RequireAuthenticatedUser().RequireRole("admin", "operator", "auditor", "user");
 
     private static async Task<IResult> ListGroupsAsync(
         HttpContext context,
@@ -116,10 +130,36 @@ public static class GroupQuotaEndpointMappings
         return Results.Ok(GroupQuotaHttp.ToContract(result.Value));
     }
 
+    private static async Task<IResult> GetGroupQuotaAsync(
+        HttpContext context,
+        IGetGroupQuotaUseCase useCase,
+        Guid groupId)
+    {
+        if (!GroupQuotaHttp.TryGetEntityId(
+                context,
+                groupId,
+                out EntityId entityId,
+                out IResult? failure))
+        {
+            return failure!;
+        }
+
+        Result<GroupQuotaView> result = await useCase.ExecuteAsync(
+            new GetGroupQuotaQuery(GroupQuotaHttp.RequireActor(context), entityId),
+            context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return GroupQuotaHttp.FromError(context, result.Error);
+        }
+
+        context.Response.Headers.ETag = GroupQuotaHttp.ETag(result.Value.Version);
+        return Results.Ok(GroupQuotaHttp.ToContract(result.Value));
+    }
+
     private static async Task<IResult> CreateGroupAsync(
         HttpContext context,
         ICreateGroupUseCase useCase,
-        GroupCreateRequest request)
+        JsonElement request)
     {
         IResult? failure = GroupQuotaHttp.RequireContentType(context, "application/json");
         if (failure is not null)
@@ -127,9 +167,10 @@ public static class GroupQuotaEndpointMappings
             return failure;
         }
 
-        IReadOnlyDictionary<string, IReadOnlyList<string>> errors =
-            GroupQuotaHttp.Validate(request);
-        if (errors.Count != 0)
+        if (!GroupQuotaHttp.TryParseGroupCreateRequest(
+                request,
+                out GroupQuotaHttp.ParsedGroupCreateRequest? parsed,
+                out IReadOnlyDictionary<string, IReadOnlyList<string>> errors))
         {
             return GroupQuotaHttp.ValidationProblem(context, errors);
         }
@@ -147,9 +188,9 @@ public static class GroupQuotaEndpointMappings
                 GroupQuotaHttp.RequestId(context),
                 GroupQuotaHttp.RequireActor(context),
                 idempotencyKey!,
-                request.Name,
-                request.Description.HasValue ? request.Description.Value : null,
-                request.TotalTokens,
+                parsed!.Name,
+                parsed.Description,
+                parsed.TotalTokens,
                 GroupQuotaHttp.RemoteIp(context),
                 GroupQuotaHttp.UserAgent(context)),
             context.RequestAborted).ConfigureAwait(false);
@@ -304,6 +345,175 @@ public static class GroupQuotaEndpointMappings
         }
 
         GroupCommandOutcome outcome = result.Value;
+        context.Response.Headers.ETag = outcome.ETag;
+        return Results.Json(
+            GroupQuotaHttp.ToContract(outcome.Value),
+            statusCode: outcome.StatusCode);
+    }
+
+    private static async Task<IResult> AdjustGroupQuotaAsync(
+        HttpContext context,
+        IAuthorizeQuotaMutationUseCase authorizationUseCase,
+        IAdjustGroupQuotaUseCase useCase,
+        Guid groupId)
+    {
+        IResult? failure;
+        if (!GroupQuotaHttp.TryGetEntityId(
+                context,
+                groupId,
+                out EntityId entityId,
+                out failure))
+        {
+            return failure!;
+        }
+
+        failure = await AuthorizeQuotaMutationAsync(
+            context,
+            authorizationUseCase,
+            entityId,
+            QuotaMutationOperation.AdjustTotal).ConfigureAwait(false);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        GroupQuotaHttp.QuotaMutationRequestReadResult request =
+            await GroupQuotaHttp.ReadQuotaMutationRequestAsync(
+                context,
+                "new_total_tokens").ConfigureAwait(false);
+        if (request.Failure is not null)
+        {
+            return request.Failure;
+        }
+
+        if (!GroupQuotaHttp.TryGetIdempotencyKey(
+                context,
+                out string? idempotencyKey,
+                out failure)
+            || !GroupQuotaHttp.TryGetExpectedVersion(
+                context,
+                out long expectedVersion,
+                out failure))
+        {
+            return failure!;
+        }
+
+        Result<GroupQuotaCommandOutcome> result = await useCase.ExecuteAsync(
+            new AdjustGroupQuotaCommand(
+                GroupQuotaHttp.RequestId(context),
+                GroupQuotaHttp.RequireActor(context),
+                idempotencyKey!,
+                entityId,
+                expectedVersion,
+                request.Request!.TotalTokens,
+                request.Request.Reason,
+                GroupQuotaHttp.RemoteIp(context),
+                GroupQuotaHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        return QuotaMutationResult(context, result);
+    }
+
+    private static async Task<IResult> ResetGroupQuotaAsync(
+        HttpContext context,
+        IAuthorizeQuotaMutationUseCase authorizationUseCase,
+        IResetGroupQuotaUseCase useCase,
+        Guid groupId)
+    {
+        IResult? failure;
+        if (!GroupQuotaHttp.TryGetEntityId(
+                context,
+                groupId,
+                out EntityId entityId,
+                out failure))
+        {
+            return failure!;
+        }
+
+        failure = await AuthorizeQuotaMutationAsync(
+            context,
+            authorizationUseCase,
+            entityId,
+            QuotaMutationOperation.ResetPeriod).ConfigureAwait(false);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        GroupQuotaHttp.QuotaMutationRequestReadResult request =
+            await GroupQuotaHttp.ReadQuotaMutationRequestAsync(
+                context,
+                "total_tokens").ConfigureAwait(false);
+        if (request.Failure is not null)
+        {
+            return request.Failure;
+        }
+
+        if (!GroupQuotaHttp.TryGetIdempotencyKey(
+                context,
+                out string? idempotencyKey,
+                out failure)
+            || !GroupQuotaHttp.TryGetExpectedVersion(
+                context,
+                out long expectedVersion,
+                out failure))
+        {
+            return failure!;
+        }
+
+        Result<GroupQuotaCommandOutcome> result = await useCase.ExecuteAsync(
+            new ResetGroupQuotaCommand(
+                GroupQuotaHttp.RequestId(context),
+                GroupQuotaHttp.RequireActor(context),
+                idempotencyKey!,
+                entityId,
+                expectedVersion,
+                request.Request!.TotalTokens,
+                request.Request.Reason,
+                GroupQuotaHttp.RemoteIp(context),
+                GroupQuotaHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        return QuotaMutationResult(context, result);
+    }
+
+    private static async ValueTask<IResult?> AuthorizeQuotaMutationAsync(
+        HttpContext context,
+        IAuthorizeQuotaMutationUseCase useCase,
+        EntityId groupId,
+        QuotaMutationOperation operation)
+    {
+        Result<bool> authorization = await useCase.ExecuteAsync(
+            new AuthorizeQuotaMutationCommand(
+                GroupQuotaHttp.RequestId(context),
+                GroupQuotaHttp.RequireActor(context),
+                groupId,
+                operation,
+                GroupQuotaHttp.RemoteIp(context),
+                GroupQuotaHttp.UserAgent(context)),
+            context.RequestAborted).ConfigureAwait(false);
+        if (authorization.IsFailure)
+        {
+            return GroupQuotaHttp.FromError(context, authorization.Error);
+        }
+
+        if (!authorization.Value)
+        {
+            throw new InvalidOperationException(
+                "The quota-mutation authorization result is invalid.");
+        }
+
+        return null;
+    }
+
+    private static IResult QuotaMutationResult(
+        HttpContext context,
+        Result<GroupQuotaCommandOutcome> result)
+    {
+        if (result.IsFailure)
+        {
+            return GroupQuotaHttp.FromError(context, result.Error);
+        }
+
+        GroupQuotaCommandOutcome outcome = result.Value;
         context.Response.Headers.ETag = outcome.ETag;
         return Results.Json(
             GroupQuotaHttp.ToContract(outcome.Value),

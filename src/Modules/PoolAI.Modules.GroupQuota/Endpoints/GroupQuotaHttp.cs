@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -160,29 +161,163 @@ internal static class GroupQuotaHttp
                 retryable: false);
     }
 
-    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
-        GroupCreateRequest request)
+    internal static async ValueTask<JsonBodyReadResult> ReadJsonBodyAsync(
+        HttpContext context)
     {
-        Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
-        if (string.IsNullOrWhiteSpace(request.Name)
-            || request.Name.Trim().Length > 100
-            || request.Name.Any(char.IsControl))
+        try
         {
-            errors["/name"] = ["A Group name of at most 100 characters is required."];
+            using JsonDocument document = await JsonDocument.ParseAsync(
+                context.Request.Body,
+                cancellationToken: context.RequestAborted).ConfigureAwait(false);
+            return new JsonBodyReadResult(document.RootElement.Clone(), Failure: null);
+        }
+        catch (JsonException)
+        {
+            return new JsonBodyReadResult(
+                default,
+                InvalidRequestProblem(
+                    context,
+                    FieldError("/", "The request body must contain valid JSON.")));
+        }
+    }
+
+    internal static async ValueTask<QuotaMutationRequestReadResult>
+        ReadQuotaMutationRequestAsync(
+            HttpContext context,
+            string tokenPropertyName)
+    {
+        IResult? failure = RequireContentType(context, "application/json");
+        if (failure is not null)
+        {
+            return new QuotaMutationRequestReadResult(null, failure);
         }
 
-        if (request.Description.HasValue
-            && request.Description.Value is { Length: > 1000 })
+        JsonBodyReadResult body = await ReadJsonBodyAsync(context).ConfigureAwait(false);
+        if (body.Failure is not null)
         {
-            errors["/description"] = ["A Group description cannot exceed 1000 characters."];
+            return new QuotaMutationRequestReadResult(null, body.Failure);
         }
 
-        if (request.TotalTokens is < 1 or > 9_007_199_254_740_991)
+        if (!TryParseQuotaMutationRequest(
+                body.Body,
+                tokenPropertyName,
+                out ParsedQuotaMutationRequest? parsed,
+                out IReadOnlyDictionary<string, IReadOnlyList<string>> errors))
         {
-            errors["/total_tokens"] = ["total_tokens is outside the supported safe-integer range."];
+            return new QuotaMutationRequestReadResult(
+                null,
+                ValidationProblem(context, errors));
         }
 
-        return errors;
+        return new QuotaMutationRequestReadResult(parsed, Failure: null);
+    }
+
+    internal static bool TryParseGroupCreateRequest(
+        JsonElement request,
+        out ParsedGroupCreateRequest? parsed,
+        out IReadOnlyDictionary<string, IReadOnlyList<string>> errors)
+    {
+        Dictionary<string, IReadOnlyList<string>> failures = new(StringComparer.Ordinal);
+        parsed = null;
+        if (request.ValueKind != JsonValueKind.Object)
+        {
+            failures["/"] = ["The request body must be a JSON object."];
+            errors = failures;
+            return false;
+        }
+
+        if (!HasDecodablePropertyNames(request))
+        {
+            failures["/"] =
+                ["Request property names must contain valid Unicode scalar values."];
+            errors = failures;
+            return false;
+        }
+
+        AddGroupCreateAdditionalPropertyErrors(request, failures);
+        ReadGroupCreateTextFields(
+            request,
+            failures,
+            out string name,
+            out string? description);
+
+        long totalTokens = 0;
+        if (!request.TryGetProperty("total_tokens", out JsonElement totalTokensElement)
+            || !TryReadPositiveSafeInteger(totalTokensElement, out totalTokens))
+        {
+            failures["/total_tokens"] =
+                ["total_tokens must be an integer between 1 and 9007199254740991."];
+        }
+
+        errors = failures;
+        if (failures.Count != 0)
+        {
+            return false;
+        }
+
+        parsed = new ParsedGroupCreateRequest(name, description, totalTokens);
+        return true;
+    }
+
+    internal static bool TryParseQuotaMutationRequest(
+        JsonElement request,
+        string tokenPropertyName,
+        out ParsedQuotaMutationRequest? parsed,
+        out IReadOnlyDictionary<string, IReadOnlyList<string>> errors)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tokenPropertyName);
+        Dictionary<string, IReadOnlyList<string>> failures = new(StringComparer.Ordinal);
+        parsed = null;
+        if (request.ValueKind != JsonValueKind.Object)
+        {
+            failures["/"] = ["The request body must be a JSON object."];
+            errors = failures;
+            return false;
+        }
+
+        if (!HasDecodablePropertyNames(request))
+        {
+            failures["/"] =
+                ["Request property names must contain valid Unicode scalar values."];
+            errors = failures;
+            return false;
+        }
+
+        foreach (JsonProperty property in request.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, tokenPropertyName, StringComparison.Ordinal)
+                && !string.Equals(property.Name, "reason", StringComparison.Ordinal))
+            {
+                failures[JsonPointer(property.Name)] =
+                    ["The request field is not defined by this operation."];
+            }
+        }
+
+        long totalTokens = 0;
+        if (!request.TryGetProperty(tokenPropertyName, out JsonElement totalTokensElement)
+            || !TryReadPositiveSafeInteger(totalTokensElement, out totalTokens))
+        {
+            failures[JsonPointer(tokenPropertyName)] =
+                [$"{tokenPropertyName} must be an integer between 1 and 9007199254740991."];
+        }
+
+        string reason = string.Empty;
+        if (!request.TryGetProperty("reason", out JsonElement reasonElement)
+            || !TryGetJsonString(reasonElement, out reason)
+            || !SatisfiesQuotaReasonContract(reason))
+        {
+            failures["/reason"] =
+                ["The reason must be non-blank and at most 500 characters."];
+        }
+
+        errors = failures;
+        if (failures.Count != 0)
+        {
+            return false;
+        }
+
+        parsed = new ParsedQuotaMutationRequest(totalTokens, reason!);
+        return true;
     }
 
     internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Validate(
@@ -272,6 +407,28 @@ internal static class GroupQuotaHttp
         Description = new Optional<string?>(view.Description),
         Version = view.Version,
         CreatedAt = view.CreatedAt,
+        UpdatedAt = view.UpdatedAt,
+    };
+
+    internal static PoolAI.Contracts.Generated.GroupQuota ToContract(GroupQuotaView view) => new()
+    {
+        GroupId = view.GroupId.Value,
+        PeriodId = view.PeriodId.Value,
+        Status = view.Status switch
+        {
+            GroupPoolQuotaStatus.Active => "active",
+            GroupPoolQuotaStatus.Exhausted => "exhausted",
+            GroupPoolQuotaStatus.Disabled => "disabled",
+            _ => throw new ArgumentOutOfRangeException(nameof(view)),
+        },
+        TotalTokens = view.TotalTokens.ToString(CultureInfo.InvariantCulture),
+        ConsumedTokens = view.ConsumedTokens.ToString(CultureInfo.InvariantCulture),
+        ReservedTokens = view.ReservedTokens.ToString(CultureInfo.InvariantCulture),
+        RemainingTokens = view.RemainingTokens.ToString(CultureInfo.InvariantCulture),
+        OverageTokens = view.OverageTokens.ToString(CultureInfo.InvariantCulture),
+        PeriodStartedAt = view.PeriodStartedAt,
+        PeriodEndedAt = new Optional<DateTimeOffset?>(view.PeriodEndedAt),
+        Version = view.Version,
         UpdatedAt = view.UpdatedAt,
     };
 
@@ -379,6 +536,169 @@ internal static class GroupQuotaHttp
             [pointer] = [message],
         };
 
+    private static bool TryReadPositiveSafeInteger(
+        JsonElement element,
+        out long value)
+    {
+        value = 0;
+        if (element.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> raw = element.GetRawText().AsSpan();
+        if (raw.IsEmpty
+            || raw.ContainsAnyExceptInRange('0', '9')
+            || !element.TryGetInt64(out value))
+        {
+            value = 0;
+            return false;
+        }
+
+        return value is >= 1 and <= 9_007_199_254_740_991;
+    }
+
+    internal static bool SatisfiesQuotaReasonContract(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        int scalarCount = 0;
+        ReadOnlySpan<char> remaining = value.AsSpan();
+        while (!remaining.IsEmpty)
+        {
+            if (Rune.DecodeFromUtf16(
+                    remaining,
+                    out _,
+                    out int consumed) != OperationStatus.Done)
+            {
+                return false;
+            }
+
+            scalarCount++;
+            if (scalarCount > 500)
+            {
+                return false;
+            }
+
+            remaining = remaining[consumed..];
+        }
+
+        return true;
+    }
+
+    private static bool TryGetJsonString(
+        JsonElement element,
+        out string value)
+    {
+        value = string.Empty;
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        try
+        {
+            // JsonElement.GetString() is non-null for String; malformed
+            // escaped surrogates are reported by the exception path below.
+            value = element.GetString()!;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            // System.Text.Json defers decoding escaped isolated UTF-16 surrogates
+            // until GetString(). Treat them as field validation failures.
+            return false;
+        }
+    }
+
+    private static bool HasDecodablePropertyNames(JsonElement element)
+    {
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            try
+            {
+                _ = property.Name;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void ReadGroupCreateTextFields(
+        JsonElement request,
+        Dictionary<string, IReadOnlyList<string>> failures,
+        out string name,
+        out string? description)
+    {
+        name = string.Empty;
+        if (!request.TryGetProperty("name", out JsonElement nameElement)
+            || !TryGetJsonString(nameElement, out name)
+            || string.IsNullOrWhiteSpace(name)
+            || name.Trim().Length > 100
+            || name.Any(char.IsControl))
+        {
+            failures["/name"] = ["A Group name of at most 100 characters is required."];
+        }
+
+        description = null;
+        if (!request.TryGetProperty("description", out JsonElement descriptionElement))
+        {
+            return;
+        }
+
+        if (descriptionElement.ValueKind == JsonValueKind.String)
+        {
+            if (TryGetJsonString(descriptionElement, out string decodedDescription))
+            {
+                description = decodedDescription;
+            }
+            else
+            {
+                failures["/description"] =
+                    ["A Group description must be a string or null."];
+            }
+        }
+        else if (descriptionElement.ValueKind != JsonValueKind.Null)
+        {
+            failures["/description"] = ["A Group description must be a string or null."];
+        }
+
+        if (description is { Length: > 1000 })
+        {
+            failures["/description"] = ["A Group description cannot exceed 1000 characters."];
+        }
+    }
+
+    private static void AddGroupCreateAdditionalPropertyErrors(
+        JsonElement request,
+        Dictionary<string, IReadOnlyList<string>> failures)
+    {
+        foreach (JsonProperty property in request.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, "name", StringComparison.Ordinal)
+                && !string.Equals(property.Name, "description", StringComparison.Ordinal)
+                && !string.Equals(property.Name, "total_tokens", StringComparison.Ordinal))
+            {
+                failures[JsonPointer(property.Name)] =
+                    ["The request field is not defined by this operation."];
+            }
+        }
+    }
+
+    private static string JsonPointer(string propertyName) =>
+        string.Concat(
+            "/",
+            propertyName
+                .Replace("~", "~0", StringComparison.Ordinal)
+                .Replace("/", "~1", StringComparison.Ordinal));
+
     private static HttpError MapError(ResultError error) => error.Code switch
     {
         "role_required" or "forbidden" => new(
@@ -465,4 +785,21 @@ internal static class GroupQuotaHttp
         bool Retryable,
         long? RetryAfterSeconds = null,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? Errors = null);
+
+    internal sealed record ParsedGroupCreateRequest(
+        string Name,
+        string? Description,
+        long TotalTokens);
+
+    internal sealed record ParsedQuotaMutationRequest(
+        long TotalTokens,
+        string Reason);
+
+    internal readonly record struct JsonBodyReadResult(
+        JsonElement Body,
+        IResult? Failure);
+
+    internal readonly record struct QuotaMutationRequestReadResult(
+        ParsedQuotaMutationRequest? Request,
+        IResult? Failure);
 }

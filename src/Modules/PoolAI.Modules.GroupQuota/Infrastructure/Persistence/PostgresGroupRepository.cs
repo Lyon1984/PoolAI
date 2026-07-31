@@ -93,7 +93,7 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         await BeginSavepointAsync(session, CreateSavepoint, cancellationToken).ConfigureAwait(false);
         try
         {
-            FunctionResult functionResult;
+            PostgresGroupFunctionRow functionResult;
             using (NpgsqlCommand command = session.CreateCommand(CreateSql))
             {
                 command.Parameters.AddWithValue(write.GroupId.Value);
@@ -110,7 +110,8 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
                 command.Parameters.AddWithValue(write.QuotaOutboxId.Value);
                 command.Parameters.AddWithValue(write.QuotaIdempotencyKey);
                 command.Parameters.AddWithValue(write.Reason);
-                functionResult = await ReadFunctionResultAsync(command, cancellationToken)
+                functionResult = await PostgresGroupAbiContract
+                    .ReadFunctionResultAsync(command, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -158,7 +159,7 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         await BeginSavepointAsync(session, UpdateSavepoint, cancellationToken).ConfigureAwait(false);
         try
         {
-            FunctionResult functionResult;
+            PostgresGroupFunctionRow functionResult;
             using (NpgsqlCommand command = session.CreateCommand(UpdateSql))
             {
                 command.Parameters.AddWithValue(write.GroupId.Value);
@@ -169,17 +170,20 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
                 AddNullableText(command.Parameters, write.HasDescription ? write.Description : null);
                 AddNullableText(
                     command.Parameters,
-                    write.Lifecycle is null ? null : LifecycleCode(write.Lifecycle.Value));
+                    write.Lifecycle is null
+                        ? null
+                        : PostgresGroupAbiContract.LifecycleCode(write.Lifecycle.Value));
                 AddNullableText(command.Parameters, write.Lifecycle is null ? null : write.Reason);
                 AddNullableText(command.Parameters, write.SupplyEvidence?.OpaqueToken);
                 AddNullableTimestamp(
                     command.Parameters,
                     write.SupplyEvidence?.ObservedAt.ToUniversalTime());
-                functionResult = await ReadFunctionResultAsync(command, cancellationToken)
+                functionResult = await PostgresGroupAbiContract
+                    .ReadFunctionResultAsync(command, cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            GroupWriteDisposition disposition = MapDisposition(
+            GroupWriteDisposition disposition = PostgresGroupAbiContract.MapUpdateDisposition(
                 functionResult.Disposition,
                 write.SupplyEvidence is not null);
             if (disposition != GroupWriteDisposition.Written)
@@ -251,25 +255,6 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         return await ReadSingleAsync(command, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask<FunctionResult> ReadFunctionResultAsync(
-        NpgsqlCommand command,
-        CancellationToken cancellationToken)
-    {
-        using NpgsqlDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            throw new InvalidOperationException("The Group database function returned no result.");
-        }
-
-        return new FunctionResult(
-            reader.GetString(0),
-            reader.GetBoolean(1),
-            reader.IsDBNull(2) ? null : reader.GetString(2),
-            reader.IsDBNull(3) ? null : reader.GetInt64(3));
-    }
-
     private static async ValueTask<GroupResource> GetRequiredAsync(
         EntityId groupId,
         PostgresTransactionSession session,
@@ -297,7 +282,7 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         new EntityId(reader.GetGuid(0)),
         reader.GetString(1),
         reader.IsDBNull(2) ? null : reader.GetString(2),
-        ParseLifecycle(reader.GetString(3)),
+        PostgresGroupAbiContract.ParseLifecycle(reader.GetString(3)),
         reader.GetInt64(4),
         reader.GetFieldValue<DateTimeOffset>(5),
         reader.GetFieldValue<DateTimeOffset>(6),
@@ -322,31 +307,14 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
             root.GetProperty("description").ValueKind == JsonValueKind.Null
                 ? null
                 : root.GetProperty("description").GetString(),
-            ParseLifecycle(root.GetProperty("status").GetString() ?? string.Empty),
+            PostgresGroupAbiContract.ParseLifecycle(
+                root.GetProperty("status").GetString() ?? string.Empty),
             root.GetProperty("version").GetInt64(),
             root.GetProperty("created_at").GetDateTimeOffset(),
             root.GetProperty("updated_at").GetDateTimeOffset(),
             hasCurrentQuotaPeriod,
             root.GetProperty("updated_at").GetDateTimeOffset());
     }
-
-    private static GroupWriteDisposition MapDisposition(
-        string disposition,
-        bool isActivation) => disposition switch
-        {
-            "updated" => GroupWriteDisposition.Written,
-            "not_found" => GroupWriteDisposition.NotFound,
-            "version_conflict" => GroupWriteDisposition.VersionConflict,
-            "invalid_transition" => isActivation
-                ? GroupWriteDisposition.ActivationNotReady
-                : GroupWriteDisposition.LifecycleConflict,
-            "archive_blocked" => GroupWriteDisposition.ArchiveBlocked,
-            "validation_failed" => isActivation
-                ? GroupWriteDisposition.ActivationNotReady
-                : GroupWriteDisposition.ValidationFailed,
-            _ => throw new InvalidOperationException(
-                "The Group database function returned an unknown disposition."),
-        };
 
     internal static GroupWriteDisposition MapCreateDisposition(string disposition) =>
         disposition switch
@@ -356,22 +324,6 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
             _ => throw new InvalidOperationException(
                 "The Group create function returned an unknown disposition."),
         };
-
-    private static GroupLifecycle ParseLifecycle(string value) => value switch
-    {
-        "disabled" => GroupLifecycle.Disabled,
-        "active" => GroupLifecycle.Active,
-        "archived" => GroupLifecycle.Archived,
-        _ => throw new InvalidOperationException("The persisted Group lifecycle is invalid."),
-    };
-
-    private static string LifecycleCode(GroupLifecycle lifecycle) => lifecycle switch
-    {
-        GroupLifecycle.Disabled => "disabled",
-        GroupLifecycle.Active => "active",
-        GroupLifecycle.Archived => "archived",
-        _ => throw new ArgumentOutOfRangeException(nameof(lifecycle)),
-    };
 
     private static bool IsKnownCreateFailure(PostgresException exception) =>
         string.Equals(exception.SqlState, "P0001", StringComparison.Ordinal)
@@ -426,11 +378,5 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
 
         await ReleaseSavepointAsync(session, name, cancellationToken).ConfigureAwait(false);
     }
-
-    private sealed record FunctionResult(
-        string Disposition,
-        bool WasChanged,
-        string? BeforeState,
-        long? CurrentVersion);
 }
 #pragma warning restore MA0051

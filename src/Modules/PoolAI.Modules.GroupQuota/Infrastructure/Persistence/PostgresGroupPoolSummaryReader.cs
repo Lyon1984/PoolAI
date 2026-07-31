@@ -73,30 +73,14 @@ internal sealed class PostgresGroupPoolSummaryReader(NpgsqlDataSource dataSource
             snapshots.Add(new GroupPoolSummarySnapshot(
                 new EntityId(reader.GetGuid(0)),
                 reader.GetString(1),
-                ParseLifecycle(reader.GetString(2)),
+                PostgresGroupAbiContract.ParseLifecycle(reader.GetString(2)),
                 reader.GetFieldValue<BigInteger>(3),
                 reader.GetFieldValue<BigInteger>(4),
                 reader.GetFieldValue<BigInteger>(5),
-                ParseQuotaStatus(reader.GetString(6)),
+                PostgresGroupAbiContract.ParseQuotaStatus(reader.GetString(6)),
                 reader.GetFieldValue<DateTimeOffset>(7)));
         }
 
         return Result.Success<IReadOnlyList<GroupPoolSummarySnapshot>>(snapshots);
     }
-
-    private static GroupLifecycle ParseLifecycle(string value) => value switch
-    {
-        "active" => GroupLifecycle.Active,
-        "disabled" => GroupLifecycle.Disabled,
-        "archived" => GroupLifecycle.Archived,
-        _ => throw new InvalidOperationException("The persisted Group lifecycle is invalid."),
-    };
-
-    private static GroupPoolQuotaStatus ParseQuotaStatus(string value) => value switch
-    {
-        "active" => GroupPoolQuotaStatus.Active,
-        "exhausted" => GroupPoolQuotaStatus.Exhausted,
-        "disabled" => GroupPoolQuotaStatus.Disabled,
-        _ => throw new InvalidOperationException("The derived Group quota status is invalid."),
-    };
 }

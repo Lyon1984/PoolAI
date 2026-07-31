@@ -41,6 +41,22 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         services.AddSingleton<IUpdateGroupUseCase>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
+        services.AddSingleton(static serviceProvider => new QuotaControlPlaneService(
+            serviceProvider.GetRequiredService<IQuotaRepository>(),
+            serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.ICommandIdempotencyStore>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IAuditAppender>(),
+            serviceProvider.GetRequiredService<GroupQuotaPolicy>()));
+        services.AddSingleton<IGetGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IAuthorizeQuotaMutationUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IAdjustGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        services.AddSingleton<IResetGroupQuotaUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<QuotaControlPlaneService>());
         services.AddSingleton<IGroupStatusReader>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         services.AddSingleton<IGroupActivationIdempotencyPreflight>(static serviceProvider =>
