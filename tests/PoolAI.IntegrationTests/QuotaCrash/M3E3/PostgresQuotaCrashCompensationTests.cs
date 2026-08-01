@@ -81,6 +81,16 @@ public sealed partial class PostgresQuotaCrashCompensationTests
             afterAbsoluteDeadline,
             "reservation_lease_lost",
             retryAfterSeconds: 1);
+
+        // Leave no globally due reservation behind for the bounded sweeper
+        // scenario. PostgreSQL integration tests intentionally share one
+        // runtime, and xUnit does not guarantee method order within the class.
+        await ExpireAsWorkerAsync(
+            scenario,
+            scenario.PreDispatch,
+            expectedConsumedTokens: "0",
+            expectedReservedTokens: "0",
+            cancellationToken).ConfigureAwait(true);
     }
 
     [Fact]
