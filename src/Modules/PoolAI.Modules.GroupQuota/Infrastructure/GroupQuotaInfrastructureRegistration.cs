@@ -18,6 +18,7 @@ internal static class GroupQuotaInfrastructureRegistration
         services.AddSingleton<IQuotaRepository>(static serviceProvider =>
             new PostgresQuotaRepository(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));
+        services.AddSingleton<IQuotaLedgerRepository, PostgresQuotaLedgerRepository>();
         services.AddSingleton<IGroupPoolSummaryReader>(static serviceProvider =>
             new PostgresGroupPoolSummaryReader(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));

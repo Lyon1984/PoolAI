@@ -4,5 +4,6 @@ public interface IAttemptSettlementFactReader
 {
     ValueTask<Result<AttemptSettlementFact>> GetByAttemptIdAsync(
         EntityId attemptId,
+        IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 }

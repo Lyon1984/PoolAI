@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using PoolAI.Database.Migrations;
 using PoolAI.Infrastructure.Postgres;
+using PoolAI.Modules.GroupQuota;
 using PoolAI.Modules.Identity;
 using PoolAI.Modules.Operations;
 using PoolAI.Modules.Usage;
@@ -181,6 +182,7 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
         services.AddSingleton<IConfiguration>(configuration);
         services.AddPoolAiPostgresRuntime(connectionString);
         services.AddOperationsModule(configuration, "Integration");
+        services.AddGroupQuotaModule();
         return services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateOnBuild = true,
@@ -200,6 +202,7 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
         services.AddSingleton<IConfiguration>(configuration);
         services.AddPoolAiPostgresRuntime(connectionString);
         services.AddOperationsModule(configuration, "Integration");
+        services.AddGroupQuotaModule();
         services.AddIdentityModule();
         services.AddUsageModule();
         return services.BuildServiceProvider(new ServiceProviderOptions
@@ -219,6 +222,8 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
         configuration["Data:Redis:KeyPrefix"] = "poolai:r1:integration:";
         configuration["Health:Ntp:Server"] = "127.0.0.1";
         configuration["Health:Ntp:Port"] = "123";
+        configuration["Idempotency:RequestHashPepper"] = Convert.ToBase64String(
+            SHA256.HashData("PoolAI.IntegrationTests.GroupQuota"u8));
         return configuration;
     }
 

@@ -1,3 +1,4 @@
+// Canonical partial fixture file; the filename intentionally matches the xUnit class.
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,7 +9,7 @@ using PoolAI.Infrastructure.Postgres;
 namespace PoolAI.IntegrationTests;
 
 [Collection(PostgresRuntimeTestGroup.Name)]
-public sealed class PostgresQuotaCrashCompensationTests
+public sealed partial class PostgresQuotaCrashCompensationTests
 {
     private const string Provider = "openai";
     private const string Model = "gpt-ac39";

@@ -63,6 +63,7 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<QuotaControlPlaneService>());
         services.AddSingleton<IResetGroupQuotaUseCase>(static serviceProvider =>
             serviceProvider.GetRequiredService<QuotaControlPlaneService>());
+        AddQuotaLedger(services);
         services.AddSingleton<IGroupStatusReader>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         services.AddSingleton<IGroupActivationIdempotencyPreflight>(static serviceProvider =>
@@ -70,6 +71,21 @@ public static class DependencyInjection
         services.AddSingleton<IGroupActivationCommand>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupControlPlaneService>());
         return services;
+    }
+
+    private static void AddQuotaLedger(IServiceCollection services)
+    {
+        services.AddSingleton(static serviceProvider => new GroupQuotaLedgerService(
+            serviceProvider.GetRequiredService<IQuotaLedgerRepository>(),
+            serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IOperationalEventWriter>()));
+        services.AddSingleton<IGroupQuotaLedger>(static serviceProvider =>
+            serviceProvider.GetRequiredService<GroupQuotaLedgerService>());
+        services.AddSingleton<IAttemptSettlementFactReader>(static serviceProvider =>
+            serviceProvider.GetRequiredService<GroupQuotaLedgerService>());
+        services.AddSingleton<IUsageAdjustmentWriter>(static serviceProvider =>
+            serviceProvider.GetRequiredService<GroupQuotaLedgerService>());
     }
 
     private static GroupQuotaPolicy CreatePolicy(IConfiguration configuration)
