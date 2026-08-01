@@ -76,6 +76,75 @@ internal static class PostgresQuotaLedgerAbiContract
         return row;
     }
 
+    internal static async ValueTask<QuotaRenewalRow> ReadRenewalAsync(
+        NpgsqlCommand command,
+        RenewReservationWrite write,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        RequireRow(await reader.ReadAsync(cancellationToken).ConfigureAwait(false), "renewal");
+        QuotaRenewalRow row = new(
+            new EntityId(reader.GetGuid(0)),
+            new EntityId(reader.GetGuid(1)),
+            ParseReservationStatus(reader.GetString(2)),
+            reader.GetFieldValue<DateTimeOffset>(3),
+            reader.GetFieldValue<DateTimeOffset>(4));
+        RequireSingleRow(
+            !await reader.ReadAsync(cancellationToken).ConfigureAwait(false),
+            "renewal");
+        ReservationHandle expected = write.Command.Reservation;
+        if (row.ReservationId != expected.ReservationId
+            || row.PeriodId != expected.PeriodId
+            || row.Status != ReservationStatus.Pending
+            || row.LeaseExpiresAt < expected.LeaseExpiresAt
+            || row.MaxExpiresAt != expected.MaxExpiresAt
+            || row.LeaseExpiresAt > row.MaxExpiresAt)
+        {
+            throw Invalid("renewal");
+        }
+
+        return row;
+    }
+
+    internal static async ValueTask<IReadOnlyList<QuotaExpiryCandidate>>
+        ReadExpiryCandidatesAsync(
+            NpgsqlCommand command,
+            QuotaExpiryCandidateKey? after,
+            int pageSize,
+            CancellationToken cancellationToken)
+    {
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        List<QuotaExpiryCandidate> candidates = new(capacity: pageSize);
+        QuotaExpiryCandidateKey? previous = after;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            QuotaExpiryCandidate candidate = new(
+                new EntityId(reader.GetGuid(0)),
+                new EntityId(reader.GetGuid(1)),
+                new EntityId(reader.GetGuid(2)),
+                new EntityId(reader.GetGuid(3)),
+                reader.GetFieldValue<DateTimeOffset>(4));
+            if (previous is not null && Compare(candidate.Key, previous) <= 0)
+            {
+                throw Invalid("expiry candidate order");
+            }
+
+            candidates.Add(candidate);
+            if (candidates.Count > pageSize)
+            {
+                throw Invalid("expiry candidate page size");
+            }
+
+            previous = candidate.Key;
+        }
+
+        return candidates;
+    }
+
     internal static async ValueTask<QuotaTransitionRow> ReadTransitionAsync(
         NpgsqlCommand command,
         EntityId expectedReservationId,
@@ -240,6 +309,16 @@ internal static class PostgresQuotaLedgerAbiContract
         "expired" => ReservationStatus.Expired,
         _ => throw Invalid("reservation status"),
     };
+
+    private static int Compare(QuotaExpiryCandidateKey left, QuotaExpiryCandidateKey right)
+    {
+        int expiry = left.LeaseExpiresAt.CompareTo(right.LeaseExpiresAt);
+        return expiry != 0
+            ? expiry
+            : StringComparer.Ordinal.Compare(
+                left.ReservationId.Value.ToString("N"),
+                right.ReservationId.Value.ToString("N"));
+    }
 
     private static SettlementProvider ParseProvider(string value) => value switch
     {

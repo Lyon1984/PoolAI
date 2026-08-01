@@ -10,6 +10,10 @@ public interface IGroupQuotaLedger
         MarkReservationDispatchedCommand command,
         CancellationToken cancellationToken);
 
+    ValueTask<Result<ReservationHandle>> RenewAsync(
+        RenewReservationCommand command,
+        CancellationToken cancellationToken);
+
     ValueTask<Result<QuotaTransitionResult>> SettleAsync(
         SettleReservationCommand command,
         CancellationToken cancellationToken);

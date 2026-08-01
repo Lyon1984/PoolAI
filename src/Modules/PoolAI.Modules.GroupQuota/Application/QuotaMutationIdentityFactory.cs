@@ -20,6 +20,19 @@ internal static class QuotaMutationIdentityFactory
             $"quota:{operation}:v1:{attemptId.Value:N}");
     }
 
+    internal static QuotaMutationIdentity ForRenewal(
+        EntityId attemptId,
+        long renewalSequence)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(renewalSequence);
+
+        string operation = $"renew:{renewalSequence}";
+        return new QuotaMutationIdentity(
+            DeriveVersion7(attemptId, $"event:{operation}"),
+            DeriveVersion7(attemptId, $"outbox:{operation}"),
+            $"quota:renew:v1:{attemptId.Value:N}:{renewalSequence}");
+    }
+
     private static EntityId DeriveVersion7(EntityId attemptId, string purpose)
     {
         Span<byte> source = stackalloc byte[16];

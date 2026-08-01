@@ -215,6 +215,98 @@ public sealed class GroupQuotaLedgerServiceTests
     }
 
     [Fact]
+    public async Task SuccessiveRenewalsUseDistinctDeterministicSequencesAndRetriesReuseOneMutation()
+    {
+        ReservationHandle reservation = Reservation();
+        FakeQuotaLedgerRepository repository = new()
+        {
+            RenewResult = QuotaRepositoryResult<QuotaRenewalRow>.Success(new(
+                reservation.ReservationId,
+                reservation.PeriodId,
+                ReservationStatus.Pending,
+                Now.AddMinutes(7),
+                reservation.MaxExpiresAt)),
+        };
+        RecordingUnitOfWorkFactory units = new();
+        GroupQuotaLedgerService service = new(repository, units);
+
+        Result<ReservationHandle> first = await service.RenewAsync(
+            new RenewReservationCommand(reservation, RenewalSequence: 1),
+            TestContext.Current.CancellationToken);
+        Result<ReservationHandle> retry = await service.RenewAsync(
+            new RenewReservationCommand(reservation, RenewalSequence: 1),
+            TestContext.Current.CancellationToken);
+        Result<ReservationHandle> second = await service.RenewAsync(
+            new RenewReservationCommand(first.Value, RenewalSequence: 2),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(retry.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.Equal(Now.AddMinutes(7), second.Value.LeaseExpiresAt);
+        Assert.Equal(3, repository.RenewCalls);
+        Assert.Equal(3, units.BeginCalls);
+        Assert.Equal(3, units.CommitCalls);
+        Assert.Equal(3, units.DisposeCalls);
+        Assert.Equal(repository.RenewWrites[0].Mutation, repository.RenewWrites[1].Mutation);
+        Assert.NotEqual(repository.RenewWrites[0].Mutation, repository.RenewWrites[2].Mutation);
+        Assert.Equal(
+            $"quota:renew:v1:{AttemptId.Value:N}:1",
+            repository.RenewWrites[0].Mutation.IdempotencyKey);
+        Assert.Equal(
+            $"quota:renew:v1:{AttemptId.Value:N}:2",
+            repository.RenewWrites[2].Mutation.IdempotencyKey);
+        Assert.All(
+            repository.RenewWrites,
+            static write => Assert.True(write.Command.RenewalSequence > 0));
+    }
+
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(-1L)]
+    public async Task RenewRejectsNonPositiveSequenceBeforeBeginningAUnitOfWork(
+        long renewalSequence)
+    {
+        FakeQuotaLedgerRepository repository = new();
+        RecordingUnitOfWorkFactory units = new();
+        GroupQuotaLedgerService service = new(repository, units);
+
+        Result<ReservationHandle> result = await service.RenewAsync(
+            new RenewReservationCommand(Reservation(), renewalSequence),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("internal_error", result.Error.Code);
+        Assert.Equal(0, repository.RenewCalls);
+        Assert.Equal(0, units.BeginCalls);
+    }
+
+    [Fact]
+    public async Task RenewRepositoryFailureRollsBackAndPreservesStableLeaseLostClassification()
+    {
+        FakeQuotaLedgerRepository repository = new()
+        {
+            RenewResult = QuotaRepositoryResult<QuotaRenewalRow>.Failed(
+                QuotaLedgerFailure.ReservationLeaseLost),
+        };
+        RecordingUnitOfWorkFactory units = new();
+        GroupQuotaLedgerService service = new(repository, units);
+
+        Result<ReservationHandle> result = await service.RenewAsync(
+            new RenewReservationCommand(Reservation(), RenewalSequence: 1),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("reservation_lease_lost", result.Error.Code);
+        Assert.Equal(1, result.Error.RetryAfterSeconds);
+        Assert.Equal(1, repository.RenewCalls);
+        Assert.Equal(1, units.BeginCalls);
+        Assert.Equal(0, units.CommitCalls);
+        Assert.Equal(1, units.DisposeCalls);
+        Assert.Same(units.LastContext, repository.LastRenewContext);
+    }
+
+    [Fact]
     public async Task SettleAllowsActualUsageAboveTheReservationEstimate()
     {
         QuotaTransitionRow row = new(
@@ -284,6 +376,7 @@ public sealed class GroupQuotaLedgerServiceTests
         Assert.Equal(
             AttemptId.Value,
             alerts.Payload.GetProperty("attempt_id").GetGuid());
+        Assert.Equal(CancellationToken.None, alerts.CancellationToken);
     }
 
     [Fact]
@@ -448,6 +541,74 @@ public sealed class GroupQuotaLedgerServiceTests
     }
 
     [Fact]
+    public async Task LateUsageWithoutDispatchRaisesP0AndWritesNothing()
+    {
+        List<string> operationOrder = [];
+        FakeQuotaLedgerRepository repository = new()
+        {
+            AdjustmentResult = QuotaRepositoryResult<UsageAdjustmentRow>.Failed(
+                QuotaLedgerFailure.UsageWithoutDispatch),
+        };
+        RecordingUnitOfWorkFactory units = new(operationOrder);
+        RecordingOperationalEventWriter alerts = new(operationOrder);
+        GroupQuotaLedgerService service = new(repository, units, alerts);
+
+        Result<UsageAdjustmentResult> result = await service.AdjustAsync(
+            AdjustmentCommand(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("internal_error", result.Error.Code);
+        Assert.Equal(1, repository.AdjustmentCalls);
+        Assert.Equal(0, units.CommitCalls);
+        Assert.Equal(1, units.DisposeCalls);
+        Assert.Equal(
+            ["unit-of-work.dispose", "operational-event.write"],
+            operationOrder);
+        Assert.Equal("group_quota.late_usage_invariant_violation", alerts.EventName);
+        Assert.Equal("P0", alerts.Payload.GetProperty("severity").GetString());
+        Assert.Equal(
+            "pre_dispatch_usage",
+            alerts.Payload.GetProperty("classification").GetString());
+        Assert.Equal(
+            AttemptId.Value,
+            alerts.Payload.GetProperty("attempt_id").GetGuid());
+    }
+
+    [Fact]
+    public async Task BrokenTerminalFactRaisesP0OnlyAfterTheUnitOfWorkRollsBack()
+    {
+        List<string> operationOrder = [];
+        FakeQuotaLedgerRepository repository = new()
+        {
+            AdjustmentResult = QuotaRepositoryResult<UsageAdjustmentRow>.Failed(
+                QuotaLedgerFailure.TerminalFactInvariantBroken),
+        };
+        RecordingUnitOfWorkFactory units = new(operationOrder);
+        RecordingOperationalEventWriter alerts = new(operationOrder);
+        GroupQuotaLedgerService service = new(repository, units, alerts);
+
+        Result<UsageAdjustmentResult> result = await service.AdjustAsync(
+            AdjustmentCommand(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(0, units.CommitCalls);
+        Assert.Equal(
+            ["unit-of-work.dispose", "operational-event.write"],
+            operationOrder);
+        Assert.Equal(
+            "terminal_fact_invariant",
+            alerts.Payload.GetProperty("classification").GetString());
+        Assert.Equal("group_quota.late_usage_invariant_violation", alerts.EventName);
+        Assert.Equal("P0", alerts.Payload.GetProperty("severity").GetString());
+        Assert.Equal(
+            AttemptId.Value,
+            alerts.Payload.GetProperty("attempt_id").GetGuid());
+        Assert.Equal(CancellationToken.None, alerts.CancellationToken);
+    }
+
+    [Fact]
     public void MutationIdentitiesAreDeterministicVersion7AndOperationSeparated()
     {
         EntityId firstReservation = QuotaMutationIdentityFactory.ReservationId(AttemptId);
@@ -585,6 +746,26 @@ public sealed class GroupQuotaLedgerServiceTests
         UsageSource: SettlementUsageSource.ConfirmedNoExecution,
         RawUpstreamUsage: null);
 
+    private static AdjustAttemptUsageCommand AdjustmentCommand() => new(
+        GroupId,
+        AttemptId,
+        AccountId,
+        ChannelId,
+        SettlementProvider.OpenAi,
+        "gpt-5-mini",
+        UsageAttemptOutcome.Succeeded,
+        UpstreamHttpStatus: 200,
+        ErrorCode: null,
+        UpstreamRequestId: "upstream-request-1",
+        DispatchStartedAt: Now.AddMinutes(1),
+        FirstTokenAt: Now.AddMinutes(1).AddSeconds(1),
+        CompletedAt: Now.AddMinutes(2),
+        RequestOutcome: UsageRequestOutcome.Succeeded,
+        CorrectedUsage: new TokenUsage(80, 50, 20, 10, 15),
+        UsageSource: SettlementUsageSource.Upstream,
+        RawUpstreamUsage: null,
+        Reason: "late authoritative usage");
+
     private static AttemptSettlementFact SettlementFact() => new(
         AttemptId,
         RequestId,
@@ -618,6 +799,7 @@ public sealed class GroupQuotaLedgerServiceTests
 
         internal QuotaRepositoryResult<QuotaDispatchRow>? MarkDispatchedResult { get; set; }
 
+        internal QuotaRepositoryResult<QuotaRenewalRow>? RenewResult { get; set; }
         internal QuotaRepositoryResult<QuotaTransitionRow>? SettleResult { get; set; }
 
         internal QuotaRepositoryResult<QuotaTransitionRow>? ReleaseResult { get; set; }
@@ -629,6 +811,8 @@ public sealed class GroupQuotaLedgerServiceTests
         internal int ReserveCalls { get; private set; }
 
         internal int MarkDispatchedCalls { get; private set; }
+
+        internal int RenewCalls { get; private set; }
 
         internal int SettleCalls { get; private set; }
 
@@ -642,13 +826,19 @@ public sealed class GroupQuotaLedgerServiceTests
 
         internal MarkReservationDispatchedWrite? LastMarkDispatched { get; private set; }
 
+        internal List<RenewReservationWrite> RenewWrites { get; } = [];
+
         internal SettleReservationWrite? LastSettle { get; private set; }
 
         internal ReleaseReservationWrite? LastRelease { get; private set; }
 
+        internal AdjustAttemptUsageWrite? LastAdjustment { get; private set; }
+
         internal IUnitOfWorkContext? LastReserveContext { get; private set; }
 
         internal IUnitOfWorkContext? LastMarkDispatchedContext { get; private set; }
+
+        internal IUnitOfWorkContext? LastRenewContext { get; private set; }
 
         internal IUnitOfWorkContext? LastSettleContext { get; private set; }
 
@@ -683,6 +873,19 @@ public sealed class GroupQuotaLedgerServiceTests
                 MarkDispatchedResult ?? throw Unexpected(nameof(MarkDispatchedAsync)));
         }
 
+        public ValueTask<QuotaRepositoryResult<QuotaRenewalRow>> RenewAsync(
+            RenewReservationWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RenewCalls++;
+            RenewWrites.Add(write);
+            LastRenewContext = unitOfWorkContext;
+            return ValueTask.FromResult(
+                RenewResult ?? throw Unexpected(nameof(RenewAsync)));
+        }
+
         public ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> SettleAsync(
             SettleReservationWrite write,
             IUnitOfWorkContext unitOfWorkContext,
@@ -707,6 +910,18 @@ public sealed class GroupQuotaLedgerServiceTests
             return ValueTask.FromResult(ReleaseResult ?? throw Unexpected(nameof(ReleaseAsync)));
         }
 
+        public ValueTask<IReadOnlyList<QuotaExpiryCandidate>> ListDueExpiryCandidatesAsync(
+            QuotaExpiryCandidateKey? after,
+            int pageSize,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw Unexpected(
+                nameof(ListDueExpiryCandidatesAsync));
+
+        public ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> ExpireAsync(
+            ExpireReservationWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw Unexpected(nameof(ExpireAsync));
+
         public ValueTask<QuotaRepositoryResult<UsageAdjustmentRow>> AdjustUsageAsync(
             AdjustAttemptUsageWrite write,
             IUnitOfWorkContext unitOfWorkContext,
@@ -714,6 +929,7 @@ public sealed class GroupQuotaLedgerServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             AdjustmentCalls++;
+            LastAdjustment = write;
             return ValueTask.FromResult(
                 AdjustmentResult ?? throw Unexpected(nameof(AdjustUsageAsync)));
         }
@@ -791,6 +1007,8 @@ public sealed class GroupQuotaLedgerServiceTests
 
         internal JsonElement Payload { get; private set; }
 
+        internal CancellationToken CancellationToken { get; private set; }
+
         public ValueTask WriteAsync(
             string eventName,
             JsonElement payload,
@@ -800,6 +1018,7 @@ public sealed class GroupQuotaLedgerServiceTests
             operationOrder?.Add("operational-event.write");
             EventName = eventName;
             Payload = payload;
+            CancellationToken = cancellationToken;
             return ValueTask.CompletedTask;
         }
     }

@@ -40,6 +40,11 @@ internal static class QuotaLedgerValidation
                 == command.Reservation.EstimatedTokens;
     }
 
+    internal static bool IsValid(RenewReservationCommand command) =>
+        command.Reservation is not null
+        && IsValid(command.Reservation)
+        && command.RenewalSequence > 0;
+
     internal static bool IsValid(SettleReservationCommand command) =>
         HasValidStructure(command) && !ExceedsNumeric78(command.Usage);
 
