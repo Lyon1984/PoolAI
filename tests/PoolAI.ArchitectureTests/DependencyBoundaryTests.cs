@@ -1,5 +1,5 @@
-using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace PoolAI.ArchitectureTests;
@@ -146,6 +146,10 @@ public sealed partial class DependencyBoundaryTests
         Assert.Contains("../../docs/database/0001_baseline.sql", project, StringComparison.Ordinal);
         Assert.Contains("../../docs/database/0002_quota_functions.sql", project, StringComparison.Ordinal);
         Assert.Contains("../../docs/database/0003_runtime_permissions.sql", project, StringComparison.Ordinal);
+        Assert.Contains(
+            "../../docs/database/0015_operations_outbox_replay_m3_e4.sql",
+            project,
+            StringComparison.Ordinal);
     }
 
     [Fact]

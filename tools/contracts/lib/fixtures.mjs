@@ -4,6 +4,8 @@ import path from 'node:path'
 import { contractPaths, invariant } from './context.mjs'
 
 const JSON_FIXTURE_SCHEMAS = Object.freeze({
+  'control-plane-outbox-replay-accepted.json': 'OutboxReplayReceipt',
+  'control-plane-outbox-replay-validation-error.json': 'ControlPlaneProblem',
   'control-plane-validation-error.json': 'ControlPlaneProblem',
   'gateway-upstream-usage-out-of-range.json': 'GatewayProblem',
   'responses-function-tool-followup.json': 'ResponseCreateRequest',

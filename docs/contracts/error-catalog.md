@@ -182,7 +182,18 @@ create 的 `allowed_cidrs` 省略/空数组表示不按来源地址限制；merg
 | `upstream_first_byte_timeout` | 504 或 SSE | 否 | — | 请求已 dispatch 但未收到首个可验证业务字节；默认视为执行结果有歧义。 |
 | `upstream_stream_idle_timeout` | SSE | 否 | — | 已开始流在允许的空闲期间内无新字节；发终止 error event 后关闭。 |
 
-### 3.6 SQLSTATE `P0001` 边界
+### 3.6 Operations 安全重放
+
+`POST /api/v1/admin/outbox-messages/{messageId}/replay` 只允许 Admin，并必须携带
+`Idempotency-Key` 与非空 `reason`。不存在或不可见的原消息返回
+`404 resource_not_found`；原消息存在但不处于 `dead` 返回 `409 resource_conflict`；
+同一幂等键不同摘要返回 `409 idempotency_conflict`；非法理由返回带 `/reason` 字段错误的
+`422 validation_failed`；缺少幂等键返回 `428 idempotency_key_required`。成功固定返回
+`202` 与同一新 replacement receipt；原 dead 行不可变，新消息为 `pending` 且
+`replay_of` 指向原行。任何响应、审计差异、日志或指标都不得包含原 payload、last_error、
+deduplication key 或秘密字段。
+
+### 3.7 SQLSTATE `P0001` 边界
 
 [SQL P0001 错误映射](fixtures/sql-p0001-error-map.json) 是数据库字面错误码的机器可读封闭清单：
 
@@ -228,6 +239,8 @@ Chat Completions 正常流发送 chunk 后以 `data: [DONE]` 结束。官方 Cha
 Golden fixtures：
 
 - [Control Plane 字段校验错误](fixtures/control-plane-validation-error.json)
+- [Outbox 安全重放 202 receipt](fixtures/control-plane-outbox-replay-accepted.json)
+- [Outbox 安全重放 reason 校验错误](fixtures/control-plane-outbox-replay-validation-error.json)
 - [非流 upstream usage 超出范围 502](fixtures/gateway-upstream-usage-out-of-range.json)
 - [Responses 正常完成](fixtures/responses-stream-completed.sse)
 - [Responses 函数调用](fixtures/responses-stream-function-call.sse)
@@ -286,6 +299,7 @@ OpenAPI 的 `x-required-roles` 是 Policy 契约测试输入。最终授权仍�
 | 创建/禁用用户、修改角色 | ✓ | — | — | — |
 | 创建/修改 Group 及其 Supply Configuration | ✓ | — | — | — |
 | 调整/重置 Group Token 总量 | ✓ | — | — | — |
+| 为 dead Integration Event 创建安全重放消息 | ✓ | — | — | — |
 | 查看或导出秘密明文 | — | — | — | — |
 
 任何角色在普通读取中都只能看到 API Key display prefix 与 Account credential prefix。完整 API Key

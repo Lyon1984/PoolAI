@@ -33,6 +33,7 @@ const VERSIONED_ACTION_OPERATIONS = new Set([
 ])
 
 const ETAG_EXEMPT_IDEMPOTENT_OPERATIONS = new Set([
+  'adminReplayDeadOutboxMessage',
   'adminRequestUserPasswordReset',
   'beginMyTotpSetup',
 ])

@@ -119,6 +119,7 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_group_quota_adjust_total"] = GroupQuota,
         ["poolai_group_quota_reset"] = GroupQuota,
         ["poolai_bump_current_quota_representation_version"] = GroupQuota,
+        ["poolai_operations_replay_dead_outbox"] = Operations,
     };
 
     private static readonly Dictionary<string, RegisteredAccess> RegisteredBusinessAccesses =
@@ -262,6 +263,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0013_group_quota_period_m3_e1.sql:$permission_audit$:1bab610e50606405fcb4c7e0b1572cfadaeaacea4d9ffb15b1f2744bb9d23894",
         "0014_group_quota_representation_version_m3_e1.sql:$semantic_epoch$:efd854329413d130fc6578311135490ab5428a88ccb8142f4b943de0c40c5e3f",
         "0014_group_quota_representation_version_m3_e1.sql:$permission_audit$:fe04cbea6ca21aec3edd7fa746b9e2b1abe8e7fcf0baadcd02fc275d3956177a",
+        "0015_operations_outbox_replay_m3_e4.sql:$permission_audit$:c2a51164cd9b1e1093c248635e7e5a9ebd0e71fc70c1f8636773f958157ee355",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
