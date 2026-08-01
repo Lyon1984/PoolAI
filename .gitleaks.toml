@@ -4,6 +4,16 @@ title = "PoolAI Gitleaks configuration"
 useDefault = true
 
 [[allowlists]]
+description = "M3-E2 numeric(78) quota bound identifier is not an API credential"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^src/Modules/PoolAI\.Modules\.GroupQuota/Infrastructure/Persistence/PostgresQuotaLedgerAbiContract\.cs$''',
+  '''^tests/PoolAI\.IntegrationTests/PostgresQuotaLedgerAbiContractTests\.cs$''',
+]
+regexes = ['''^QuotaLedgerValidation\.MaximumNumeric78$''']
+
+[[allowlists]]
 description = "M1 Exit deterministic idempotency keys are not API credentials"
 condition = "AND"
 regexTarget = "secret"
