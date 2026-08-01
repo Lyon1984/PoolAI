@@ -115,6 +115,43 @@ internal sealed class GroupQuotaLedgerService(
         return Result.Success(response);
     }
 
+    public async ValueTask<Result<ReservationHandle>> RenewAsync(
+        RenewReservationCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (!QuotaLedgerValidation.IsValid(command))
+        {
+            return InternalFailure<ReservationHandle>();
+        }
+
+        RenewReservationWrite write = new(
+            command,
+            QuotaMutationIdentityFactory.ForRenewal(
+                command.Reservation.AttemptId,
+                command.RenewalSequence));
+        IUnitOfWork unitOfWork = await _unitOfWorkFactory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease = unitOfWork.ConfigureAwait(false);
+        QuotaRepositoryResult<QuotaRenewalRow> result = await _repository
+            .RenewAsync(write, unitOfWork.Context, cancellationToken)
+            .ConfigureAwait(false);
+        if (!result.IsSuccess)
+        {
+            return Failure<ReservationHandle>(result.Failure);
+        }
+
+        QuotaRenewalRow row = result.Value!;
+        ReservationHandle refreshed = command.Reservation with
+        {
+            LeaseExpiresAt = row.LeaseExpiresAt,
+            MaxExpiresAt = row.MaxExpiresAt,
+        };
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return Result.Success(refreshed);
+    }
+
     public async ValueTask<Result<QuotaTransitionResult>> SettleAsync(
         SettleReservationCommand command,
         CancellationToken cancellationToken)
@@ -193,24 +230,28 @@ internal sealed class GroupQuotaLedgerService(
             return Failure<UsageAdjustmentResult>(QuotaLedgerFailure.TokenNumericOverflow);
         }
 
-        Result<UsageAdjustmentResult> result = await ExecuteAdjustmentAsync(
+        AdjustmentExecution execution = await ExecuteAdjustmentAsync(
             command,
             cancellationToken).ConfigureAwait(false);
-        if (result.IsFailure
-            && string.Equals(
-                result.Error.Code,
-                "token_numeric_overflow",
-                StringComparison.Ordinal))
+        if (execution.Failure == QuotaLedgerFailure.TokenNumericOverflow)
         {
             await ReportTokenNumericOverflowAsync(
                 "adjust_usage",
                 command.AttemptId).ConfigureAwait(false);
         }
 
-        return result;
+        if (execution.Failure is QuotaLedgerFailure.UsageWithoutDispatch
+            or QuotaLedgerFailure.TerminalFactInvariantBroken)
+        {
+            await ReportLateUsageInvariantAsync(
+                execution.Failure,
+                command.AttemptId).ConfigureAwait(false);
+        }
+
+        return execution.Result;
     }
 
-    private async ValueTask<Result<UsageAdjustmentResult>> ExecuteAdjustmentAsync(
+    private async ValueTask<AdjustmentExecution> ExecuteAdjustmentAsync(
         AdjustAttemptUsageCommand command,
         CancellationToken cancellationToken)
     {
@@ -226,7 +267,9 @@ internal sealed class GroupQuotaLedgerService(
             .ConfigureAwait(false);
         if (!result.IsSuccess)
         {
-            return Failure<UsageAdjustmentResult>(result.Failure);
+            return new AdjustmentExecution(
+                Failure<UsageAdjustmentResult>(result.Failure),
+                result.Failure);
         }
 
         UsageAdjustmentRow row = result.Value!;
@@ -242,7 +285,9 @@ internal sealed class GroupQuotaLedgerService(
             row.ConsumedTokens,
             row.ReservedTokens);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return Result.Success(response);
+        return new AdjustmentExecution(
+            Result.Success(response),
+            QuotaLedgerFailure.None);
     }
 
     public async ValueTask<Result<AttemptSettlementFact>> GetByAttemptIdAsync(
@@ -387,6 +432,24 @@ internal sealed class GroupQuotaLedgerService(
                 attempt_id = attemptId.Value,
             }),
             CancellationToken.None);
+
+    private ValueTask ReportLateUsageInvariantAsync(
+        QuotaLedgerFailure failure,
+        EntityId attemptId) => _operationalEventWriter.WriteAsync(
+            "group_quota.late_usage_invariant_violation",
+            JsonSerializer.SerializeToElement(new
+            {
+                severity = "P0",
+                classification = failure == QuotaLedgerFailure.UsageWithoutDispatch
+                    ? "pre_dispatch_usage"
+                    : "terminal_fact_invariant",
+                attempt_id = attemptId.Value,
+            }),
+            CancellationToken.None);
+
+    private sealed record AdjustmentExecution(
+        Result<UsageAdjustmentResult> Result,
+        QuotaLedgerFailure Failure);
 
     private sealed class MissingOperationalEventWriter : IOperationalEventWriter
     {

@@ -20,6 +20,9 @@ internal enum QuotaLedgerFailure
     ResourceConflict,
     IdempotencyConflict,
     ReservationLeaseLost,
+    ReservationExpiryRaceLost,
+    UsageWithoutDispatch,
+    TerminalFactInvariantBroken,
     TokenNumericOverflow,
     DependencyUnavailable,
     Internal,
@@ -39,6 +42,10 @@ internal sealed record MarkReservationDispatchedWrite(
     MarkReservationDispatchedCommand Command,
     QuotaMutationIdentity Mutation);
 
+internal sealed record RenewReservationWrite(
+    RenewReservationCommand Command,
+    QuotaMutationIdentity Mutation);
+
 internal sealed record SettleReservationWrite(
     SettleReservationCommand Command,
     QuotaMutationIdentity Mutation);
@@ -46,6 +53,25 @@ internal sealed record SettleReservationWrite(
 internal sealed record ReleaseReservationWrite(
     ReleaseReservationCommand Command,
     QuotaMutationIdentity Mutation);
+
+internal sealed record QuotaExpiryCandidateKey(
+    DateTimeOffset LeaseExpiresAt,
+    EntityId ReservationId);
+
+internal sealed record QuotaExpiryCandidate(
+    EntityId ReservationId,
+    EntityId AttemptId,
+    EntityId GroupId,
+    EntityId PeriodId,
+    DateTimeOffset LeaseExpiresAt)
+{
+    internal QuotaExpiryCandidateKey Key => new(LeaseExpiresAt, ReservationId);
+}
+
+internal sealed record ExpireReservationWrite(
+    QuotaExpiryCandidate Candidate,
+    QuotaMutationIdentity Mutation,
+    string Reason);
 
 internal sealed record AdjustAttemptUsageCommand(
     EntityId GroupId,
@@ -87,6 +113,13 @@ internal sealed record QuotaDispatchRow(
     EntityId PeriodId,
     ReservationStatus Status,
     DateTimeOffset DispatchStartedAt,
+    DateTimeOffset LeaseExpiresAt,
+    DateTimeOffset MaxExpiresAt);
+
+internal sealed record QuotaRenewalRow(
+    EntityId ReservationId,
+    EntityId PeriodId,
+    ReservationStatus Status,
     DateTimeOffset LeaseExpiresAt,
     DateTimeOffset MaxExpiresAt);
 
@@ -149,6 +182,11 @@ internal interface IQuotaLedgerRepository
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 
+    ValueTask<QuotaRepositoryResult<QuotaRenewalRow>> RenewAsync(
+        RenewReservationWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
     ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> SettleAsync(
         SettleReservationWrite write,
         IUnitOfWorkContext unitOfWorkContext,
@@ -156,6 +194,17 @@ internal interface IQuotaLedgerRepository
 
     ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> ReleaseAsync(
         ReleaseReservationWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<IReadOnlyList<QuotaExpiryCandidate>> ListDueExpiryCandidatesAsync(
+        QuotaExpiryCandidateKey? after,
+        int pageSize,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
+    ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> ExpireAsync(
+        ExpireReservationWrite write,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 

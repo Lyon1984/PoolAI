@@ -233,6 +233,16 @@ public sealed class GroupQuotaAbstractionsContractTests
     }
 
     [Fact]
+    public void RenewCommandPreservesReservationAndStablePositiveSequence()
+    {
+        ReservationHandle reservation = CreateReservation();
+        RenewReservationCommand command = new(reservation, RenewalSequence: 17);
+
+        Assert.Same(reservation, command.Reservation);
+        Assert.Equal(17, command.RenewalSequence);
+    }
+
+    [Fact]
     public void ReserveResultPreservesStatusHandleAndLosslessLedgerPosition()
     {
         ReservationHandle reservation = CreateReservation();
@@ -366,6 +376,7 @@ public sealed class GroupQuotaAbstractionsContractTests
         Type ledger = typeof(IGroupQuotaLedger);
         Assert.NotNull(ledger.GetMethod(nameof(IGroupQuotaLedger.ReserveAsync)));
         Assert.NotNull(ledger.GetMethod(nameof(IGroupQuotaLedger.MarkDispatchedAsync)));
+        Assert.NotNull(ledger.GetMethod(nameof(IGroupQuotaLedger.RenewAsync)));
         Assert.NotNull(ledger.GetMethod(nameof(IGroupQuotaLedger.SettleAsync)));
         Assert.NotNull(ledger.GetMethod(nameof(IGroupQuotaLedger.ReleaseAsync)));
 

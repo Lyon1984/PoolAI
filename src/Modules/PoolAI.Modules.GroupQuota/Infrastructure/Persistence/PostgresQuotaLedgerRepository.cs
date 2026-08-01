@@ -84,6 +84,38 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
         );
         """;
 
+    private const string RenewSql = """
+        SELECT
+            result_reservation_id,
+            result_period_id,
+            result_status,
+            result_lease_expires_at,
+            result_max_expires_at
+        FROM public.poolai_quota_renew($1, $2, $3, $4, $5, $6);
+        """;
+
+    private const string DueExpiryCandidatesSql = """
+        WITH scan_clock AS MATERIALIZED (
+            SELECT clock_timestamp() AS sampled_at
+        )
+        SELECT
+            reservation.id,
+            reservation.attempt_id,
+            reservation.group_id,
+            reservation.period_id,
+            reservation.lease_expires_at
+        FROM public.group_token_reservations AS reservation
+        CROSS JOIN scan_clock
+        WHERE reservation.status = 'pending'
+          AND reservation.lease_expires_at <= scan_clock.sampled_at
+          AND (
+              $1::timestamptz IS NULL
+              OR (reservation.lease_expires_at, reservation.id) > ($1::timestamptz, $2::uuid)
+          )
+        ORDER BY reservation.lease_expires_at, reservation.id
+        LIMIT $3;
+        """;
+
     private const string SettleSql = """
         SELECT
             result_reservation_id,
@@ -110,6 +142,18 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
             result_reserved_tokens,
             result_remaining_tokens
         FROM public.poolai_quota_release($1, $2, $3, $4, $5, $6);
+        """;
+
+    private const string ExpireSql = """
+        SELECT
+            result_reservation_id,
+            result_period_id,
+            result_status,
+            result_total_tokens,
+            result_consumed_tokens,
+            result_reserved_tokens,
+            result_remaining_tokens
+        FROM public.poolai_quota_expire($1, $2, $3, $4, $5, $6);
         """;
 
     private const string AdjustUsageSql = """
@@ -286,6 +330,65 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
         }
     }
 
+    public async ValueTask<QuotaRepositoryResult<QuotaRenewalRow>> RenewAsync(
+        RenewReservationWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        try
+        {
+            using NpgsqlCommand command = session.CreateCommand(RenewSql);
+            ReservationHandle reservation = write.Command.Reservation;
+            command.Parameters.AddWithValue(reservation.GroupId.Value);
+            command.Parameters.AddWithValue(reservation.AttemptId.Value);
+            command.Parameters.AddWithValue(reservation.LeaseOwner);
+            AddMutation(command.Parameters, write.Mutation);
+            QuotaRenewalRow row = await PostgresQuotaLedgerAbiContract
+                .ReadRenewalAsync(command, write, cancellationToken)
+                .ConfigureAwait(false);
+            return QuotaRepositoryResult<QuotaRenewalRow>.Success(row);
+        }
+        catch (PostgresException exception) when (IsBusinessError(exception))
+        {
+            return QuotaRepositoryResult<QuotaRenewalRow>.Failed(
+                MapBusinessError(QuotaSqlOperation.Renew, exception.MessageText));
+        }
+        catch (NpgsqlException exception) when (exception.IsTransient)
+        {
+            return QuotaRepositoryResult<QuotaRenewalRow>.Failed(
+                QuotaLedgerFailure.DependencyUnavailable);
+        }
+    }
+
+    public async ValueTask<IReadOnlyList<QuotaExpiryCandidate>> ListDueExpiryCandidatesAsync(
+        QuotaExpiryCandidateKey? after,
+        int pageSize,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageSize);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(DueExpiryCandidatesSql);
+        command.Parameters.Add(new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.TimestampTz,
+            Value = after is null
+                ? DBNull.Value
+                : after.LeaseExpiresAt.ToUniversalTime(),
+        });
+        command.Parameters.Add(new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.Uuid,
+            Value = after is null ? DBNull.Value : after.ReservationId.Value,
+        });
+        command.Parameters.AddWithValue(pageSize);
+        return await PostgresQuotaLedgerAbiContract
+            .ReadExpiryCandidatesAsync(command, after, pageSize, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> SettleAsync(
         SettleReservationWrite write,
         IUnitOfWorkContext unitOfWorkContext,
@@ -374,6 +477,44 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
         {
             return QuotaRepositoryResult<QuotaTransitionRow>.Failed(
                 MapBusinessError(QuotaSqlOperation.Release, exception.MessageText));
+        }
+        catch (NpgsqlException exception) when (exception.IsTransient)
+        {
+            return QuotaRepositoryResult<QuotaTransitionRow>.Failed(
+                QuotaLedgerFailure.DependencyUnavailable);
+        }
+    }
+
+    public async ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> ExpireAsync(
+        ExpireReservationWrite write,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        try
+        {
+            using NpgsqlCommand command = session.CreateCommand(ExpireSql);
+            QuotaExpiryCandidate candidate = write.Candidate;
+            command.Parameters.AddWithValue(candidate.GroupId.Value);
+            command.Parameters.AddWithValue(candidate.AttemptId.Value);
+            AddMutation(command.Parameters, write.Mutation);
+            command.Parameters.AddWithValue(write.Reason);
+            QuotaTransitionRow row = await PostgresQuotaLedgerAbiContract
+                .ReadTransitionAsync(
+                    command,
+                    candidate.ReservationId,
+                    candidate.PeriodId,
+                    ReservationStatus.Expired,
+                    "expiry",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return QuotaRepositoryResult<QuotaTransitionRow>.Success(row);
+        }
+        catch (PostgresException exception) when (IsBusinessError(exception))
+        {
+            return QuotaRepositoryResult<QuotaTransitionRow>.Failed(
+                MapBusinessError(QuotaSqlOperation.Expire, exception.MessageText));
         }
         catch (NpgsqlException exception) when (exception.IsTransient)
         {
@@ -607,9 +748,23 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
                 QuotaLedgerFailure.ResourceNotFound,
             "group_quota_period_not_current" => QuotaLedgerFailure.ResourceConflict,
             "idempotency_key_reused" => QuotaLedgerFailure.IdempotencyConflict,
-            "reservation_lease_expired" or "reservation_max_lifetime_reached"
-                when operation == QuotaSqlOperation.MarkDispatched =>
+            "invalid_reservation_renewal" when operation == QuotaSqlOperation.Renew =>
+                QuotaLedgerFailure.ValidationFailed,
+            "reservation_not_pending" or "reservation_owner_mismatch"
+                or "reservation_lease_expired" or "reservation_max_lifetime_reached"
+                when operation is QuotaSqlOperation.MarkDispatched or QuotaSqlOperation.Renew =>
                     QuotaLedgerFailure.ReservationLeaseLost,
+            "reservation_not_pending" or "reservation_lease_not_expired"
+                when operation == QuotaSqlOperation.Expire =>
+                    QuotaLedgerFailure.ReservationExpiryRaceLost,
+            "usage_adjustment_requires_dispatch"
+                when operation == QuotaSqlOperation.AdjustUsage =>
+                    QuotaLedgerFailure.UsageWithoutDispatch,
+            "adjustment_event_without_adjustment_fact"
+                or "terminal_reservation_has_unexpected_attempt_fact"
+                or "terminal_reservation_missing_attempt_fact"
+                when operation == QuotaSqlOperation.AdjustUsage =>
+                    QuotaLedgerFailure.TerminalFactInvariantBroken,
             _ => QuotaLedgerFailure.Internal,
         };
 
@@ -656,8 +811,10 @@ internal sealed class PostgresQuotaLedgerRepository : IQuotaLedgerRepository
     {
         Reserve,
         MarkDispatched,
+        Renew,
         Settle,
         Release,
+        Expire,
         AdjustUsage,
     }
 }

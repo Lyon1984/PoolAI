@@ -28,6 +28,7 @@ builder.Services
     .AddIdentityModule()
     .AddIdentityEmailOutboxWorker(builder.Configuration)
     .AddGroupQuotaModule()
+    .AddGroupQuotaReservationSweeper(builder.Configuration)
     .AddSupplyModule(
         builder.Configuration,
         builder.Environment.EnvironmentName)

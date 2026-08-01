@@ -47,7 +47,8 @@ builder.Services
     .AddRoutingModule()
     .AddUsageModule()
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)
-    .AddGatewayModule()
+    .AddGatewayModule(
+        builder.Configuration.GetValue("Quota:DisconnectDrainSeconds", 15))
     .AddOpenAiAdapterCapabilities();
 
 builder.Services.AddPoolAiObservability(builder.Configuration);

@@ -170,6 +170,65 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
     }
 
     [Fact]
+    public void RenewValidationCoversReservationShapeAndPositiveSequence()
+    {
+        ReservationHandle reservation = Reservation();
+        RenewReservationCommand valid = new(reservation, RenewalSequence: 1);
+
+        Assert.True(QuotaLedgerValidation.IsValid(valid));
+        (string Label, RenewReservationCommand Command)[] invalid =
+        [
+            ("missing reservation", valid with { Reservation = null! }),
+            ("request UUID version", valid with
+            {
+                Reservation = reservation with { RequestId = NonVersion7 },
+            }),
+            ("attempt UUID version", valid with
+            {
+                Reservation = reservation with { AttemptId = NonVersion7 },
+            }),
+            ("reservation UUID version", valid with
+            {
+                Reservation = reservation with { ReservationId = NonVersion7 },
+            }),
+            ("attempt index", valid with
+            {
+                Reservation = reservation with { AttemptIndex = -1 },
+            }),
+            ("zero estimate", valid with
+            {
+                Reservation = reservation with { EstimatedTokens = 0 },
+            }),
+            ("unsafe estimate", valid with
+            {
+                Reservation = reservation with
+                {
+                    EstimatedTokens = MaximumSafeTokenCount + 1,
+                },
+            }),
+            ("lease owner", valid with
+            {
+                Reservation = reservation with { LeaseOwner = " " },
+            }),
+            ("lease deadline order", valid with
+            {
+                Reservation = reservation with
+                {
+                    LeaseExpiresAt = Now.AddMinutes(11),
+                    MaxExpiresAt = Now.AddMinutes(10),
+                },
+            }),
+            ("zero renewal sequence", valid with { RenewalSequence = 0 }),
+            ("negative renewal sequence", valid with { RenewalSequence = -1 }),
+        ];
+
+        foreach ((string label, RenewReservationCommand command) in invalid)
+        {
+            Assert.False(QuotaLedgerValidation.IsValid(command), label);
+        }
+    }
+
+    [Fact]
     public void SettlementStructureCoversEveryOptionalFieldTokenAndClockFence()
     {
         SettleReservationCommand valid = SettlementCommand();
@@ -459,18 +518,35 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
             () => QuotaMutationIdentityFactory.For(AttemptId, string.Empty));
         Assert.Throws<ArgumentException>(
             () => QuotaMutationIdentityFactory.For(AttemptId, "   "));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => QuotaMutationIdentityFactory.ForRenewal(AttemptId, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => QuotaMutationIdentityFactory.ForRenewal(AttemptId, -1));
 
         EntityId derivedFromNonVersion7 =
             QuotaMutationIdentityFactory.ReservationId(NonVersion7);
         QuotaMutationIdentity mutation =
             QuotaMutationIdentityFactory.For(NonVersion7, "reserve");
+        QuotaMutationIdentity renewal =
+            QuotaMutationIdentityFactory.ForRenewal(NonVersion7, 17);
+        QuotaMutationIdentity renewalReplay =
+            QuotaMutationIdentityFactory.ForRenewal(NonVersion7, 17);
+        QuotaMutationIdentity nextRenewal =
+            QuotaMutationIdentityFactory.ForRenewal(NonVersion7, 18);
 
         Assert.Equal(7, derivedFromNonVersion7.Value.Version);
         Assert.Equal(7, mutation.EventId.Value.Version);
         Assert.Equal(7, mutation.OutboxId.Value.Version);
+        Assert.Equal(renewal, renewalReplay);
+        Assert.NotEqual(renewal, nextRenewal);
+        Assert.Equal(7, renewal.EventId.Value.Version);
+        Assert.Equal(7, renewal.OutboxId.Value.Version);
         Assert.Equal(
             $"quota:reserve:v1:{NonVersion7.Value:N}",
             mutation.IdempotencyKey);
+        Assert.Equal(
+            $"quota:renew:v1:{NonVersion7.Value:N}:17",
+            renewal.IdempotencyKey);
     }
 
     [Fact]
@@ -773,6 +849,8 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
             await service.MarkDispatchedAsync(null!, CancellationToken.None)
                 .ConfigureAwait(false));
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+            await service.RenewAsync(null!, CancellationToken.None).ConfigureAwait(false));
+        await Assert.ThrowsAsync<ArgumentNullException>(async () =>
             await service.SettleAsync(null!, CancellationToken.None).ConfigureAwait(false));
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
             await service.ReleaseAsync(null!, CancellationToken.None).ConfigureAwait(false));
@@ -796,6 +874,8 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
         {
             ReserveResult = QuotaRepositoryResult<QuotaReservationRow>.Failed(
                 QuotaLedgerFailure.DependencyUnavailable),
+            AdjustmentResult = QuotaRepositoryResult<UsageAdjustmentRow>.Failed(
+                QuotaLedgerFailure.UsageWithoutDispatch),
         };
         RecordingUnitOfWorkFactory units = new();
         GroupQuotaLedgerService service = new(repository, units);
@@ -815,16 +895,24 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                         BigInteger.Zero),
                 },
                 TestContext.Current.CancellationToken).ConfigureAwait(false));
+        InvalidOperationException adjustmentException =
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await service.AdjustAsync(
+                    AdjustmentCommand(),
+                    TestContext.Current.CancellationToken).ConfigureAwait(false));
 
         Assert.True(ordinaryFailure.IsFailure);
         Assert.Equal("dependency_unavailable", ordinaryFailure.Error.Code);
         Assert.Contains("operational event writer", exception.Message,
             StringComparison.Ordinal);
+        Assert.Contains("operational event writer", adjustmentException.Message,
+            StringComparison.Ordinal);
         Assert.Equal(1, repository.ReserveCalls);
         Assert.Equal(0, repository.SettleCalls);
-        Assert.Equal(1, units.BeginCalls);
+        Assert.Equal(1, repository.AdjustmentCalls);
+        Assert.Equal(2, units.BeginCalls);
         Assert.Equal(0, units.CommitCalls);
-        Assert.Equal(1, units.DisposeCalls);
+        Assert.Equal(2, units.DisposeCalls);
     }
 
     private static ReserveQuotaCommand ReserveCommand() => new(
@@ -1032,6 +1120,11 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 DispatchResult ?? throw Unexpected(nameof(MarkDispatchedAsync)));
         }
 
+        public ValueTask<QuotaRepositoryResult<QuotaRenewalRow>> RenewAsync(
+            RenewReservationWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw Unexpected(nameof(RenewAsync));
+
         public ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> SettleAsync(
             SettleReservationWrite write,
             IUnitOfWorkContext unitOfWorkContext,
@@ -1054,6 +1147,18 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
             return ValueTask.FromResult(
                 ReleaseResult ?? throw Unexpected(nameof(ReleaseAsync)));
         }
+
+        public ValueTask<IReadOnlyList<QuotaExpiryCandidate>> ListDueExpiryCandidatesAsync(
+            QuotaExpiryCandidateKey? after,
+            int pageSize,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw Unexpected(
+                nameof(ListDueExpiryCandidatesAsync));
+
+        public ValueTask<QuotaRepositoryResult<QuotaTransitionRow>> ExpireAsync(
+            ExpireReservationWrite write,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw Unexpected(nameof(ExpireAsync));
 
         public ValueTask<QuotaRepositoryResult<UsageAdjustmentRow>> AdjustUsageAsync(
             AdjustAttemptUsageWrite write,
