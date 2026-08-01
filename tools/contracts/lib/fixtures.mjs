@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
-import { contractPaths, invariant } from './context.mjs'
+import { Ajv2020, addFormats, contractPaths, invariant } from './context.mjs'
 
 const JSON_FIXTURE_SCHEMAS = Object.freeze({
   'control-plane-outbox-replay-accepted.json': 'OutboxReplayReceipt',
@@ -713,8 +713,126 @@ export function validateChatSse(
   return frames.length
 }
 
+function validateGroupQuotaEventFixtures(value, fixtureName, validateEnvelope) {
+  invariant(
+    value && typeof value === 'object' && !Array.isArray(value),
+    `${fixtureName} must be an object.`,
+  )
+  invariant(value.fixture_version === 1, `${fixtureName} fixture_version must be 1.`)
+  invariant(
+    value.schema === '../group-quota-events-v1.json',
+    `${fixtureName} must reference the canonical GroupQuota event schema.`,
+  )
+
+  if (fixtureName.endsWith('-valid.json')) {
+    invariant(Array.isArray(value.cases), `${fixtureName} cases must be an array.`)
+    invariant(value.cases.length === 11, `${fixtureName} must contain 11 positive cases.`)
+    const eventTypes = new Set()
+    let conservativeExpiry = 0
+    let preDispatchExpiry = 0
+    for (const fixtureCase of value.cases) {
+      invariant(
+        typeof fixtureCase?.name === 'string' && fixtureCase.name.length > 0,
+        `${fixtureName} contains a case without a name.`,
+      )
+      invariant(
+        fixtureCase.envelope &&
+          typeof fixtureCase.envelope === 'object' &&
+          !Array.isArray(fixtureCase.envelope),
+        `${fixtureName} ${fixtureCase.name} must contain a complete envelope.`,
+      )
+      invariant(
+        fixtureCase.expected_event_type === fixtureCase.envelope.event_type,
+        `${fixtureName} ${fixtureCase.name} event type expectation drifted.`,
+      )
+      invariant(
+        validateEnvelope(fixtureCase.envelope),
+        `${fixtureName} ${fixtureCase.name} violates group-quota-events-v1.json: ${validateEnvelope.errors?.map(({ instancePath, message }) => `${instancePath || '/'} ${message}`).join('; ')}`,
+      )
+      eventTypes.add(fixtureCase.expected_event_type)
+      if (fixtureCase.expected_event_type === 'expired') {
+        if (fixtureCase.expected_conservative_expiry === true) {
+          conservativeExpiry += 1
+        } else if (fixtureCase.expected_conservative_expiry === false) {
+          preDispatchExpiry += 1
+        }
+      }
+    }
+    invariant(eventTypes.size === 10, `${fixtureName} must cover exactly 10 event types.`)
+    invariant(
+      conservativeExpiry === 1 && preDispatchExpiry === 1,
+      `${fixtureName} must cover conservative and pre-dispatch expiry once each.`,
+    )
+    return
+  }
+
+  invariant(
+    value.base_envelope &&
+      typeof value.base_envelope === 'object' &&
+      !Array.isArray(value.base_envelope),
+    `${fixtureName} base_envelope must be an object.`,
+  )
+  invariant(Array.isArray(value.cases), `${fixtureName} cases must be an array.`)
+  invariant(value.cases.length >= 10, `${fixtureName} lacks negative coverage.`)
+  const failureClasses = new Set()
+  for (const fixtureCase of value.cases) {
+    invariant(
+      typeof fixtureCase?.name === 'string' && fixtureCase.name.length > 0,
+      `${fixtureName} contains a case without a name.`,
+    )
+    invariant(
+      typeof fixtureCase.expected_failure === 'string',
+      `${fixtureName} ${fixtureCase.name} has no expected failure class.`,
+    )
+    invariant(
+      Array.isArray(fixtureCase.mutations) && fixtureCase.mutations.length > 0,
+      `${fixtureName} ${fixtureCase.name} has no mutations.`,
+    )
+    for (const mutation of fixtureCase.mutations) {
+      invariant(
+        ['add', 'remove', 'replace'].includes(mutation?.op),
+        `${fixtureName} ${fixtureCase.name} has an unsupported mutation.`,
+      )
+      invariant(
+        typeof mutation.path === 'string' && mutation.path.startsWith('/'),
+        `${fixtureName} ${fixtureCase.name} has an invalid mutation path.`,
+      )
+      invariant(
+        mutation.op === 'remove' || Object.hasOwn(mutation, 'value'),
+        `${fixtureName} ${fixtureCase.name} mutation value is missing.`,
+      )
+    }
+    failureClasses.add(fixtureCase.expected_failure)
+  }
+  for (const requiredFailure of [
+    'UnsupportedSchemaVersion',
+    'UnsupportedEventType',
+    'EnvelopePayloadMismatch',
+    'MissingIdentity',
+    'InvalidSequence',
+    'InvalidEventSemantics',
+  ]) {
+    invariant(
+      failureClasses.has(requiredFailure),
+      `${fixtureName} lacks ${requiredFailure} coverage.`,
+    )
+  }
+}
+
 export async function validateFixtures(validateSchema, catalog) {
   const names = (await readdir(contractPaths.fixtures)).sort()
+  const groupQuotaSchema = JSON.parse(await readFile(contractPaths.groupQuotaEvents, 'utf8'))
+  const groupQuotaAjv = new Ajv2020({ allErrors: true, strict: true })
+  for (const keyword of [
+    'x-poolai-topic',
+    'x-poolai-schema-version',
+    'x-poolai-compatibility',
+    'x-poolai-event-type-mapping',
+  ]) {
+    groupQuotaAjv.addKeyword(keyword)
+  }
+  addFormats(groupQuotaAjv)
+  const validateGroupQuotaEnvelope = groupQuotaAjv.compile(groupQuotaSchema)
   const expectedNames = [
     ...Object.keys(JSON_FIXTURE_SCHEMAS),
     'chat-completions-error.sse',
@@ -722,6 +840,8 @@ export async function validateFixtures(validateSchema, catalog) {
     'chat-completions-text.sse',
     'chat-completions-text-no-usage.sse',
     'chat-completions-usage-out-of-range.sse',
+    'group-quota-events-v1-invalid.json',
+    'group-quota-events-v1-valid.json',
     'responses-stream-completed.sse',
     'responses-stream-error.sse',
     'responses-stream-first-byte-timeout.sse',
@@ -746,6 +866,9 @@ export async function validateFixtures(validateSchema, catalog) {
       } else if (JSON_FIXTURE_SCHEMAS[name] === 'ControlPlaneProblem') {
         validateControlPlaneProblemFixture(value, name, catalog)
       }
+      validated += 1
+    } else if (name.startsWith('group-quota-events-v1-') && name.endsWith('.json')) {
+      validateGroupQuotaEventFixtures(JSON.parse(source), name, validateGroupQuotaEnvelope)
       validated += 1
     } else if (name.startsWith('responses-') && name.endsWith('.sse')) {
       sseFrames += validateResponsesSse(source, name, validateSchema, catalog)
