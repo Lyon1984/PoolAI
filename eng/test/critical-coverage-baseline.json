@@ -1,18 +1,18 @@
 {
   "schemaVersion": 2,
-  "capturedAt": "2026-07-31",
+  "capturedAt": "2026-08-01",
   "areas": {
     "quota": {
       "pathIncludes": [
         "PoolAI.Modules.GroupQuota"
       ],
       "pathEndsWith": [],
-      "linesCovered": 3911,
-      "linesValid": 3911,
+      "linesCovered": 5011,
+      "linesValid": 5011,
       "lineRate": 100,
-      "branchesCovered": 1404,
-      "branchesValid": 1459,
-      "branchRate": 96.23029472241261
+      "branchesCovered": 2016,
+      "branchesValid": 2082,
+      "branchRate": 96.82997118155619
     },
     "auth": {
       "pathIncludes": [
