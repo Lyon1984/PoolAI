@@ -168,6 +168,164 @@ public sealed class PostgresTransactionalPersistenceTests
             cancellationToken).AsTask()).ConfigureAwait(true);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "PostgreSQL")]
+    public async Task RuntimeAuditAppendAcceptsExactReplayWithoutASecondRow(
+        bool workerRole)
+    {
+        // Governing contract: ADR 0012 settlement audit is append-once in the
+        // caller-owned transaction without granting Worker read access to audit rows.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        IServiceProvider services = workerRole
+            ? _fixture.WorkerServices
+            : _fixture.ApiServices;
+        IUnitOfWorkFactory factory = services
+            .GetRequiredService<IUnitOfWorkFactory>();
+        IIdempotentAuditAppender appendOnce = services
+            .GetRequiredService<IIdempotentAuditAppender>();
+        Assert.Same(
+            services.GetRequiredService<IAuditAppender>(),
+            appendOnce);
+
+        AuditEntry entry = CreateAttemptFactAuditEntry();
+
+        await AppendAuditAndCommitAsync(
+            factory,
+            appendOnce,
+            entry,
+            appendTwice: true,
+            cancellationToken).ConfigureAwait(true);
+        await AppendAuditAndCommitAsync(
+            factory,
+            appendOnce,
+            entry,
+            appendTwice: false,
+            cancellationToken).ConfigureAwait(true);
+        (int count, string action) = await ReadAuditAsync(
+            entry.Id,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(1, count);
+        Assert.Equal("group_quota.attempt_fact_settled", action);
+        await AssertContradictoryAuditCollisionAsync(
+            factory,
+            appendOnce,
+            entry,
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    private static AuditEntry CreateAttemptFactAuditEntry()
+    {
+        EntityId attemptId = EntityId.New();
+        return new AuditEntry(
+            EntityId.New(),
+            AuditActorType.Service,
+            ActorUserId: null,
+            "group_quota.attempt_fact_settled",
+            "usage_attempt",
+            attemptId,
+            EntityId.New(),
+            Reason: null,
+            IpAddress: null,
+            UserAgent: null,
+            BeforeState: null,
+            JsonSerializer.SerializeToElement(new
+            {
+                input_tokens = "100",
+                output_tokens = "30",
+                cache_read_tokens = "0",
+                cache_creation_tokens = "0",
+                thinking_tokens = "0",
+                total_tokens = "130",
+            }),
+            JsonSerializer.SerializeToElement(new
+            {
+                quota_event_id = EntityId.New().Value,
+                group_id = EntityId.New().Value,
+                period_id = EntityId.New().Value,
+                reservation_id = EntityId.New().Value,
+                attempt_id = attemptId.Value,
+                outcome = "succeeded",
+                usage_source = "upstream",
+            }));
+    }
+
+    private async ValueTask AssertContradictoryAuditCollisionAsync(
+        IUnitOfWorkFactory factory,
+        IIdempotentAuditAppender appendOnce,
+        AuditEntry entry,
+        CancellationToken cancellationToken)
+    {
+        AuditEntry contradictory = entry with
+        {
+            AfterState = JsonSerializer.SerializeToElement(new
+            {
+                input_tokens = "100",
+                output_tokens = "31",
+                cache_read_tokens = "0",
+                cache_creation_tokens = "0",
+                thinking_tokens = "0",
+                total_tokens = "131",
+            }),
+        };
+        PostgresException conflict = await Assert.ThrowsAsync<PostgresException>(
+            () => AppendAuditAndCommitAsync(
+                factory,
+                appendOnce,
+                contradictory,
+                appendTwice: false,
+                cancellationToken).AsTask()).ConfigureAwait(true);
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, conflict.SqlState);
+        Assert.Equal("poolai_attempt_fact_audit_conflict", conflict.MessageText);
+        Assert.Equal(
+            (1, "group_quota.attempt_fact_settled"),
+            await ReadAuditAsync(entry.Id, cancellationToken).ConfigureAwait(true));
+    }
+
+    private static async ValueTask AppendAuditAndCommitAsync(
+        IUnitOfWorkFactory factory,
+        IIdempotentAuditAppender appendOnce,
+        AuditEntry entry,
+        bool appendTwice,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await factory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable lease = unitOfWork.ConfigureAwait(false);
+        await appendOnce.AppendOnceAsync(
+            entry,
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+        if (appendTwice)
+        {
+            await appendOnce.AppendOnceAsync(
+                entry,
+                unitOfWork.Context,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<(int Count, string Action)> ReadAuditAsync(
+        EntityId auditId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT count(*)::integer, min(action)
+            FROM public.audit_logs
+            WHERE id = $1;
+            """);
+        command.Parameters.AddWithValue(auditId.Value);
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Assert.True(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return (reader.GetInt32(0), reader.GetString(1));
+    }
+
     private async ValueTask<CommandIdempotencyResponse> ExecuteCommandAsync(
         CommandScenario scenario,
         TransactionFaultPoint? faultPoint,

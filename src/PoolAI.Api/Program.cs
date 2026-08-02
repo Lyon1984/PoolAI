@@ -8,6 +8,7 @@ using PoolAI.Modules.GroupQuota.Endpoints;
 using PoolAI.Modules.Identity;
 using PoolAI.Modules.Identity.Endpoints;
 using PoolAI.Modules.Operations;
+using PoolAI.Modules.Operations.Endpoints;
 using PoolAI.Modules.Operations.Infrastructure.Configuration;
 using PoolAI.Modules.Routing;
 using PoolAI.Modules.SubscriptionAccess;
@@ -47,6 +48,7 @@ builder.Services
     .AddRoutingModule()
     .AddUsageModule()
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)
+    .AddOperationsAdminControlPlane(builder.Configuration)
     .AddGatewayModule(
         builder.Configuration.GetValue("Quota:DisconnectDrainSeconds", 15))
     .AddOpenAiAdapterCapabilities();
@@ -74,6 +76,7 @@ app.MapSubscriptionAccessEndpoints();
 app.MapUserGroupPoolEndpoints();
 app.MapApiKeyEndpoints();
 app.MapSupplyEndpoints();
+app.MapOutboxReplayEndpoints();
 app.MapHealthChecks(
     "/health/live",
     new HealthCheckOptions { Predicate = _ => false });

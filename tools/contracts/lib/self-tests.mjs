@@ -12,6 +12,7 @@ import {
 import { generateCSharp, generateTypeScript, generateTypeScriptErrors } from './generator.mjs'
 import {
   API_KEY_TEXT_PATTERN,
+  OUTBOX_REPLAY_REASON_PATTERN,
   UPSTREAM_BASE_URL_PATTERN,
   validateOpenApi,
 } from './openapi.mjs'
@@ -185,6 +186,54 @@ export async function runSelfTests({
   negative(
     () => validateContract(tightenedSharedChangeReason),
     '#/components/parameters/XChangeReason must remain on its existing shared contract',
+  )
+
+  const outboxReplayReasonPointer =
+    '#/components/schemas/OutboxReplayRequest/properties/reason'
+  const outboxReplayReason =
+    openApi.components.schemas.OutboxReplayRequest.properties.reason
+  invariant(
+    outboxReplayReason.pattern === OUTBOX_REPLAY_REASON_PATTERN,
+    `${outboxReplayReasonPointer} self-test is not bound to the exact Outbox replay reason pattern.`,
+  )
+  for (const valid of [
+    '\u00A0replay 修复 🔧\u3000',
+    'a\u2028b',
+    'a\u2029b',
+    '🔧'.repeat(500),
+  ]) {
+    validateSchema.validateInline(outboxReplayReason, valid, outboxReplayReasonPointer)
+  }
+  for (const invalid of [
+    '',
+    '\u00A0\u1680\u2007\u202F\u205F\u3000',
+    '🔧'.repeat(501),
+    '\u0000replay',
+    'replay\u000A',
+    'replay\u000D',
+    'replay\u001F',
+    '\u007Freplay',
+    'replay\u0085',
+    'replay\u009F',
+    '\uD800replay',
+    'replay\uDFFF',
+  ]) {
+    negative(
+      () => validateSchema.validateInline(
+        outboxReplayReason,
+        invalid,
+        outboxReplayReasonPointer,
+      ),
+      `${outboxReplayReasonPointer} validation failed`,
+    )
+  }
+
+  const legacyOutboxReplayReason = structuredClone(openApi)
+  legacyOutboxReplayReason.components.schemas.OutboxReplayRequest.properties.reason.pattern =
+    String.raw`.*\S.*`
+  negative(
+    () => validateContract(legacyOutboxReplayReason),
+    `${outboxReplayReasonPointer} must use the exact Outbox replay Unicode scalar reason contract`,
   )
 
   const missingDedicatedApiKeyReason = structuredClone(openApi)

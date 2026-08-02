@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "3049895a154cebb6f16a9e80646a21c8a18fe76d77a5aecb4511012e555c6ce0"
+    "sha256": "e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 15,
-    "maximum_compatible_version": 15,
+    "minimum_compatible_version": 16,
+    "maximum_compatible_version": 16,
     "migrations": [
       {
         "version": 1,
@@ -100,6 +100,12 @@
         "name": "0015_operations_outbox_replay_m3_e4.sql",
         "source": "docs/database/0015_operations_outbox_replay_m3_e4.sql",
         "sha256": "d14a9dcf2dea98867c8c973ce850a2e122e4679d990701e36d7affb2d0181516"
+      },
+      {
+        "version": 16,
+        "name": "0016_operations_delivery_and_fact_audit_m3_e4.sql",
+        "source": "docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql",
+        "sha256": "a0c8a395f6d51aab108a3ad3e1912e4008f3bdabfe01e809701737ed24b569db"
       }
     ]
   },

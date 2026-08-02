@@ -62,6 +62,12 @@ they do not maintain a second handwritten event vocabulary.
   `poolai.quota.v1:group:{aggregate_id:D}`, using the lower-case canonical Group
   UUID. The Envelope must have `aggregate_type=group` and
   `aggregate_id=payload.group_id`.
+- For this quota route, partition and lineage identity is exactly
+  `(topic, 'group', aggregate_id, source_event_sequence)`. The raw Envelope
+  `aggregate_type` remains a required strict-codec field and must equal `group`,
+  but it is not allowed to create a second partition for the same Group. A
+  malformed value therefore poisons and blocks that Group position rather than
+  escaping into a sibling partition.
 - `aggregation_watermarks.last_event_sequence` for projector
   `usage-hourly-v1` stores the last successfully consumed
   `source_event_sequence` for that Group. Gaps caused by other Groups are valid.
@@ -78,10 +84,12 @@ existing meanings cannot change within v1.
 
 ### Partition order, poison, and replay lineage
 
-A logical lineage is all Outbox messages with the same
-`topic/aggregate_type/aggregate_id/source_event_sequence`. The original member
-has `replay_of = null`; every replay preserves all four lineage fields even when
-it points to another dead replay.
+A quota logical lineage is all Outbox messages with the same
+`topic/'group'/aggregate_id/source_event_sequence`. The original member has
+`replay_of = null`; every replay preserves the complete original Envelope,
+including its raw `aggregate_type`, even when it points to another dead replay.
+That preserved field is still validated by the codec but cannot split the quota
+Group's ordering boundary.
 
 The publisher may claim only topics for which an explicit consumer route is
 registered. It must never mark an Identity, Supply, Subscription, or other
@@ -97,6 +105,12 @@ Within one quota Group partition, only the smallest unresolved
 4. a pending replay of that dead lineage is eligible despite its later physical
    Outbox sequence; and
 5. another Group remains independently claimable.
+
+A publisher may treat a lineage as globally complete only when an exact member
+is already `published`; the proof compares the complete immutable Envelope, not
+only the four ordering fields. This global published proof is a claim/convergence
+optimization for a completed lineage. It does not stand in for any individual
+consumer's Inbox receipt when a prior physical message ended `dead`.
 
 For the normative ordering example, source 7 / physical 20 is dead, source 8 /
 physical 21 is waiting, and its Admin replay is physical 42 / source 7. The
@@ -128,6 +142,20 @@ The Usage consumer performs one short UoW in this order:
 4. UPSERT the complete recomputed buckets; and
 5. advance the Group checkpoint to the logical `source_event_sequence` with the
    existing owner/version CAS, then commit once.
+
+Inbox recovery is owned independently by every durable consumer. If consumer A
+committed the original physical message before consumer B poisoned it, an Admin
+replay can be an exact duplicate for A while it remains new work for B. For a
+replay whose logical source is already at or behind A's checkpoint, A may accept
+it only when `replay_of` names the direct predecessor and A has that predecessor's
+Inbox receipt with the same consumer name, topic, schema version, and canonical
+payload hash. A writes the replay's new physical Inbox receipt in that same UoW
+and returns exact duplicate without reapplying its projection. A missing
+predecessor receipt lets a consumer whose checkpoint has not reached that source
+continue normal processing; if its checkpoint is already at or beyond the source,
+missing or contradictory proof fails closed. Each later consumer makes the same
+decision from its own receipts, so no global consumer-progress row or new table
+is needed.
 
 The fact reader returns immutable snapshots for one exact
 Group/Period/completion-hour and never exposes a GroupQuota repository, DbContext,
@@ -224,10 +252,19 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
 
 ## Migration and rollback impact
 
-- No database migration is required. Existing `source_event_sequence`,
-  `replay_of`, Inbox columns, and bigint watermarks carry the decision.
-- Signed migration 0015, migrations 0001-0014, OpenAPI bytes, and Redis contracts
-  are unchanged. This ADR does not authorize executing any migration remotely.
+- Forward migration 0016 closes two runtime authorities without rewriting
+  signed migration 0015: Worker loses `outbox_messages.replay_of` INSERT, and
+  attempt-fact audit retries use one fixed-search-path, NOLOGIN-owner
+  append-once function. Worker keeps only the pre-existing audit append columns
+  needed by health and credential jobs; it receives no Audit read/update/delete
+  authority and cannot set `occurred_at`.
+- Existing `source_event_sequence`, `replay_of`, Inbox columns, and bigint
+  watermarks carry the ordering decision; migration 0016 adds no table or
+  mutable fact column. Migrations 0001-0015 and Redis contracts are unchanged.
+- OpenAPI tightens the Admin replay `reason` text contract to the runtime's
+  Unicode-scalar, non-whitespace, control-free 1..500 validation. Its exact
+  candidate requires the normal incremental OpenAPI approval. This ADR does not
+  authorize executing any migration remotely.
 - A future performance-only index or consumer dead-letter store requires a new
   forward migration and independent database approval; it cannot rewrite 0015.
 - Before acceptance, the candidate can be withdrawn. After acceptance, changing
@@ -244,6 +281,10 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
 - Admin replay remains the separately signed API-only 0015 boundary with HTTP
   idempotency and append-only audit in one UoW. This ADR grants no direct Outbox
   table access and no Worker access to the Admin replay function.
+- Worker audit access is narrowed from table-wide INSERT to the 13 columns used
+  by `PostgresAuditAppender`; exact attempt-fact replay additionally crosses the
+  allowlisted append-once function. Neither path grants Audit reads or mutation
+  of existing rows.
 
 ## Acceptance evidence gate
 
@@ -253,6 +294,9 @@ Before changing this ADR to `Accepted`, the exact candidate must pass:
 - the normative physical-20/21/replay-42 ordering case and cross-Group progress;
 - duplicate, unknown-major, Envelope mismatch, fact mismatch, rollback, lease
   takeover, and consumer-commit/publisher-crash tests;
+- a malformed quota `aggregate_type` that cannot escape the canonical Group
+  partition, plus a multi-consumer replay where only the consumer with the exact
+  direct-predecessor Inbox receipt converges as duplicate;
 - settlement fact/event/outbox/audit commit-point fault injection and exact replay;
 - Architecture Tests proving the Context Map and Host loading boundaries; and
 - the repository quality and security gates for the exact candidate commit.
@@ -269,7 +313,9 @@ or production acceptance.
 - `docs/architecture/adr/0012-freeze-quota-event-replay-ordering-and-projection-boundary.md`
 - `docs/architecture/design-pattern-baseline.md`
 - `docs/contracts/group-quota-events-v1.json`
+- `docs/contracts/openapi-v1.yaml`
 - `docs/contracts/fixtures/group-quota-events-v1-*.json`
+- `docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql`
 - `docs/database/README.md`
 - `docs/开发执行规格-v1.0.md`
 - GroupQuota event-codec Contract/Unit tests

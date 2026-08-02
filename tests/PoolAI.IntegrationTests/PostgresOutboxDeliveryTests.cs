@@ -4,6 +4,7 @@ using Npgsql;
 using PoolAI.BuildingBlocks;
 using PoolAI.Infrastructure.Postgres;
 using PoolAI.Modules.Operations.Abstractions;
+using PoolAI.Modules.Operations.Application.Ports;
 
 namespace PoolAI.IntegrationTests;
 
@@ -311,7 +312,7 @@ public sealed class PostgresOutboxDeliveryTests
     {
         EntityId replayMessageId = EntityId.New();
         EntityId auditId = EntityId.New();
-        OutboxReplayRequest replayRequest = new(
+        ReplayRequest replayRequest = new(
             sourceEvent.MessageId,
             replayMessageId,
             $"integration:replay:{replayMessageId}");
@@ -331,11 +332,11 @@ public sealed class PostgresOutboxDeliveryTests
                 auditId,
                 cancellationToken).ConfigureAwait(false));
 
-        OutboxReplayReceipt receipt = Assert.IsType<OutboxReplayReceipt>(await ReplayWithAuditAsync(
+        ReplayReceipt receipt = await ReplayWithAuditAsync(
             replayRequest,
             replayAudit,
             commit: true,
-            cancellationToken).ConfigureAwait(false));
+            cancellationToken).ConfigureAwait(false);
         Assert.Equal(replayMessageId, receipt.MessageId);
         IReadOnlyDictionary<EntityId, OutboxState> replayedStates = await ReadOutboxStatesAsync(
             [sourceEvent.MessageId.Value, replayMessageId.Value],
@@ -359,7 +360,7 @@ public sealed class PostgresOutboxDeliveryTests
     private static void AssertReplayPreservedEnvelope(
         IntegrationEvent sourceEvent,
         OutboxState dead,
-        OutboxReplayReceipt receipt,
+        ReplayReceipt receipt,
         OutboxState unchangedSource,
         OutboxState replay)
     {
@@ -451,27 +452,32 @@ public sealed class PostgresOutboxDeliveryTests
         return result;
     }
 
-    private async ValueTask<OutboxReplayReceipt?> ReplayWithAuditAsync(
-        OutboxReplayRequest request,
+    private async ValueTask<ReplayReceipt> ReplayWithAuditAsync(
+        ReplayRequest request,
         AuditEntry audit,
         bool commit,
         CancellationToken cancellationToken)
     {
-        IUnitOfWorkFactory factory = _fixture.WorkerServices
+        IUnitOfWorkFactory factory = _fixture.ApiServices
             .GetRequiredService<IUnitOfWorkFactory>();
-        IOutboxDeliveryStore store = _fixture.WorkerServices
-            .GetRequiredService<IOutboxDeliveryStore>();
-        IAuditAppender auditAppender = _fixture.WorkerServices
+        IOutboxReplayRepository repository = _fixture.ApiServices
+            .GetRequiredService<IOutboxReplayRepository>();
+        IAuditAppender auditAppender = _fixture.ApiServices
             .GetRequiredService<IAuditAppender>();
         IUnitOfWork unitOfWork = await factory
             .BeginAsync(cancellationToken)
             .ConfigureAwait(false);
         await using var unitOfWorkScope = unitOfWork.ConfigureAwait(false);
-        OutboxReplayReceipt? receipt = await store.ReplayDeadAsync(
-            request,
+        OutboxReplayWriteResult write = await repository.ReplayDeadAsync(
+            new OutboxReplayWrite(
+                request.DeadMessageId,
+                request.NewMessageId,
+                request.NewDeduplicationKey),
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false);
-        Assert.NotNull(receipt);
+        Assert.Equal(OutboxReplayPersistenceDisposition.Created, write.Disposition);
+        Assert.Equal(request.NewMessageId, write.MessageId);
+        Assert.True(write.EventSequence is > 0);
         await auditAppender.AppendAsync(
             audit,
             unitOfWork.Context,
@@ -481,7 +487,7 @@ public sealed class PostgresOutboxDeliveryTests
             await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        return receipt;
+        return new ReplayReceipt(request.NewMessageId, write.EventSequence!.Value);
     }
 
     private async ValueTask<IReadOnlyDictionary<EntityId, OutboxState>> ReadOutboxStatesAsync(
@@ -604,6 +610,13 @@ public sealed class PostgresOutboxDeliveryTests
     private sealed record TakeoverClaims(
         OutboxMessageEnvelope First,
         OutboxMessageEnvelope Takeover);
+
+    private sealed record ReplayRequest(
+        EntityId DeadMessageId,
+        EntityId NewMessageId,
+        string NewDeduplicationKey);
+
+    private sealed record ReplayReceipt(EntityId MessageId, long EventSequence);
 
     private sealed record OutboxState(
         long EventSequence,

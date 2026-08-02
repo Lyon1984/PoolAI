@@ -2,6 +2,11 @@ namespace PoolAI.Modules.Operations.Abstractions;
 
 public interface IOutboxDeliveryStore
 {
+    ValueTask<IReadOnlyList<OutboxDeliveryMessage>> ClaimDueAsync(
+        OutboxClaimRequest request,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
     ValueTask<IReadOnlyList<OutboxMessageEnvelope>> ClaimDueAsync(
         EntityId owner,
         int maximumCount,
@@ -30,11 +35,6 @@ public interface IOutboxDeliveryStore
     ValueTask<bool> MarkDeadAsync(
         OutboxDeliveryLease lease,
         string errorSummary,
-        IUnitOfWorkContext unitOfWorkContext,
-        CancellationToken cancellationToken);
-
-    ValueTask<OutboxReplayReceipt?> ReplayDeadAsync(
-        OutboxReplayRequest request,
         IUnitOfWorkContext unitOfWorkContext,
         CancellationToken cancellationToken);
 }

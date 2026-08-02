@@ -35,7 +35,8 @@ builder.Services
     .AddRoutingHealthModule(builder.Configuration)
     .AddSupplyCredentialRewrapWorker(builder.Configuration)
     .AddUsageModule()
-    .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName);
+    .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)
+    .AddOperationsOutboxPublisher(builder.Configuration);
 builder.Services.AddPoolAiObservability(builder.Configuration);
 
 using IHost host = builder.Build();

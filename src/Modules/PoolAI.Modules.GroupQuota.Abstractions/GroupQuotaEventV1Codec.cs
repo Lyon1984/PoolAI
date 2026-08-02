@@ -14,19 +14,26 @@ public static class GroupQuotaEventV1Codec
     public const int SchemaVersion = 1;
     public const string AggregateType = "group";
 
-    private static readonly FrozenSet<string> EventTypes = new[]
-    {
-        "initialized",
-        "reserved",
-        "dispatch_started",
-        "renewed",
-        "settled",
-        "released",
-        "expired",
-        "usage_adjusted",
-        "total_adjusted",
-        "period_reset",
-    }.ToFrozenSet(StringComparer.Ordinal);
+    private static readonly FrozenDictionary<
+        string,
+        Func<GroupQuotaEventV1Data, GroupQuotaEventV1>> EventFactories =
+        new Dictionary<string, Func<GroupQuotaEventV1Data, GroupQuotaEventV1>>(
+            StringComparer.Ordinal)
+        {
+            ["initialized"] = static data => new GroupQuotaInitializedEventV1(data),
+            ["reserved"] = static data => new GroupQuotaReservedEventV1(data),
+            ["dispatch_started"] = static data => new GroupQuotaDispatchStartedEventV1(data),
+            ["renewed"] = static data => new GroupQuotaRenewedEventV1(data),
+            ["settled"] = static data => new GroupQuotaSettledEventV1(data),
+            ["released"] = static data => new GroupQuotaReleasedEventV1(data),
+            ["usage_adjusted"] = static data => new GroupQuotaUsageAdjustedEventV1(data),
+            ["total_adjusted"] = static data => new GroupQuotaTotalAdjustedEventV1(data),
+            ["period_reset"] = static data => new GroupQuotaPeriodResetEventV1(data),
+        }.ToFrozenDictionary(StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string> EventTypes = EventFactories.Keys
+        .Append("expired")
+        .ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly FrozenSet<string> RequiredAttemptFactEventTypes = new[]
     {
@@ -121,7 +128,7 @@ public static class GroupQuotaEventV1Codec
         return TryFindDuplicateProperty(envelope, "$", out string? duplicateLocation)
             ? new GroupQuotaEventV1DecodeFailure(
                 GroupQuotaEventV1DecodeFailureCode.InvalidEnvelope,
-                duplicateLocation ?? "$")
+                duplicateLocation!)
             : null;
     }
 
@@ -534,24 +541,7 @@ public static class GroupQuotaEventV1Codec
                 conservativeExpiry));
         }
 
-        GroupQuotaEventV1? result = eventType switch
-        {
-            "initialized" => new GroupQuotaInitializedEventV1(data),
-            "reserved" => new GroupQuotaReservedEventV1(data),
-            "dispatch_started" => new GroupQuotaDispatchStartedEventV1(data),
-            "renewed" => new GroupQuotaRenewedEventV1(data),
-            "settled" => new GroupQuotaSettledEventV1(data),
-            "released" => new GroupQuotaReleasedEventV1(data),
-            "usage_adjusted" => new GroupQuotaUsageAdjustedEventV1(data),
-            "total_adjusted" => new GroupQuotaTotalAdjustedEventV1(data),
-            "period_reset" => new GroupQuotaPeriodResetEventV1(data),
-            _ => null,
-        };
-        return result is not null
-            ? Parsed(result)
-            : ParseFailed<GroupQuotaEventV1>(
-                GroupQuotaEventV1DecodeFailureCode.UnsupportedEventType,
-                "$.payload.event_type");
+        return Parsed(EventFactories[eventType](data));
     }
 
     private static ParseResult<T> MissingPayloadIdentity<T>(string propertyName)
@@ -603,13 +593,7 @@ public static class GroupQuotaEventV1Codec
             return false;
         }
 
-        string? candidate = property.GetString();
-        if (candidate is null)
-        {
-            return false;
-        }
-
-        result = candidate;
+        result = property.GetString()!;
         return true;
     }
 

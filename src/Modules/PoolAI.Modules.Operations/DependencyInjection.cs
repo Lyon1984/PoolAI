@@ -1,9 +1,12 @@
 using System.Reflection;
+using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Operations.Abstractions;
+using PoolAI.Modules.Operations.Application;
+using PoolAI.Modules.Operations.Application.Ports;
 using PoolAI.Modules.Operations.Infrastructure;
 using PoolAI.Modules.Operations.Infrastructure.Configuration;
 using PoolAI.Modules.Operations.Infrastructure.Persistence;
@@ -51,9 +54,17 @@ public static class DependencyInjection
         });
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<ICommandIdempotencyStore, PostgresCommandIdempotencyStore>();
-        services.AddSingleton<IAuditAppender, PostgresAuditAppender>();
+        services.AddSingleton<PostgresAuditAppender>();
+        services.AddSingleton<IAuditAppender>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresAuditAppender>());
+        services.AddSingleton<IIdempotentAuditAppender>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresAuditAppender>());
         services.AddSingleton<IOutboxAppender, PostgresOutboxAppender>();
-        services.AddSingleton<IInboxReceiptAppender, PostgresInboxReceiptAppender>();
+        services.AddSingleton<PostgresInboxReceiptAppender>();
+        services.AddSingleton<IInboxReceiptAppender>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresInboxReceiptAppender>());
+        services.AddSingleton<IInboxReplayPredecessorVerifier>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresInboxReceiptAppender>());
         services.AddSingleton<IOutboxDeliveryStore, PostgresOutboxDeliveryStore>();
         services.AddSingleton<IWorkerSessionLockProvider, PostgresWorkerSessionLockProvider>();
         services.AddSingleton<IOperationalEventWriter, LoggingOperationalEventWriter>();
@@ -71,6 +82,25 @@ public static class DependencyInjection
         return services;
     }
 
+    public static IServiceCollection AddOperationsAdminControlPlane(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        services.AddSingleton(_ => CreateOutboxReplayPolicy(configuration));
+        services.AddSingleton<IOutboxReplayRepository, PostgresOutboxReplayRepository>();
+        services.AddSingleton(static serviceProvider => new OutboxReplayService(
+            serviceProvider.GetRequiredService<IOutboxReplayRepository>(),
+            serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
+            serviceProvider.GetRequiredService<ICommandIdempotencyStore>(),
+            serviceProvider.GetRequiredService<IAuditAppender>(),
+            serviceProvider.GetRequiredService<OutboxReplayPolicy>()));
+        services.AddSingleton<IReplayDeadOutboxUseCase>(static serviceProvider =>
+            serviceProvider.GetRequiredService<OutboxReplayService>());
+        return services;
+    }
+
     internal static RuntimeDependencyOptions CreateRuntimeDependencyOptions(
         IConfiguration configuration,
         string environmentName)
@@ -84,5 +114,31 @@ public static class DependencyInjection
             TimeSpan.FromSeconds(configuration.GetValue(
                 "Health:ReadinessTimeoutSeconds",
                 3)));
+    }
+
+    private static OutboxReplayPolicy CreateOutboxReplayPolicy(
+        IConfiguration configuration)
+    {
+        byte[] pepper;
+        try
+        {
+            pepper = Convert.FromBase64String(
+                configuration["Idempotency:RequestHashPepper"] ?? string.Empty);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidOperationException(
+                "Idempotency:RequestHashPepper is invalid.",
+                exception);
+        }
+
+        try
+        {
+            return new OutboxReplayPolicy(pepper);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pepper);
+        }
     }
 }

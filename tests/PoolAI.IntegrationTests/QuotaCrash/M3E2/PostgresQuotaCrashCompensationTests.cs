@@ -8,7 +8,9 @@ using Npgsql;
 using PoolAI.BuildingBlocks;
 using PoolAI.Infrastructure.Postgres;
 using PoolAI.Modules.GroupQuota.Abstractions;
+using PoolAI.Modules.GroupQuota.Application;
 using PoolAI.Modules.GroupQuota.Application.Ports;
+using PoolAI.Modules.Operations.Abstractions;
 
 namespace PoolAI.IntegrationTests;
 
@@ -98,6 +100,8 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         Assert.Equal(1, beforeAdjustment.AttemptCount);
         Assert.Equal(3, beforeAdjustment.EventCount);
         Assert.Equal(3, beforeAdjustment.EventOutboxCount);
+        Assert.Equal(1, beforeAdjustment.SettlementAuditCount);
+        Assert.Equal(0, beforeAdjustment.AdjustmentAuditCount);
 
         IUsageAdjustmentWriter adjustmentWriter =
             _fixture.WorkerServices.GetRequiredService<IUsageAdjustmentWriter>();
@@ -145,6 +149,8 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         Assert.Equal(1, afterAdjustment.AdjustmentCount);
         Assert.Equal(4, afterAdjustment.EventCount);
         Assert.Equal(4, afterAdjustment.EventOutboxCount);
+        Assert.Equal(1, afterAdjustment.SettlementAuditCount);
+        Assert.Equal(1, afterAdjustment.AdjustmentAuditCount);
 
         AttemptSettlementFact fact = await ReadFactAsync(
             attempt.AttemptId.AsEntityId(),
@@ -161,6 +167,88 @@ public sealed partial class PostgresQuotaCrashCompensationTests
             fact.Adjustment);
         Assert.Equal(new BigInteger(155), factAdjustment.CorrectedTokens.TotalTokens);
         Assert.Equal(new BigInteger(25), factAdjustment.DeltaTokens);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task SettlementAuditFailureRollsBackFactLedgerEventAndOutboxTogether()
+    {
+        // Governing contract: ADR 0012 requires the immutable attempt fact,
+        // ledger event, Outbox row, and service audit to share one commit point.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        CrashScenario scenario = CrashScenario.Create();
+        CrashAttempt attempt = scenario.PreDispatch;
+        await PrepareAdmissionFixtureAsync(scenario, cancellationToken).ConfigureAwait(true);
+
+        IGroupQuotaLedger productionLedger = Ledger();
+        Result<ReserveQuotaResult> reserved = await productionLedger
+            .ReserveAsync(Command(scenario, attempt), cancellationToken)
+            .ConfigureAwait(true);
+        AssertSuccess(reserved);
+        Result<DispatchedReservationHandle> dispatched = await productionLedger
+            .MarkDispatchedAsync(
+                new MarkReservationDispatchedCommand(
+                    reserved.Value.Reservation,
+                    SettlementProvider.OpenAi,
+                    Model,
+                    new TokenEstimateSplit(80, 40)),
+                cancellationToken)
+            .ConfigureAwait(true);
+        AssertSuccess(dispatched);
+
+        SettleReservationCommand command = new(
+            dispatched.Value,
+            UsageAttemptOutcome.Succeeded,
+            200,
+            null,
+            "upstream-request-audit-rollback",
+            dispatched.Value.DispatchStartedAt.AddMilliseconds(1),
+            dispatched.Value.DispatchStartedAt.AddMilliseconds(2),
+            UsageRequestOutcome.Succeeded,
+            new TokenUsage(80, 50, 0, 0, 0),
+            SettlementUsageSource.Upstream,
+            JsonSerializer.SerializeToElement(new { input_tokens = 80, output_tokens = 50 }));
+        GroupQuotaLedgerService faultingLedger = new(
+            _fixture.ApiServices.GetRequiredService<IQuotaLedgerRepository>(),
+            ApiFactory(),
+            _fixture.ApiServices.GetRequiredService<IOperationalEventWriter>(),
+            new ThrowAfterAppendAuditAppender(
+                _fixture.ApiServices.GetRequiredService<IIdempotentAuditAppender>()));
+
+        _ = await Assert.ThrowsAsync<InjectedAuditFailureException>(
+            () => faultingLedger.SettleAsync(command, cancellationToken).AsTask())
+            .ConfigureAwait(true);
+
+        LedgerEvidence rolledBack = await ReadLedgerEvidenceAsync(
+            scenario,
+            attempt,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal("pending", rolledBack.ReservationStatus);
+        Assert.Null(rolledBack.ActualTokens);
+        Assert.Equal(0, rolledBack.AttemptCount);
+        Assert.Equal(2, rolledBack.EventCount);
+        Assert.Equal(2, rolledBack.EventOutboxCount);
+        Assert.Equal(0, rolledBack.SettlementAuditCount);
+
+        Result<QuotaTransitionResult> settled = await productionLedger
+            .SettleAsync(command, cancellationToken)
+            .ConfigureAwait(true);
+        AssertSuccess(settled);
+        Result<QuotaTransitionResult> replay = await productionLedger
+            .SettleAsync(command, cancellationToken)
+            .ConfigureAwait(true);
+        AssertSuccess(replay);
+        Assert.Equal(settled.Value, replay.Value);
+
+        LedgerEvidence committed = await ReadLedgerEvidenceAsync(
+            scenario,
+            attempt,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal("settled", committed.ReservationStatus);
+        Assert.Equal(1, committed.AttemptCount);
+        Assert.Equal(3, committed.EventCount);
+        Assert.Equal(3, committed.EventOutboxCount);
+        Assert.Equal(1, committed.SettlementAuditCount);
     }
 
     [Fact]
@@ -595,7 +683,15 @@ public sealed partial class PostgresQuotaCrashCompensationTests
                  JOIN public.outbox_messages message
                    ON message.source_event_sequence = event.event_sequence
                   AND message.payload ->> 'event_id' = event.id::text
-                 WHERE event.attempt_id = reservation.attempt_id)
+                 WHERE event.attempt_id = reservation.attempt_id),
+                (SELECT count(*)::integer FROM public.audit_logs audit
+                 WHERE audit.target_type = 'usage_attempt'
+                   AND audit.target_id = reservation.attempt_id
+                   AND audit.action = 'group_quota.attempt_fact_settled'),
+                (SELECT count(*)::integer FROM public.audit_logs audit
+                 WHERE audit.target_type = 'usage_attempt'
+                   AND audit.target_id = reservation.attempt_id
+                   AND audit.action = 'group_quota.attempt_fact_usage_adjusted')
             FROM public.group_token_reservations reservation
             JOIN public.group_quota_periods period ON period.id = reservation.period_id
             JOIN public.usage_requests request ON request.request_id = reservation.request_id
@@ -618,7 +714,9 @@ public sealed partial class PostgresQuotaCrashCompensationTests
             reader.GetInt32(7),
             reader.GetInt32(8),
             reader.GetInt32(9),
-            reader.GetInt32(10));
+            reader.GetInt32(10),
+            reader.GetInt32(11),
+            reader.GetInt32(12));
         Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
         return evidence;
     }
@@ -729,12 +827,35 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         int AttemptCount,
         int AdjustmentCount,
         int EventCount,
-        int EventOutboxCount);
+        int EventOutboxCount,
+        int SettlementAuditCount,
+        int AdjustmentAuditCount);
 
     private sealed record ConcurrencyEvidence(
         string ReservedTokens,
         int RequestCount,
         int ReservationCount,
         int ReservedEventCount);
+
+    private sealed class ThrowAfterAppendAuditAppender(
+        IIdempotentAuditAppender inner) : IIdempotentAuditAppender
+    {
+        private readonly IIdempotentAuditAppender _inner =
+            inner ?? throw new ArgumentNullException(nameof(inner));
+
+        public async ValueTask AppendOnceAsync(
+            AuditEntry entry,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken)
+        {
+            await _inner.AppendOnceAsync(entry, unitOfWorkContext, cancellationToken)
+                .ConfigureAwait(false);
+            throw new InjectedAuditFailureException();
+        }
+    }
+
+    private sealed class InjectedAuditFailureException : Exception
+    {
+    }
 }
 #pragma warning restore MA0051

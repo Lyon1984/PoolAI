@@ -9,17 +9,33 @@ namespace PoolAI.Modules.GroupQuota.Application;
 internal sealed class GroupQuotaLedgerService(
     IQuotaLedgerRepository repository,
     IUnitOfWorkFactory unitOfWorkFactory,
-    IOperationalEventWriter? operationalEventWriter = null) :
+    IOperationalEventWriter? operationalEventWriter,
+    IIdempotentAuditAppender idempotentAuditAppender) :
     IGroupQuotaLedger,
     IAttemptSettlementFactReader,
     IUsageAdjustmentWriter
 {
+    internal GroupQuotaLedgerService(
+        IQuotaLedgerRepository repository,
+        IUnitOfWorkFactory unitOfWorkFactory,
+        IIdempotentAuditAppender idempotentAuditAppender)
+        : this(
+            repository,
+            unitOfWorkFactory,
+            operationalEventWriter: null,
+            idempotentAuditAppender)
+    {
+    }
+
     private readonly IQuotaLedgerRepository _repository =
         repository ?? throw new ArgumentNullException(nameof(repository));
     private readonly IUnitOfWorkFactory _unitOfWorkFactory =
         unitOfWorkFactory ?? throw new ArgumentNullException(nameof(unitOfWorkFactory));
     private readonly IOperationalEventWriter _operationalEventWriter =
         operationalEventWriter ?? MissingOperationalEventWriter.Instance;
+    private readonly IIdempotentAuditAppender _idempotentAuditAppender =
+        idempotentAuditAppender
+        ?? throw new ArgumentNullException(nameof(idempotentAuditAppender));
 
     public async ValueTask<Result<ReserveQuotaResult>> ReserveAsync(
         ReserveQuotaCommand command,
@@ -178,7 +194,8 @@ internal sealed class GroupQuotaLedgerService(
             command.Reservation.Reservation.GroupId,
             attemptId,
             (context, token) => _repository.SettleAsync(write, context, token),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            row => AttemptFactAuditFactory.Settled(write, row)).ConfigureAwait(false);
         if (result.IsFailure
             && string.Equals(
                 result.Error.Code,
@@ -284,6 +301,10 @@ internal sealed class GroupQuotaLedgerService(
             row.DeltaTokens,
             row.ConsumedTokens,
             row.ReservedTokens);
+        await AppendAuditAsync(
+            AttemptFactAuditFactory.UsageAdjusted(write, row),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new AdjustmentExecution(
             Result.Success(response),
@@ -319,7 +340,8 @@ internal sealed class GroupQuotaLedgerService(
         EntityId attemptId,
         Func<IUnitOfWorkContext, CancellationToken,
             ValueTask<QuotaRepositoryResult<QuotaTransitionRow>>> operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<QuotaTransitionRow, AuditEntry>? auditFactory = null)
     {
         IUnitOfWork unitOfWork = await _unitOfWorkFactory
             .BeginAsync(cancellationToken)
@@ -340,9 +362,26 @@ internal sealed class GroupQuotaLedgerService(
             row.PeriodId,
             row.Status,
             Position(groupId, row));
+        if (auditFactory is not null)
+        {
+            await AppendAuditAsync(
+                auditFactory(row),
+                unitOfWork.Context,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return Result.Success(response);
     }
+
+    private ValueTask AppendAuditAsync(
+        AuditEntry entry,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken) =>
+        _idempotentAuditAppender.AppendOnceAsync(
+            entry,
+            unitOfWorkContext,
+            cancellationToken);
 
     private static QuotaLedgerPosition Position(
         EntityId groupId,

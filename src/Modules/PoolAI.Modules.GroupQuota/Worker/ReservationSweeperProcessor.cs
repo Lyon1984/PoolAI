@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using PoolAI.BuildingBlocks;
+using PoolAI.Modules.GroupQuota.Abstractions;
 using PoolAI.Modules.GroupQuota.Application;
 using PoolAI.Modules.GroupQuota.Application.Ports;
 using PoolAI.Modules.Operations.Abstractions;
@@ -10,7 +11,8 @@ namespace PoolAI.Modules.GroupQuota.Worker;
 internal sealed class ReservationSweeperProcessor(
     IQuotaLedgerRepository repository,
     IUnitOfWorkFactory unitOfWorkFactory,
-    IOperationalEventWriter operationalEventWriter)
+    IOperationalEventWriter operationalEventWriter,
+    IIdempotentAuditAppender idempotentAuditAppender)
 {
     private const string ExpiryReason = "reservation_lease_expired";
 
@@ -21,6 +23,9 @@ internal sealed class ReservationSweeperProcessor(
     private readonly IOperationalEventWriter _operationalEventWriter =
         operationalEventWriter
         ?? throw new ArgumentNullException(nameof(operationalEventWriter));
+    private readonly IIdempotentAuditAppender _idempotentAuditAppender =
+        idempotentAuditAppender
+        ?? throw new ArgumentNullException(nameof(idempotentAuditAppender));
 
     internal async ValueTask<ReservationSweepProcessResult> ProcessAsync(
         IWorkerSessionLock jobLock,
@@ -170,6 +175,30 @@ internal sealed class ReservationSweeperProcessor(
         if (!result.IsSuccess)
         {
             return result.Failure;
+        }
+
+        AttemptSettlementFact? fact = await _repository
+            .GetAttemptSettlementFactAsync(
+                candidate.AttemptId,
+                unitOfWork.Context,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (fact is not null)
+        {
+            if (fact.AttemptId != candidate.AttemptId
+                || fact.ReservationId != candidate.ReservationId
+                || fact.GroupId != candidate.GroupId
+                || fact.PeriodId != candidate.PeriodId
+                || fact.Usage.Source != SettlementUsageSource.ConservativeEstimate
+                || !fact.Usage.IsEstimated)
+            {
+                return QuotaLedgerFailure.TerminalFactInvariantBroken;
+            }
+
+            await _idempotentAuditAppender.AppendOnceAsync(
+                AttemptFactAuditFactory.ConservativeExpired(write, fact),
+                unitOfWork.Context,
+                cancellationToken).ConfigureAwait(false);
         }
 
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
