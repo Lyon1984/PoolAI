@@ -16,7 +16,7 @@ internal sealed class OutboxPublisherMetrics : IDisposable
     private OutboxObservabilitySnapshot _snapshot = OutboxObservabilitySnapshot.Empty;
     private long _nextRefreshTimestamp;
 
-    internal OutboxPublisherMetrics(
+    public OutboxPublisherMetrics(
         IUnitOfWorkFactory unitOfWorkFactory,
         IOutboxObservabilityStore observabilityStore)
     {

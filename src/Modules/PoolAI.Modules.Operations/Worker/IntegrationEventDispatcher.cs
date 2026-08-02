@@ -11,7 +11,7 @@ internal sealed class IntegrationEventDispatcher
     private readonly IReadOnlyDictionary<string, IReadOnlyList<ConsumerRoute>> _routes;
     private readonly IIntegrationEventConsumerExceptionClassifier _exceptionClassifier;
 
-    internal IntegrationEventDispatcher(
+    public IntegrationEventDispatcher(
         IEnumerable<IIntegrationEventConsumer> consumers,
         IIntegrationEventConsumerExceptionClassifier exceptionClassifier)
     {

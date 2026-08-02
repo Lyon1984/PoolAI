@@ -12,7 +12,7 @@ internal sealed class OutboxPublisherProcessor
     private readonly IOperationalEventWriter _operationalEventWriter;
     private readonly OutboxPublisherOptions _options;
 
-    internal OutboxPublisherProcessor(
+    public OutboxPublisherProcessor(
         IUnitOfWorkFactory unitOfWorkFactory,
         IOutboxDeliveryStore deliveryStore,
         IntegrationEventDispatcher dispatcher,

@@ -582,8 +582,13 @@ public sealed class OperationsOutboxPublisherTests
     {
         ServiceCollection services = new();
         IConfiguration configuration = WorkerConfiguration();
+        services.AddLogging();
+        services.AddSingleton<IUnitOfWorkFactory>(new TrackingUnitOfWorkFactory());
+        services.AddSingleton<IIntegrationEventConsumer>(
+            new ScriptedConsumer("usage-hourly-v1", QuotaTopic, 1));
 
         services.AddOperationsModule(configuration, "Development");
+        services.AddSingleton<IWorkerSessionLockProvider>(new RecordingLockProvider());
         Assert.DoesNotContain(
             services,
             static descriptor => descriptor.ServiceType == typeof(IHostedService));
@@ -599,7 +604,13 @@ public sealed class OperationsOutboxPublisherTests
         Assert.Contains(services, static descriptor =>
             descriptor.ServiceType == typeof(IOutboxObservabilityStore));
 
-        using ServiceProvider serviceProvider = services.BuildServiceProvider();
+        using ServiceProvider serviceProvider = services.BuildServiceProvider(
+            new ServiceProviderOptions
+            {
+                ValidateScopes = true,
+            });
+        Assert.IsType<OutboxPublisherService>(
+            Assert.Single(serviceProvider.GetServices<IHostedService>()));
         Assert.Same(
             serviceProvider.GetRequiredService<IAuditAppender>(),
             serviceProvider.GetRequiredService<IIdempotentAuditAppender>());
