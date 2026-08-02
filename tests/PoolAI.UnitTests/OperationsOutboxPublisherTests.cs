@@ -23,6 +23,100 @@ public sealed class OperationsOutboxPublisherTests
         new PostgresIntegrationEventConsumerExceptionClassifier();
 
     [Fact]
+    public void InboxReplayProofRejectsEveryNonCanonicalIdentityBoundary()
+    {
+        byte[] hash = new byte[32];
+
+        Assert.Throws<ArgumentException>(() => new InboxReplayPredecessorProof(
+            " usage-hourly-v1",
+            EntityId.New(),
+            QuotaTopic,
+            schemaVersion: 1,
+            hash));
+        Assert.Throws<ArgumentException>(() => new InboxReplayPredecessorProof(
+            "usage-hourly-v1",
+            EntityId.New(),
+            new string('q', 129),
+            schemaVersion: 1,
+            hash));
+        Assert.Throws<ArgumentException>(() => new InboxReplayPredecessorProof(
+            "usage-hourly-v1",
+            default,
+            QuotaTopic,
+            schemaVersion: 1,
+            hash));
+        Assert.Throws<ArgumentException>(() => new InboxReplayPredecessorProof(
+            "usage-hourly-v1",
+            EntityId.New(),
+            QuotaTopic,
+            schemaVersion: 1,
+            new byte[31]));
+    }
+
+    [Fact]
+    public void OutboxClaimRejectsNonCanonicalOwnerAndTopics()
+    {
+        Assert.Throws<ArgumentException>(() => new OutboxClaimRequest(
+            default,
+            [QuotaTopic],
+            maximumCount: 1,
+            TimeSpan.FromSeconds(30)));
+        Assert.Throws<ArgumentException>(() => new OutboxClaimRequest(
+            EntityId.New(),
+            [" " + QuotaTopic],
+            maximumCount: 1,
+            TimeSpan.FromSeconds(30)));
+        Assert.Throws<ArgumentException>(() => new OutboxClaimRequest(
+            EntityId.New(),
+            [new string('q', 129)],
+            maximumCount: 1,
+            TimeSpan.FromSeconds(30)));
+    }
+
+    [Fact]
+    public void OutboxDeliveryRejectsNonCanonicalPartitionIdentity()
+    {
+        OutboxMessageEnvelope envelope = CreateMessage().Envelope;
+
+        Assert.Throws<ArgumentNullException>(() => new OutboxDeliveryMessage(
+            null!,
+            $"{QuotaTopic}:group:test",
+            partitionSequence: 1));
+        Assert.Throws<ArgumentException>(() => new OutboxDeliveryMessage(
+            envelope,
+            $" {QuotaTopic}:group:test",
+            partitionSequence: 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new OutboxDeliveryMessage(
+            envelope,
+            $"{QuotaTopic}:group:test",
+            partitionSequence: 0));
+    }
+
+    [Theory]
+    [InlineData("Upper_case")]
+    [InlineData("hyphen-not-allowed")]
+    public void ConsumerFailureReasonRejectsNonCanonicalVocabulary(string reason)
+    {
+        Assert.Throws<ArgumentException>(
+            () => IntegrationEventConsumeResult.RetryableFailure(reason));
+        Assert.Throws<ArgumentException>(
+            () => IntegrationEventConsumeResult.Poison(reason));
+    }
+
+    [Fact]
+    public void IntegrationSubscriptionRejectsNonCanonicalNames()
+    {
+        Assert.Throws<ArgumentException>(() => new IntegrationEventSubscription(
+            " usage-hourly-v1",
+            QuotaTopic,
+            schemaVersion: 1));
+        Assert.Throws<ArgumentException>(() => new IntegrationEventSubscription(
+            "usage-hourly-v1",
+            new string('q', 129),
+            schemaVersion: 1));
+    }
+
+    [Fact]
     public async Task DispatcherRequiresExplicitUniqueRoutesAndRejectsUnknownSchema()
     {
         Assert.Throws<InvalidOperationException>(() =>
