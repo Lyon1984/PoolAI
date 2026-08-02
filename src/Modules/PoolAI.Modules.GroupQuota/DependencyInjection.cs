@@ -79,7 +79,9 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<IQuotaLedgerRepository>(),
             serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),
             serviceProvider.GetRequiredService<
-                PoolAI.Modules.Operations.Abstractions.IOperationalEventWriter>()));
+                PoolAI.Modules.Operations.Abstractions.IOperationalEventWriter>(),
+            serviceProvider.GetRequiredService<
+                PoolAI.Modules.Operations.Abstractions.IIdempotentAuditAppender>()));
         services.AddSingleton<IGroupQuotaLedger>(static serviceProvider =>
             serviceProvider.GetRequiredService<GroupQuotaLedgerService>());
         services.AddSingleton<IAttemptSettlementFactReader>(static serviceProvider =>

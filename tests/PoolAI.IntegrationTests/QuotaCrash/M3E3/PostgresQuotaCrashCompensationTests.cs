@@ -176,6 +176,12 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         Assert.Equal(1, evidence.AdjustmentCount);
         Assert.Equal(1, evidence.AdjustmentEventCount);
         Assert.Equal(1, evidence.AdjustmentOutboxCount);
+        Assert.Equal(
+            1,
+            await ReadAttemptAuditCountAsync(
+                scenario.Dispatched.AttemptId,
+                "group_quota.attempt_fact_usage_adjusted",
+                cancellationToken).ConfigureAwait(true));
     }
 
     [Fact]
@@ -210,7 +216,8 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         ReservationSweeperProcessor processor = new(
             _fixture.WorkerServices.GetRequiredService<IQuotaLedgerRepository>(),
             WorkerFactory(),
-            _fixture.WorkerServices.GetRequiredService<IOperationalEventWriter>());
+            _fixture.WorkerServices.GetRequiredService<IOperationalEventWriter>(),
+            _fixture.WorkerServices.GetRequiredService<IIdempotentAuditAppender>());
         IWorkerSessionLockProvider lockProvider = _fixture.WorkerServices
             .GetRequiredService<IWorkerSessionLockProvider>();
         IWorkerSessionLock? jobLock = await lockProvider.TryAcquireAsync(
@@ -255,6 +262,18 @@ public sealed partial class PostgresQuotaCrashCompensationTests
             conservative,
             scenario.Dispatched,
             dispatchStartedAt);
+        Assert.Equal(
+            0,
+            await ReadAttemptAuditCountAsync(
+                scenario.PreDispatch.AttemptId,
+                "group_quota.attempt_fact_conservative_expired",
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal(
+            1,
+            await ReadAttemptAuditCountAsync(
+                scenario.Dispatched.AttemptId,
+                "group_quota.attempt_fact_conservative_expired",
+                cancellationToken).ConfigureAwait(true));
     }
 
     [Fact]
@@ -1093,6 +1112,25 @@ public sealed partial class PostgresQuotaCrashCompensationTests
             reader.GetInt64(2));
         Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
         return evidence;
+    }
+
+    private async ValueTask<long> ReadAttemptAuditCountAsync(
+        Guid attemptId,
+        string action,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT count(*)
+            FROM public.audit_logs
+            WHERE target_type = 'usage_attempt'
+              AND target_id = $1
+              AND action = $2;
+            """);
+        command.Parameters.AddWithValue(attemptId);
+        command.Parameters.AddWithValue(action);
+        return Assert.IsType<long>(await command
+            .ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false));
     }
 
     private sealed record M3E3AdjustmentEvidence(

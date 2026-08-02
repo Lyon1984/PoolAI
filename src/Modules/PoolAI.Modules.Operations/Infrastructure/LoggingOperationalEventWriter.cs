@@ -16,7 +16,9 @@ internal sealed partial class LoggingOperationalEventWriter(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
         cancellationToken.ThrowIfCancellationRequested();
-        WriteOperationalEvent(_logger, eventName, payload.GetRawText());
+        JsonElement normalizedPayload = OutboxTelemetryClassifier
+            .NormalizeOperationalPayload(payload);
+        WriteOperationalEvent(_logger, eventName, normalizedPayload.GetRawText());
         return ValueTask.CompletedTask;
     }
 

@@ -239,65 +239,81 @@ internal static class PostgresQuotaLedgerAbiContract
             return null;
         }
 
+        AttemptSettlementFact fact = ReadAttemptFact(reader);
+        RequireSingleRow(
+            !await reader.ReadAsync(cancellationToken).ConfigureAwait(false),
+            "attempt fact");
+        if (fact.AttemptId != expectedAttemptId)
+        {
+            throw Invalid("attempt fact identity");
+        }
+
+        return fact;
+    }
+
+    internal static AttemptSettlementFact ReadAttemptFact(
+        NpgsqlDataReader reader,
+        int offset = 0)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
         TokenUsage baseTokens = new(
-            reader.GetFieldValue<BigInteger>(12),
-            reader.GetFieldValue<BigInteger>(13),
-            reader.GetFieldValue<BigInteger>(14),
-            reader.GetFieldValue<BigInteger>(15),
-            reader.GetFieldValue<BigInteger>(16));
+            reader.GetFieldValue<BigInteger>(offset + 12),
+            reader.GetFieldValue<BigInteger>(offset + 13),
+            reader.GetFieldValue<BigInteger>(offset + 14),
+            reader.GetFieldValue<BigInteger>(offset + 15),
+            reader.GetFieldValue<BigInteger>(offset + 16));
         AttemptUsage baseUsage = new(
             baseTokens,
-            ParseUsageSource(reader.GetString(17)),
-            reader.GetBoolean(18));
-        if (reader.GetGuid(11) != reader.GetGuid(4))
+            ParseUsageSource(reader.GetString(offset + 17)),
+            reader.GetBoolean(offset + 18));
+        if (reader.GetGuid(offset + 11) != reader.GetGuid(offset + 4))
         {
             throw Invalid("attempt Group identity");
         }
 
-        AttemptUsageAdjustment? adjustment = reader.IsDBNull(22)
+        AttemptUsageAdjustment? adjustment = reader.IsDBNull(offset + 22)
             ? null
             : new AttemptUsageAdjustment(
-                new EntityId(reader.GetGuid(22)),
-                reader.GetFieldValue<BigInteger>(23),
+                new EntityId(reader.GetGuid(offset + 22)),
+                reader.GetFieldValue<BigInteger>(offset + 23),
                 new TokenUsage(
-                    reader.GetFieldValue<BigInteger>(24),
-                    reader.GetFieldValue<BigInteger>(25),
-                    reader.GetFieldValue<BigInteger>(26),
-                    reader.GetFieldValue<BigInteger>(27),
-                    reader.GetFieldValue<BigInteger>(28)),
-                ParseUsageSource(reader.GetString(29)),
-                reader.GetFieldValue<BigInteger>(30),
-                reader.GetFieldValue<DateTimeOffset>(31));
+                    reader.GetFieldValue<BigInteger>(offset + 24),
+                    reader.GetFieldValue<BigInteger>(offset + 25),
+                    reader.GetFieldValue<BigInteger>(offset + 26),
+                    reader.GetFieldValue<BigInteger>(offset + 27),
+                    reader.GetFieldValue<BigInteger>(offset + 28)),
+                ParseUsageSource(reader.GetString(offset + 29)),
+                reader.GetFieldValue<BigInteger>(offset + 30),
+                reader.GetFieldValue<DateTimeOffset>(offset + 31));
         AttemptSettlementFact fact = new(
-            new EntityId(reader.GetGuid(0)),
-            new EntityId(reader.GetGuid(1)),
-            reader.GetInt32(2),
-            new EntityId(reader.GetGuid(3)),
-            new EntityId(reader.GetGuid(4)),
-            new EntityId(reader.GetGuid(5)),
-            new EntityId(reader.GetGuid(6)),
-            new EntityId(reader.GetGuid(7)),
-            ParseProvider(reader.GetString(8)),
-            reader.GetString(32),
-            reader.GetString(9),
-            ParseAttemptOutcome(reader.GetString(10)),
-            reader.IsDBNull(34) ? null : reader.GetInt32(34),
-            reader.IsDBNull(35) ? null : reader.GetString(35),
-            reader.GetBoolean(33),
+            new EntityId(reader.GetGuid(offset)),
+            new EntityId(reader.GetGuid(offset + 1)),
+            reader.GetInt32(offset + 2),
+            new EntityId(reader.GetGuid(offset + 3)),
+            new EntityId(reader.GetGuid(offset + 4)),
+            new EntityId(reader.GetGuid(offset + 5)),
+            new EntityId(reader.GetGuid(offset + 6)),
+            new EntityId(reader.GetGuid(offset + 7)),
+            ParseProvider(reader.GetString(offset + 8)),
+            reader.GetString(offset + 32),
+            reader.GetString(offset + 9),
+            ParseAttemptOutcome(reader.GetString(offset + 10)),
+            reader.IsDBNull(offset + 34) ? null : reader.GetInt32(offset + 34),
+            reader.IsDBNull(offset + 35) ? null : reader.GetString(offset + 35),
+            reader.GetBoolean(offset + 33),
             baseUsage,
             adjustment,
-            reader.GetFieldValue<DateTimeOffset>(19),
-            reader.IsDBNull(20) ? null : reader.GetFieldValue<DateTimeOffset>(20),
-            reader.GetFieldValue<DateTimeOffset>(21));
-        if (fact.IsStreaming != reader.GetBoolean(36))
+            reader.GetFieldValue<DateTimeOffset>(offset + 19),
+            reader.IsDBNull(offset + 20)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(offset + 20),
+            reader.GetFieldValue<DateTimeOffset>(offset + 21));
+        if (fact.IsStreaming != reader.GetBoolean(offset + 36))
         {
             throw Invalid("attempt request stream identity");
         }
 
-        RequireSingleRow(
-            !await reader.ReadAsync(cancellationToken).ConfigureAwait(false),
-            "attempt fact");
-        ValidateAttemptFact(fact, expectedAttemptId);
+        ValidateAttemptFact(fact);
         return fact;
     }
 
@@ -367,9 +383,7 @@ internal static class PostgresQuotaLedgerAbiContract
         }
     }
 
-    private static void ValidateAttemptFact(
-        AttemptSettlementFact fact,
-        EntityId expectedAttemptId)
+    private static void ValidateAttemptFact(AttemptSettlementFact fact)
     {
         bool sourceEstimateMatches = fact.Usage.Source switch
         {
@@ -379,8 +393,7 @@ internal static class PostgresQuotaLedgerAbiContract
             SettlementUsageSource.ConservativeEstimate => fact.Usage.IsEstimated,
             _ => false,
         };
-        if (fact.AttemptId != expectedAttemptId
-            || fact.AttemptIndex < 0
+        if (fact.AttemptIndex < 0
             || string.IsNullOrWhiteSpace(fact.RequestedModel)
             || string.IsNullOrWhiteSpace(fact.UpstreamModel)
             || fact.UpstreamHttpStatus is < 100 or > 599

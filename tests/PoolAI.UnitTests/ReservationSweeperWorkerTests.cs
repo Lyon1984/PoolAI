@@ -603,7 +603,8 @@ public sealed class ReservationSweeperWorkerTests
         ReservationSweeperProcessor processor = new(
             repository,
             new CompletingUnitOfWorkFactory(),
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
         lockProvider = new();
         return new(
             lockProvider,
@@ -1031,8 +1032,11 @@ public sealed class ReservationSweeperWorkerTests
         public ValueTask<AttemptSettlementFact?> GetAttemptSettlementFactAsync(
             EntityId attemptId,
             IUnitOfWorkContext unitOfWorkContext,
-            CancellationToken cancellationToken) => throw Unexpected(
-                nameof(GetAttemptSettlementFactAsync));
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<AttemptSettlementFact?>(null);
+        }
 
         private static int Compare(
             QuotaExpiryCandidateKey left,
@@ -1101,6 +1105,20 @@ public sealed class ReservationSweeperWorkerTests
         public ValueTask WriteAsync(
             string eventName,
             JsonElement payload,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpIdempotentAuditAppender : IIdempotentAuditAppender
+    {
+        internal static NoOpIdempotentAuditAppender Instance { get; } = new();
+
+        public ValueTask AppendOnceAsync(
+            AuditEntry entry,
+            IUnitOfWorkContext unitOfWorkContext,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

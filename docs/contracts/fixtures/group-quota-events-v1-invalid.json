@@ -1,0 +1,213 @@
+{
+  "fixture_version": 1,
+  "schema": "../group-quota-events-v1.json",
+  "mutation_format": "RFC 6902 add/remove/replace subset",
+  "base_envelope": {
+    "message_id": "0190f8bf-a040-7444-a2ca-c4bc32e48901",
+    "topic": "poolai.quota.v1",
+    "event_type": "settled",
+    "schema_version": 1,
+    "event_sequence": 205,
+    "source_event_sequence": 25,
+    "aggregate_type": "group",
+    "aggregate_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e01",
+    "aggregate_version": null,
+    "deduplication_key": "quota:settled:invalid-base",
+    "occurred_at": "2026-08-02T02:00:05Z",
+    "correlation_id": "0190f8bf-a040-7444-a2ca-c4bc32e48d01",
+    "causation_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e04",
+    "payload": {
+      "schema_version": 1,
+      "event_id": "0190f8bf-a040-7444-a2ca-c4bc32e48902",
+      "source_event_sequence": 25,
+      "correlation_id": "0190f8bf-a040-7444-a2ca-c4bc32e48d01",
+      "causation_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e04",
+      "group_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e01",
+      "period_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e02",
+      "reservation_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e03",
+      "attempt_id": "0190f8bf-a040-7444-a2ca-c4bc32e48e04",
+      "event_type": "settled",
+      "delta_total_tokens": "0",
+      "delta_consumed_tokens": "100",
+      "delta_reserved_tokens": "-100",
+      "total_tokens": "1000",
+      "consumed_tokens": "100",
+      "reserved_tokens": "0",
+      "occurred_at": "2026-08-02T02:00:05Z",
+      "metadata": {
+        "usage_source": "upstream"
+      }
+    },
+    "replay_of": null
+  },
+  "cases": [
+    {
+      "name": "unknown_major",
+      "expected_failure": "UnsupportedSchemaVersion",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/schema_version",
+          "value": 2
+        },
+        {
+          "op": "replace",
+          "path": "/payload/schema_version",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "unknown_event_type",
+      "expected_failure": "UnsupportedEventType",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/event_type",
+          "value": "quota_rebalanced"
+        },
+        {
+          "op": "replace",
+          "path": "/payload/event_type",
+          "value": "quota_rebalanced"
+        }
+      ]
+    },
+    {
+      "name": "envelope_payload_event_type_mismatch",
+      "expected_failure": "EnvelopePayloadMismatch",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/payload/event_type",
+          "value": "released"
+        }
+      ]
+    },
+    {
+      "name": "envelope_payload_source_sequence_mismatch",
+      "expected_failure": "EnvelopePayloadMismatch",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/payload/source_event_sequence",
+          "value": 26
+        }
+      ]
+    },
+    {
+      "name": "missing_message_id",
+      "expected_failure": "MissingIdentity",
+      "mutations": [
+        {
+          "op": "remove",
+          "path": "/message_id"
+        }
+      ]
+    },
+    {
+      "name": "message_id_has_uuid_version_zero",
+      "expected_failure": "MissingIdentity",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/message_id",
+          "value": "0190f8bf-a040-0444-a2ca-c4bc32e48901"
+        }
+      ]
+    },
+    {
+      "name": "message_id_has_non_rfc_variant",
+      "expected_failure": "MissingIdentity",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/message_id",
+          "value": "0190f8bf-a040-7444-22ca-c4bc32e48901"
+        }
+      ]
+    },
+    {
+      "name": "missing_settled_attempt_id",
+      "expected_failure": "MissingIdentity",
+      "mutations": [
+        {
+          "op": "remove",
+          "path": "/payload/attempt_id"
+        }
+      ]
+    },
+    {
+      "name": "missing_outer_source_event_sequence",
+      "expected_failure": "InvalidSequence",
+      "mutations": [
+        {
+          "op": "remove",
+          "path": "/source_event_sequence"
+        }
+      ]
+    },
+    {
+      "name": "missing_payload_source_event_sequence",
+      "expected_failure": "InvalidSequence",
+      "mutations": [
+        {
+          "op": "remove",
+          "path": "/payload/source_event_sequence"
+        }
+      ]
+    },
+    {
+      "name": "expired_missing_conservative_expiry",
+      "expected_failure": "InvalidEventSemantics",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/event_type",
+          "value": "expired"
+        },
+        {
+          "op": "replace",
+          "path": "/payload/event_type",
+          "value": "expired"
+        }
+      ]
+    },
+    {
+      "name": "conservative_expired_missing_attempt_id",
+      "expected_failure": "MissingIdentity",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/event_type",
+          "value": "expired"
+        },
+        {
+          "op": "replace",
+          "path": "/payload/event_type",
+          "value": "expired"
+        },
+        {
+          "op": "add",
+          "path": "/payload/metadata/conservative_expiry",
+          "value": true
+        },
+        {
+          "op": "remove",
+          "path": "/payload/attempt_id"
+        }
+      ]
+    },
+    {
+      "name": "token_count_is_not_a_decimal_string",
+      "expected_failure": "InvalidPayload",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/payload/consumed_tokens",
+          "value": 100
+        }
+      ]
+    }
+  ]
+}

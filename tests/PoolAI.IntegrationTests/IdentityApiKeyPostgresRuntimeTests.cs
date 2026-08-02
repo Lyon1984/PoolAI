@@ -945,7 +945,9 @@ public sealed class IdentityApiKeyPostgresRuntimeTests(PostgresRuntimeFixture fi
             cancellationToken).ConfigureAwait(true);
         ApiKeyUpdateResult expiredWrite = await ExecuteCommittedAsync(
             context => runtime.Repository.UpdateAsync(
-                SetExpiration(expiredSource, expiredSource.ObservedAt),
+                SetExpiration(
+                    expiredSource,
+                    expiredSource.ObservedAt.AddMinutes(-1)),
                 context,
                 cancellationToken),
             cancellationToken).ConfigureAwait(true);

@@ -173,7 +173,7 @@ public sealed class PostgresQuotaLedgerPersistenceContractTests
             BindingFlags.Static | BindingFlags.NonPublic)!;
 
         TargetInvocationException exception = Assert.Throws<TargetInvocationException>(
-            () => validate.Invoke(null, [fact, attemptId]));
+            () => validate.Invoke(null, [fact]));
 
         Assert.IsType<InvalidOperationException>(exception.InnerException);
     }

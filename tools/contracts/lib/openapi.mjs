@@ -33,6 +33,7 @@ const VERSIONED_ACTION_OPERATIONS = new Set([
 ])
 
 const ETAG_EXEMPT_IDEMPOTENT_OPERATIONS = new Set([
+  'adminReplayDeadOutboxMessage',
   'adminRequestUserPasswordReset',
   'beginMyTotpSetup',
 ])
@@ -44,6 +45,7 @@ const STRICT_ADMIN_LIST_QUERY_OPERATIONS = new Set([
 ])
 
 export const API_KEY_TEXT_PATTERN = String.raw`^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])[^\u0000-\u001F\u007F-\u009F\u2028\u2029\uD800-\uDFFF]+$`
+export const OUTBOX_REPLAY_REASON_PATTERN = String.raw`^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])(?![\s\S]*[\u0000-\u001F\u007F-\u009F\uD800-\uDFFF])[\s\S]+$`
 export const UPSTREAM_BASE_URL_PATTERN = String.raw`^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])|http://(?:localhost|127\.0\.0\.1|\[::1\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\s?#]*)?$`
 
 const API_KEY_NAME_INPUTS = [
@@ -411,6 +413,18 @@ function validateApiKeyTextInputs(openApi) {
       `${operationId} must not tighten the shared XChangeReason parameter.`,
     )
   }
+}
+
+function validateOutboxReplayReasonInput(openApi) {
+  const pointer = '#/components/schemas/OutboxReplayRequest/properties/reason'
+  const schema = openApi.components?.schemas?.OutboxReplayRequest?.properties?.reason
+  invariant(
+    schema?.type === 'string' &&
+      schema.minLength === 1 &&
+      schema.maxLength === 500 &&
+      schema.pattern === OUTBOX_REPLAY_REASON_PATTERN,
+    `${pointer} must use the exact Outbox replay Unicode scalar reason contract (1..500).`,
+  )
 }
 
 function validateUpstreamBaseUrlInputs(openApi) {
@@ -937,6 +951,7 @@ export function validateOpenApi(openApi, catalog = null) {
   const schemaNodes = validateSupportedSchemas(openApi)
   validateBodyErrorComponents(openApi)
   validateApiKeyTextInputs(openApi)
+  validateOutboxReplayReasonInput(openApi)
   validateUpstreamBaseUrlInputs(openApi)
   const operations = validateOperations(openApi)
   const validateSchema = createSchemaValidator(openApi)

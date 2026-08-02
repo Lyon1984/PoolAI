@@ -311,6 +311,59 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task WorkerCredentialRewrapAndAuditShareOneAtomicCommit()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        ProtectorPair protectors = CreateProtectors();
+        EntityId accountId = EntityId.New();
+        _ = await CreateAsync(
+            accountId,
+            protectors.Previous,
+            Credential(accountId, "atomic-rewrap"),
+            OriginalPrefix,
+            OriginalHint,
+            cancellationToken).ConfigureAwait(true);
+        AccountCredentialSnapshot snapshot = Assert.IsType<AccountCredentialSnapshot>(
+            await _workerStore.FindAsync(
+                accountId,
+                cancellationToken).ConfigureAwait(true));
+        AccountCredentialRewrap candidate = await protectors.Current.RewrapAsync(
+            snapshot.Envelope,
+            accountId,
+            cancellationToken).ConfigureAwait(true);
+        Assert.True(candidate.Changed);
+
+        AccountCredentialRewrapWrite write = new(
+            accountId,
+            snapshot.CredentialRevision,
+            candidate.Envelope);
+        EntityId auditId = EntityId.New();
+        _ = await RewrapWithProductionAuditAsync(
+            write,
+            auditId,
+            commit: false,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(
+            snapshot.CredentialRevision,
+            (await ReadAccountAsync(accountId, cancellationToken)
+                .ConfigureAwait(true)).CredentialRevision);
+        Assert.Equal(0L, await ReadAuditCountAsync(auditId, cancellationToken)
+            .ConfigureAwait(true));
+
+        AccountCredentialRewrapWriteResult committed =
+            await RewrapWithProductionAuditAsync(
+                write,
+                auditId,
+                commit: true,
+                cancellationToken).ConfigureAwait(true);
+        Assert.Equal(AccountCredentialRewrapWriteDisposition.Rewrapped, committed.Disposition);
+        Assert.Equal(snapshot.CredentialRevision + 1, committed.CurrentCredentialRevision);
+        Assert.Equal(1L, await ReadAuditCountAsync(auditId, cancellationToken)
+            .ConfigureAwait(true));
+    }
+
     [Theory]
     [InlineData(ConcurrentCommitOrder.ReplacementFirst)]
     [InlineData(ConcurrentCommitOrder.RewrapFirst)]
@@ -570,6 +623,70 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
             cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return result;
+    }
+
+    private async ValueTask<AccountCredentialRewrapWriteResult>
+        RewrapWithProductionAuditAsync(
+            AccountCredentialRewrapWrite write,
+            EntityId auditId,
+            bool commit,
+            CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await WorkerFactory()
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        AccountCredentialRewrapWriteResult result = await _workerStore.TryRewrapAsync(
+            write,
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+        Assert.Equal(AccountCredentialRewrapWriteDisposition.Rewrapped, result.Disposition);
+        IAuditAppender audit = _fixture.WorkerServices
+            .GetRequiredService<IAuditAppender>();
+        await audit.AppendAsync(
+            new AuditEntry(
+                auditId,
+                AuditActorType.Service,
+                ActorUserId: null,
+                "supply.account_credential_rewrap",
+                "account",
+                write.AccountId,
+                RequestId: null,
+                Reason: "key_rotation",
+                IpAddress: null,
+                UserAgent: null,
+                BeforeState: null,
+                AfterState: null,
+                JsonSerializer.SerializeToElement(new
+                {
+                    mode = "maintenance_rewrap",
+                    credential_revision_from = write.ExpectedCredentialRevision,
+                    credential_revision_to = write.ExpectedCredentialRevision + 1,
+                })),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+        if (commit)
+        {
+            await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    private async ValueTask<long> ReadAuditCountAsync(
+        EntityId auditId,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = _fixture.AdministratorDataSource.CreateCommand("""
+            SELECT pg_catalog.count(*)
+            FROM public.audit_logs
+            WHERE id = $1
+              AND action = 'supply.account_credential_rewrap';
+            """);
+        command.Parameters.AddWithValue(auditId.Value);
+        return Assert.IsType<long>(await command
+            .ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private async ValueTask SetCredentialDependentHealthAsync(

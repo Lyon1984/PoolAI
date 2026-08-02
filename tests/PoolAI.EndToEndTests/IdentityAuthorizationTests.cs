@@ -427,6 +427,7 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
             ["adminCreateUser"] = ["admin"],
             ["adminUpdateUser"] = ["admin"],
             ["adminRequestUserPasswordReset"] = ["admin"],
+            ["adminReplayDeadOutboxMessage"] = ["admin"],
             ["adminListUserApiKeys"] = ["admin"],
             ["adminCreateUserApiKey"] = ["admin"],
             ["adminGetUserApiKey"] = ["admin"],

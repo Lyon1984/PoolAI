@@ -598,7 +598,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 (QuotaLedgerFailure)failureValue),
         };
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Result<ReserveQuotaResult> result = await service.ReserveAsync(
             ReserveCommand(),
@@ -629,7 +629,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 refreshedMaximum)),
         };
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Result<DispatchedReservationHandle> result = await service.MarkDispatchedAsync(
             DispatchCommand(),
@@ -657,7 +657,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 QuotaLedgerFailure.ResourceConflict),
         };
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Result<QuotaTransitionResult> invalid = await service.ReleaseAsync(
             ReleaseCommand() with { Reason = " " },
@@ -693,7 +693,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 ReservedTokens: 0)),
         };
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Result<UsageAdjustmentResult> result = await service.AdjustAsync(
             AdjustmentCommand(),
@@ -725,7 +725,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
         StubQuotaLedgerRepository repository = new();
         RecordingUnitOfWorkFactory units = new();
         RecordingOperationalEventWriter events = new();
-        GroupQuotaLedgerService service = new(repository, units, events);
+        GroupQuotaLedgerService service = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         Result<UsageAdjustmentResult> invalid = await service.AdjustAsync(
             AdjustmentCommand() with { Reason = "" },
@@ -766,7 +766,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
         };
         RecordingUnitOfWorkFactory units = new();
         RecordingOperationalEventWriter events = new();
-        GroupQuotaLedgerService service = new(repository, units, events);
+        GroupQuotaLedgerService service = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         Result<UsageAdjustmentResult> result = await service.AdjustAsync(
             AdjustmentCommand(),
@@ -792,7 +792,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
         };
         RecordingUnitOfWorkFactory units = new();
         RecordingOperationalEventWriter events = new();
-        GroupQuotaLedgerService service = new(repository, units, events);
+        GroupQuotaLedgerService service = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         Result<UsageAdjustmentResult> result = await service.AdjustAsync(
             AdjustmentCommand(),
@@ -810,7 +810,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
     {
         StubQuotaLedgerRepository repository = new();
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
         CallerUnitOfWorkContext context = new();
 
         Result<AttemptSettlementFact> invalid = await service.GetByAttemptIdAsync(
@@ -837,12 +837,18 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
     {
         StubQuotaLedgerRepository repository = new();
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Assert.Throws<ArgumentNullException>(
-            () => new GroupQuotaLedgerService(null!, units));
+            () => new GroupQuotaLedgerService(null!, units, NoOpIdempotentAuditAppender.Instance));
         Assert.Throws<ArgumentNullException>(
-            () => new GroupQuotaLedgerService(repository, null!));
+            () => new GroupQuotaLedgerService(repository, null!, NoOpIdempotentAuditAppender.Instance));
+        ArgumentNullException auditException = Assert.Throws<ArgumentNullException>(
+            () => new GroupQuotaLedgerService(
+                repository,
+                units,
+                idempotentAuditAppender: null!));
+        Assert.Equal("idempotentAuditAppender", auditException.ParamName);
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
             await service.ReserveAsync(null!, CancellationToken.None).ConfigureAwait(false));
         await Assert.ThrowsAsync<ArgumentNullException>(async () =>
@@ -878,7 +884,7 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
                 QuotaLedgerFailure.UsageWithoutDispatch),
         };
         RecordingUnitOfWorkFactory units = new();
-        GroupQuotaLedgerService service = new(repository, units);
+        GroupQuotaLedgerService service = new(repository, units, NoOpIdempotentAuditAppender.Instance);
 
         Result<ReserveQuotaResult> ordinaryFailure = await service.ReserveAsync(
             ReserveCommand(),
@@ -1254,6 +1260,20 @@ public sealed class GroupQuotaLedgerValidationCoverageTests
             EventName = eventName;
             Payload = payload;
             CancellationToken = cancellationToken;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpIdempotentAuditAppender : IIdempotentAuditAppender
+    {
+        internal static NoOpIdempotentAuditAppender Instance { get; } = new();
+
+        public ValueTask AppendOnceAsync(
+            AuditEntry entry,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.CompletedTask;
         }
     }

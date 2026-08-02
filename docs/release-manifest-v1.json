@@ -4,12 +4,12 @@
   "public_api": {
     "schema_version": 1,
     "source": "docs/contracts/openapi-v1.yaml",
-    "sha256": "ba965851bd6b9b4996ecab2bdf9c947e77981a40e559005ff6618a5269015afe"
+    "sha256": "e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4"
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 14,
-    "maximum_compatible_version": 14,
+    "minimum_compatible_version": 17,
+    "maximum_compatible_version": 17,
     "migrations": [
       {
         "version": 1,
@@ -94,6 +94,24 @@
         "name": "0014_group_quota_representation_version_m3_e1.sql",
         "source": "docs/database/0014_group_quota_representation_version_m3_e1.sql",
         "sha256": "abbf0ac2c5265f830b65fcc447f78b30940183ff0236fc65491f7e920fae9e89"
+      },
+      {
+        "version": 15,
+        "name": "0015_operations_outbox_replay_m3_e4.sql",
+        "source": "docs/database/0015_operations_outbox_replay_m3_e4.sql",
+        "sha256": "d14a9dcf2dea98867c8c973ce850a2e122e4679d990701e36d7affb2d0181516"
+      },
+      {
+        "version": 16,
+        "name": "0016_operations_delivery_and_fact_audit_m3_e4.sql",
+        "source": "docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql",
+        "sha256": "a0c8a395f6d51aab108a3ad3e1912e4008f3bdabfe01e809701737ed24b569db"
+      },
+      {
+        "version": 17,
+        "name": "0017_operations_outbox_query_scaling_m3_e4.sql",
+        "source": "docs/database/0017_operations_outbox_query_scaling_m3_e4.sql",
+        "sha256": "11b7131a580a62725cb2ddbe3d82d4c626c7b63506f3848005856dc9dda7e15a"
       }
     ]
   },

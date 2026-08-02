@@ -19,5 +19,8 @@
     <EmbeddedResource Include="../../docs/database/0012_supply_account_health_m2_e4.sql" Link="Migrations/0012_supply_account_health_m2_e4.sql" />
     <EmbeddedResource Include="../../docs/database/0013_group_quota_period_m3_e1.sql" Link="Migrations/0013_group_quota_period_m3_e1.sql" />
     <EmbeddedResource Include="../../docs/database/0014_group_quota_representation_version_m3_e1.sql" Link="Migrations/0014_group_quota_representation_version_m3_e1.sql" />
+    <EmbeddedResource Include="../../docs/database/0015_operations_outbox_replay_m3_e4.sql" Link="Migrations/0015_operations_outbox_replay_m3_e4.sql" />
+    <EmbeddedResource Include="../../docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql" Link="Migrations/0016_operations_delivery_and_fact_audit_m3_e4.sql" />
+    <EmbeddedResource Include="../../docs/database/0017_operations_outbox_query_scaling_m3_e4.sql" Link="Migrations/0017_operations_outbox_query_scaling_m3_e4.sql" />
   </ItemGroup>
 </Project>

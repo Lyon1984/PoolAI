@@ -32,17 +32,27 @@ public sealed class ReservationSweeperProcessorTests
             () => new ReservationSweeperProcessor(
                 null!,
                 units,
-                NoOpOperationalEventWriter.Instance));
+                NoOpOperationalEventWriter.Instance,
+                NoOpIdempotentAuditAppender.Instance));
         Assert.Throws<ArgumentNullException>(
             () => new ReservationSweeperProcessor(
                 repository,
                 null!,
-                NoOpOperationalEventWriter.Instance));
+                NoOpOperationalEventWriter.Instance,
+                NoOpIdempotentAuditAppender.Instance));
         Assert.Throws<ArgumentNullException>(
             () => new ReservationSweeperProcessor(
                 repository,
                 units,
+                null!,
+                NoOpIdempotentAuditAppender.Instance));
+        ArgumentNullException auditException = Assert.Throws<ArgumentNullException>(
+            () => new ReservationSweeperProcessor(
+                repository,
+                units,
+                NoOpOperationalEventWriter.Instance,
                 null!));
+        Assert.Equal("idempotentAuditAppender", auditException.ParamName);
     }
 
     [Theory]
@@ -54,7 +64,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             new ScriptedQuotaLedgerRepository([], []),
             new RecordingUnitOfWorkFactory(),
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => processor.ProcessAsync(
@@ -69,7 +80,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             new ScriptedQuotaLedgerRepository([], []),
             new RecordingUnitOfWorkFactory(),
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         _ = await Assert.ThrowsAsync<ArgumentNullException>(
             () => processor.ProcessAsync(
@@ -86,7 +98,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             new ScriptedQuotaLedgerRepository([], []),
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
         using CancellationTokenSource cancellation = new();
         cancellation.Cancel();
 
@@ -109,7 +122,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         ReservationSweepProcessResult result = await processor.ProcessAsync(
             jobLock,
@@ -134,7 +148,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         ReservationSweepProcessResult result = await processor.ProcessAsync(
             new ScriptedJobLock(true),
@@ -171,7 +186,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
         ScriptedJobLock jobLock = new(true, true, true, true, true);
 
         ReservationSweepProcessResult result = await processor.ProcessAsync(
@@ -208,6 +224,126 @@ public sealed class ReservationSweeperProcessorTests
     }
 
     [Fact]
+    public async Task ConservativeExpiryAppendsOneBoundedServiceAuditBeforeCommit()
+    {
+        QuotaExpiryCandidate candidate = Candidate(1, DueAt);
+        AttemptSettlementFact fact = ConservativeFact(candidate);
+        ScriptedQuotaLedgerRepository repository = new(
+            pages: [[candidate]],
+            expiryResults: [QuotaLedgerFailure.None],
+            settlementFacts: [fact]);
+        RecordingUnitOfWorkFactory units = new();
+        RecordingIdempotentAuditAppender audit = new();
+        ReservationSweeperProcessor processor = new(
+            repository,
+            units,
+            NoOpOperationalEventWriter.Instance,
+            audit);
+
+        ReservationSweepProcessResult result = await processor.ProcessAsync(
+            new ScriptedJobLock(true, true),
+            pageSize: 2,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ReservationSweepProcessDisposition.Completed, result.Disposition);
+        AuditEntry entry = Assert.Single(audit.Entries);
+        Assert.Equal(AuditActorType.Service, entry.ActorType);
+        Assert.Equal("group_quota.attempt_fact_conservative_expired", entry.Action);
+        Assert.Equal("usage_attempt", entry.TargetType);
+        Assert.Equal(candidate.AttemptId, entry.TargetId);
+        Assert.Equal(fact.RequestId, entry.RequestId);
+        Assert.Equal(candidate.GroupId.Value, entry.Metadata.GetProperty("group_id").GetGuid());
+        Assert.Equal(
+            "conservative_estimate",
+            entry.Metadata.GetProperty("usage_source").GetString());
+        Assert.Equal(
+            "100",
+            entry.AfterState!.Value.GetProperty("total_tokens").GetString());
+        Assert.Same(repository.ExpiryContexts.Single(), audit.Contexts.Single());
+        Assert.Equal(2, units.CommitCalls);
+    }
+
+    [Fact]
+    public async Task ConservativeExpiryAuditFailureRollsBackTheFactTransaction()
+    {
+        QuotaExpiryCandidate candidate = Candidate(1, DueAt);
+        ScriptedQuotaLedgerRepository repository = new(
+            pages: [[candidate]],
+            expiryResults: [QuotaLedgerFailure.None],
+            settlementFacts: [ConservativeFact(candidate)]);
+        RecordingUnitOfWorkFactory units = new();
+        ReservationSweeperProcessor processor = new(
+            repository,
+            units,
+            NoOpOperationalEventWriter.Instance,
+            new RecordingIdempotentAuditAppender(throwOnAppend: true));
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => processor.ProcessAsync(
+                new ScriptedJobLock(true, true),
+                pageSize: 2,
+                TestContext.Current.CancellationToken).AsTask());
+
+        Assert.Equal(1, units.CommitCalls);
+        Assert.Equal(2, units.DisposeCalls);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public async Task ConservativeExpiryRejectsEveryContradictoryTerminalFactField(
+        int contradiction)
+    {
+        QuotaExpiryCandidate candidate = Candidate(1, DueAt);
+        AttemptSettlementFact valid = ConservativeFact(candidate);
+        AttemptSettlementFact contradictory = contradiction switch
+        {
+            0 => valid with { AttemptId = Id(901) },
+            1 => valid with { ReservationId = Id(902) },
+            2 => valid with { GroupId = Id(903) },
+            3 => valid with { PeriodId = Id(904) },
+            4 => valid with
+            {
+                Usage = valid.Usage with { Source = SettlementUsageSource.Upstream },
+            },
+            _ => valid with
+            {
+                Usage = valid.Usage with { IsEstimated = false },
+            },
+        };
+        ScriptedQuotaLedgerRepository repository = new(
+            pages: [[candidate]],
+            expiryResults: [QuotaLedgerFailure.None],
+            settlementFacts: [contradictory]);
+        RecordingUnitOfWorkFactory units = new();
+        RecordingOperationalEventWriter events = new(static () => { });
+        ReservationSweeperProcessor processor = new(
+            repository,
+            units,
+            events,
+            NoOpIdempotentAuditAppender.Instance);
+
+        ReservationSweepFailureException exception = await Assert.ThrowsAsync<
+            ReservationSweepFailureException>(
+                () => processor.ProcessAsync(
+                    new ScriptedJobLock(true, true),
+                    pageSize: 1,
+                    TestContext.Current.CancellationToken).AsTask());
+
+        Assert.Equal(QuotaLedgerFailure.TerminalFactInvariantBroken, exception.Failure);
+        Assert.Equal(1, events.WriteCount);
+        Assert.Equal(
+            "group_quota.reservation_sweeper_invariant_violation",
+            events.EventName);
+        Assert.Equal(1, units.CommitCalls);
+        Assert.Equal(2, units.DisposeCalls);
+    }
+
+    [Fact]
     public async Task OwnershipLossBeforeACandidateStopsWithoutOpeningAnotherUnitOfWork()
     {
         QuotaExpiryCandidate first = Candidate(1, DueAt);
@@ -219,7 +355,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
         ScriptedJobLock jobLock = new(true, true, false);
 
         ReservationSweepProcessResult result = await processor.ProcessAsync(
@@ -252,7 +389,7 @@ public sealed class ReservationSweeperProcessorTests
             Assert.Equal(1, units.CommitCalls);
             Assert.Equal(2, units.DisposeCalls);
         });
-        ReservationSweeperProcessor processor = new(repository, units, events);
+        ReservationSweeperProcessor processor = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         ReservationSweepFailureException exception = await Assert.ThrowsAsync<
             ReservationSweepFailureException>(
@@ -280,7 +417,7 @@ public sealed class ReservationSweeperProcessorTests
             expiryResults: [QuotaLedgerFailure.DependencyUnavailable]);
         RecordingUnitOfWorkFactory units = new();
         RecordingOperationalEventWriter events = new(static () => { });
-        ReservationSweeperProcessor processor = new(repository, units, events);
+        ReservationSweeperProcessor processor = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         ReservationSweepFailureException exception = await Assert.ThrowsAsync<
             ReservationSweepFailureException>(
@@ -305,7 +442,7 @@ public sealed class ReservationSweeperProcessorTests
             expiryResults: [QuotaLedgerFailure.Internal]);
         RecordingUnitOfWorkFactory units = new();
         RecordingOperationalEventWriter events = new(static () => { });
-        ReservationSweeperProcessor processor = new(repository, units, events);
+        ReservationSweeperProcessor processor = new(repository, units, events, NoOpIdempotentAuditAppender.Instance);
 
         ReservationSweepFailureException exception = await Assert.ThrowsAsync<
             ReservationSweepFailureException>(
@@ -338,7 +475,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             units,
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<
             InvalidOperationException>(
@@ -376,7 +514,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             new RecordingUnitOfWorkFactory(),
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<
             InvalidOperationException>(
@@ -410,7 +549,8 @@ public sealed class ReservationSweeperProcessorTests
         ReservationSweeperProcessor processor = new(
             repository,
             new RecordingUnitOfWorkFactory(),
-            NoOpOperationalEventWriter.Instance);
+            NoOpOperationalEventWriter.Instance,
+            NoOpIdempotentAuditAppender.Instance);
 
         InvalidOperationException exception = await Assert.ThrowsAsync<
             InvalidOperationException>(
@@ -437,12 +577,40 @@ public sealed class ReservationSweeperProcessorTests
     private static EntityId Id(int suffix) => new(
         Guid.Parse($"018f3a4b-5c6d-7e8f-9123-{suffix:D12}"));
 
+    private static AttemptSettlementFact ConservativeFact(QuotaExpiryCandidate candidate) => new(
+        candidate.AttemptId,
+        Id(501),
+        AttemptIndex: 1,
+        candidate.ReservationId,
+        candidate.GroupId,
+        candidate.PeriodId,
+        Id(502),
+        Id(503),
+        SettlementProvider.OpenAi,
+        RequestedModel: "gpt-5-mini",
+        UpstreamModel: "gpt-5-mini",
+        UsageAttemptOutcome.Failed,
+        UpstreamHttpStatus: null,
+        ErrorCode: "reservation_lease_expired_after_dispatch",
+        IsStreaming: false,
+        Usage: new AttemptUsage(
+            new TokenUsage(60, 40, 0, 0, 0),
+            SettlementUsageSource.ConservativeEstimate,
+            IsEstimated: true),
+        Adjustment: null,
+        DispatchStartedAt: DueAt.AddMinutes(-1),
+        FirstTokenAt: null,
+        CompletedAt: DueAt);
+
     private sealed class ScriptedQuotaLedgerRepository(
         IEnumerable<IReadOnlyList<QuotaExpiryCandidate>?> pages,
-        IEnumerable<QuotaLedgerFailure> expiryResults) : IQuotaLedgerRepository
+        IEnumerable<QuotaLedgerFailure> expiryResults,
+        IEnumerable<AttemptSettlementFact?>? settlementFacts = null) : IQuotaLedgerRepository
     {
         private readonly Queue<IReadOnlyList<QuotaExpiryCandidate>?> _pages = new(pages);
         private readonly Queue<QuotaLedgerFailure> _expiryResults = new(expiryResults);
+        private readonly Queue<AttemptSettlementFact?> _settlementFacts = new(
+            settlementFacts ?? []);
 
         internal int PageCalls { get; private set; }
 
@@ -528,8 +696,12 @@ public sealed class ReservationSweeperProcessorTests
         public ValueTask<AttemptSettlementFact?> GetAttemptSettlementFactAsync(
             EntityId attemptId,
             IUnitOfWorkContext unitOfWorkContext,
-            CancellationToken cancellationToken) => throw Unexpected(
-                nameof(GetAttemptSettlementFactAsync));
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                _settlementFacts.Count == 0 ? null : _settlementFacts.Dequeue());
+        }
 
         private static InvalidOperationException Unexpected(string operation) => new(
             $"The {operation} repository method should not be called by the sweeper.");
@@ -628,6 +800,44 @@ public sealed class ReservationSweeperProcessorTests
         public ValueTask WriteAsync(
             string eventName,
             JsonElement payload,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingIdempotentAuditAppender(bool throwOnAppend = false)
+        : IIdempotentAuditAppender
+    {
+        internal List<AuditEntry> Entries { get; } = [];
+
+        internal List<IUnitOfWorkContext> Contexts { get; } = [];
+
+        public ValueTask AppendOnceAsync(
+            AuditEntry entry,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (throwOnAppend)
+            {
+                throw new InvalidOperationException("Injected audit failure.");
+            }
+
+            Entries.Add(entry);
+            Contexts.Add(unitOfWorkContext);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpIdempotentAuditAppender : IIdempotentAuditAppender
+    {
+        internal static NoOpIdempotentAuditAppender Instance { get; } = new();
+
+        public ValueTask AppendOnceAsync(
+            AuditEntry entry,
+            IUnitOfWorkContext unitOfWorkContext,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

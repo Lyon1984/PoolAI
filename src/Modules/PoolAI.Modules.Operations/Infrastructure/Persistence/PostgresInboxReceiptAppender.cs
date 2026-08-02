@@ -5,7 +5,9 @@ using PoolAI.Modules.Operations.Abstractions;
 
 namespace PoolAI.Modules.Operations.Infrastructure.Persistence;
 
-internal sealed class PostgresInboxReceiptAppender : IInboxReceiptAppender
+internal sealed class PostgresInboxReceiptAppender :
+    IInboxReceiptAppender,
+    IInboxReplayPredecessorVerifier
 {
     private const string InsertSql = """
         INSERT INTO public.inbox_messages (
@@ -22,6 +24,18 @@ internal sealed class PostgresInboxReceiptAppender : IInboxReceiptAppender
            OR (consumer_name = $1 AND topic = $3 AND event_sequence = $4)
         ORDER BY CASE WHEN message_id = $2 THEN 0 ELSE 1 END
         LIMIT 1;
+        """;
+
+    private const string ExactPredecessorSql = """
+        SELECT EXISTS (
+            SELECT 1
+            FROM public.inbox_messages
+            WHERE consumer_name = $1
+              AND message_id = $2
+              AND topic = $3
+              AND schema_version = $4
+              AND payload_hash = $5
+        );
         """;
 
     public async ValueTask<InboxReceiptAppendResult> AppendAsync(
@@ -71,6 +85,23 @@ internal sealed class PostgresInboxReceiptAppender : IInboxReceiptAppender
                 receipt.PayloadHash.Span);
         return new InboxReceiptAppendResult(
             exact ? InboxReceiptDisposition.Duplicate : InboxReceiptDisposition.MessageConflict);
+    }
+
+    public async ValueTask<bool> HasExactReceiptAsync(
+        InboxReplayPredecessorProof proof,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(proof);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(ExactPredecessorSql);
+        command.Parameters.AddWithValue(proof.ConsumerName);
+        command.Parameters.AddWithValue(proof.PredecessorMessageId.Value);
+        command.Parameters.AddWithValue(proof.Topic);
+        command.Parameters.AddWithValue(proof.SchemaVersion);
+        command.Parameters.AddWithValue(proof.PayloadHash.ToArray());
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false) ?? false);
     }
 
     private static void AddParameters(NpgsqlCommand command, InboxReceipt receipt)

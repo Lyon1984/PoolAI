@@ -1,0 +1,696 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poolai.example/contracts/group-quota-events-v1.json",
+  "title": "PoolAI GroupQuota Integration Event v1",
+  "description": "Canonical Published Language for poolai.quota.v1. event_sequence is the physical Outbox position; source_event_sequence is the stable GroupQuota ledger position and is retained by safe replay.",
+  "x-poolai-topic": "poolai.quota.v1",
+  "x-poolai-schema-version": 1,
+  "x-poolai-compatibility": {
+    "unknown_schema_versions": "reject",
+    "unknown_event_types": "reject",
+    "unknown_optional_envelope_fields": "accept",
+    "unknown_optional_payload_fields": "accept",
+    "unknown_optional_metadata_fields": "accept",
+    "nullable_envelope_fields_must_be_present": [
+      "aggregate_version",
+      "causation_id",
+      "replay_of"
+    ],
+    "nullable_payload_fields_may_be_omitted": [
+      "reservation_id",
+      "attempt_id",
+      "causation_id"
+    ]
+  },
+  "x-poolai-event-type-mapping": {
+    "initialized": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    },
+    "reserved": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    },
+    "dispatch_started": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    },
+    "renewed": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    },
+    "settled": {
+      "usage_projection": "rebuild_attempt_hour",
+      "required_payload_ids": [
+        "reservation_id",
+        "attempt_id"
+      ]
+    },
+    "released": {
+      "usage_projection": "none_assert_no_attempt_fact",
+      "required_payload_ids": []
+    },
+    "expired": {
+      "usage_projection": "rebuild_attempt_hour_when_conservative_expiry_true",
+      "required_payload_ids": [],
+      "conditional_required_payload_ids": {
+        "when": "metadata.conservative_expiry=true",
+        "fields": [
+          "reservation_id",
+          "attempt_id"
+        ]
+      },
+      "required_metadata": [
+        "conservative_expiry"
+      ]
+    },
+    "usage_adjusted": {
+      "usage_projection": "rebuild_attempt_hour",
+      "required_payload_ids": [
+        "reservation_id",
+        "attempt_id"
+      ]
+    },
+    "total_adjusted": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    },
+    "period_reset": {
+      "usage_projection": "none",
+      "required_payload_ids": []
+    }
+  },
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "message_id",
+    "topic",
+    "event_type",
+    "schema_version",
+    "event_sequence",
+    "source_event_sequence",
+    "aggregate_type",
+    "aggregate_id",
+    "aggregate_version",
+    "deduplication_key",
+    "occurred_at",
+    "correlation_id",
+    "causation_id",
+    "payload",
+    "replay_of"
+  ],
+  "properties": {
+    "message_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "topic": {
+      "const": "poolai.quota.v1"
+    },
+    "event_type": {
+      "$ref": "#/$defs/eventType"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "event_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807,
+      "description": "Physical Outbox sequence. A replay receives a new value."
+    },
+    "source_event_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807,
+      "description": "Stable GroupQuota ledger sequence. A replay retains the source value."
+    },
+    "aggregate_type": {
+      "const": "group"
+    },
+    "aggregate_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "aggregate_version": {
+      "type": "null"
+    },
+    "deduplication_key": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "occurred_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "causation_id": {
+      "$ref": "#/$defs/nullableUuid"
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/initializedPayload"
+        },
+        {
+          "$ref": "#/$defs/reservedPayload"
+        },
+        {
+          "$ref": "#/$defs/dispatchStartedPayload"
+        },
+        {
+          "$ref": "#/$defs/renewedPayload"
+        },
+        {
+          "$ref": "#/$defs/settledPayload"
+        },
+        {
+          "$ref": "#/$defs/releasedPayload"
+        },
+        {
+          "$ref": "#/$defs/expiredPayload"
+        },
+        {
+          "$ref": "#/$defs/usageAdjustedPayload"
+        },
+        {
+          "$ref": "#/$defs/totalAdjustedPayload"
+        },
+        {
+          "$ref": "#/$defs/periodResetPayload"
+        }
+      ]
+    },
+    "replay_of": {
+      "$ref": "#/$defs/nullableUuid"
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/initializedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/reservedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/dispatchStartedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/renewedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/settledEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/releasedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/expiredEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/usageAdjustedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/totalAdjustedEnvelopeMapping"
+    },
+    {
+      "$ref": "#/$defs/periodResetEnvelopeMapping"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nullableUuid": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "signedTokenCount": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,77})$"
+    },
+    "tokenCount": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$"
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "initialized",
+        "reserved",
+        "dispatch_started",
+        "renewed",
+        "settled",
+        "released",
+        "expired",
+        "usage_adjusted",
+        "total_adjusted",
+        "period_reset"
+      ]
+    },
+    "basePayload": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "event_id",
+        "source_event_sequence",
+        "correlation_id",
+        "group_id",
+        "period_id",
+        "event_type",
+        "delta_total_tokens",
+        "delta_consumed_tokens",
+        "delta_reserved_tokens",
+        "total_tokens",
+        "consumed_tokens",
+        "reserved_tokens",
+        "occurred_at",
+        "metadata"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source_event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "causation_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "group_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "period_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "event_type": {
+          "$ref": "#/$defs/eventType"
+        },
+        "delta_total_tokens": {
+          "$ref": "#/$defs/signedTokenCount"
+        },
+        "delta_consumed_tokens": {
+          "$ref": "#/$defs/signedTokenCount"
+        },
+        "delta_reserved_tokens": {
+          "$ref": "#/$defs/signedTokenCount"
+        },
+        "total_tokens": {
+          "$ref": "#/$defs/tokenCount"
+        },
+        "consumed_tokens": {
+          "$ref": "#/$defs/tokenCount"
+        },
+        "reserved_tokens": {
+          "$ref": "#/$defs/tokenCount"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "initializedPayload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/basePayload"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "initialized"
+            }
+          }
+        }
+      ]
+    },
+    "reservedPayload": {
+      "$ref": "#/$defs/basePayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "reserved"
+        }
+      }
+    },
+    "dispatchStartedPayload": {
+      "$ref": "#/$defs/basePayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "dispatch_started"
+        }
+      }
+    },
+    "renewedPayload": {
+      "$ref": "#/$defs/basePayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "renewed"
+        }
+      }
+    },
+    "settledPayload": {
+      "$ref": "#/$defs/attemptFactPayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "settled"
+        }
+      }
+    },
+    "releasedPayload": {
+      "$ref": "#/$defs/basePayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "released"
+        }
+      }
+    },
+    "expiredPayload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/basePayload"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "expired"
+            },
+            "metadata": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "conservative_expiry"
+              ],
+              "properties": {
+                "conservative_expiry": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "if": {
+            "type": "object",
+            "properties": {
+              "metadata": {
+                "type": "object",
+                "required": [
+                  "conservative_expiry"
+                ],
+                "properties": {
+                  "conservative_expiry": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "reservation_id",
+              "attempt_id"
+            ],
+            "properties": {
+              "reservation_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "attempt_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "usageAdjustedPayload": {
+      "$ref": "#/$defs/attemptFactPayload",
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "usage_adjusted"
+        }
+      }
+    },
+    "totalAdjustedPayload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/basePayload"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "total_adjusted"
+            }
+          }
+        }
+      ]
+    },
+    "periodResetPayload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/basePayload"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "const": "period_reset"
+            }
+          }
+        }
+      ]
+    },
+    "attemptFactPayload": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/basePayload"
+        },
+        {
+          "type": "object",
+          "required": [
+            "reservation_id",
+            "attempt_id"
+          ],
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "attempt_id": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        }
+      ]
+    },
+    "initializedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "initialized"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/initializedPayload"
+          }
+        }
+      }
+    },
+    "reservedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "reserved"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/reservedPayload"
+          }
+        }
+      }
+    },
+    "dispatchStartedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "dispatch_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/dispatchStartedPayload"
+          }
+        }
+      }
+    },
+    "renewedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "renewed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/renewedPayload"
+          }
+        }
+      }
+    },
+    "settledEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "settled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/settledPayload"
+          }
+        }
+      }
+    },
+    "releasedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "released"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/releasedPayload"
+          }
+        }
+      }
+    },
+    "expiredEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "expired"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/expiredPayload"
+          }
+        }
+      }
+    },
+    "usageAdjustedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "usage_adjusted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/usageAdjustedPayload"
+          }
+        }
+      }
+    },
+    "totalAdjustedEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "total_adjusted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/totalAdjustedPayload"
+          }
+        }
+      }
+    },
+    "periodResetEnvelopeMapping": {
+      "type": "object",
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "period_reset"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/periodResetPayload"
+          }
+        }
+      }
+    }
+  }
+}

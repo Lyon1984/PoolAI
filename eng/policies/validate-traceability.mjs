@@ -3114,7 +3114,7 @@ if (!Array.isArray(manifest.decisions) || !Array.isArray(manifest.acceptanceCrit
   const ac045Slices = acceptanceById.get('AC-045')?.verification?.slices ?? []
   const expectedAc045 = new Map([
     ['contract-error-schema', ['M0-E2', 'implemented-local']],
-    ['event-projection', ['M3-E4', 'planned']],
+    ['event-projection', ['M3-E4', 'implemented-local']],
     ['responses-error-shape', ['M4-E2', 'planned']],
     ['chat-error-shape', ['M4-E3', 'planned']],
     ['models-error-shape', ['M4-E4', 'planned']],

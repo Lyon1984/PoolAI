@@ -33,6 +33,12 @@ internal static class QuotaMutationIdentityFactory
             $"quota:renew:v1:{attemptId.Value:N}:{renewalSequence}");
     }
 
+    internal static EntityId AuditId(QuotaMutationIdentity mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        return DeriveVersion7(mutation.EventId, "audit:immutable-attempt-fact:v1");
+    }
+
     private static EntityId DeriveVersion7(EntityId attemptId, string purpose)
     {
         Span<byte> source = stackalloc byte[16];

@@ -54,6 +54,8 @@ tags:
     description: OpenAI API-key 上游账号控制面
   - name: AdminChannels
     description: 模型目录、映射与账号集合控制面
+  - name: AdminOperations
+    description: 可靠事件投递、死信与受审计运维控制面
 
 paths:
   /v1/responses:
@@ -3123,6 +3125,56 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/outbox-messages/{messageId}/replay:
+    post:
+      tags: [AdminOperations]
+      operationId: adminReplayDeadOutboxMessage
+      summary: 为 dead Integration Event 创建受审计的安全重放消息
+      description: |
+        只接受当前状态为 `dead` 的原消息。服务端生成新的 UUIDv7 message ID 与
+        deduplication key，复制冻结的完整 Integration Event envelope，保留原
+        correlation/source sequence/payload，并以 `replay_of` 指向原消息。原 dead
+        消息保持不变且不会恢复自动 claim。响应和审计均不得回显 payload、last_error
+        或任何秘密字段。
+      x-required-roles: [admin]
+      security:
+        - UserJwt: []
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutboxReplayRequest'
+      responses:
+        '202':
+          description: 新的 pending 重放消息已原子创建并完成审计
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutboxReplayReceipt'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -6854,6 +6906,36 @@ components:
             lease_seconds: { type: integer, const: 300 }
             renew_interval_seconds: { type: integer, const: 60 }
             max_request_seconds: { type: integer, const: 600 }
+    OutboxReplayRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '^(?=[\s\S]*[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000])(?![\s\S]*[\u0000-\u001F\u007F-\u009F\uD800-\uDFFF])[\s\S]+$'
+          description: |
+            必填审计理由；按 Unicode scalar value 计数 1..500，必须包含至少
+            一个非 Unicode White_Space scalar；拒绝 Unicode Control 类别
+            （包括 C0/C1）和无效 scalar。合法 Unicode 首尾空白由服务端在
+            持久化前裁剪；不得包含凭据、payload 或原始错误内容。
+    OutboxReplayReceipt:
+      type: object
+      additionalProperties: false
+      required: [message_id, event_sequence, replay_of, status]
+      properties:
+        message_id:
+          $ref: '#/components/schemas/Uuid'
+        event_sequence:
+          $ref: '#/components/schemas/AggregateTokenCount'
+          description: 新 Outbox 全局序号，以十进制 string 返回以避免 JavaScript 精度损失
+        replay_of:
+          $ref: '#/components/schemas/Uuid'
+        status:
+          type: string
+          const: pending
     AuditEventPage:
       type: object
       additionalProperties: false

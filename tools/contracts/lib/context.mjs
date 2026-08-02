@@ -35,6 +35,7 @@ export const contractPaths = Object.freeze({
     'docs/contracts/compatibility-windows-v1.json',
   ),
   errorCatalog: path.join(repoRoot, 'docs/contracts/error-catalog.md'),
+  groupQuotaEvents: path.join(repoRoot, 'docs/contracts/group-quota-events-v1.json'),
   fixtures: path.join(repoRoot, 'docs/contracts/fixtures'),
   database: path.join(repoRoot, 'docs/database'),
   generatedTypeScript: path.join(

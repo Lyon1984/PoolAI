@@ -182,6 +182,7 @@ public sealed class PostgresRuntimeFixture : IAsyncLifetime
         services.AddSingleton<IConfiguration>(configuration);
         services.AddPoolAiPostgresRuntime(connectionString);
         services.AddOperationsModule(configuration, "Integration");
+        services.AddOperationsAdminControlPlane(configuration);
         services.AddGroupQuotaModule();
         return services.BuildServiceProvider(new ServiceProviderOptions
         {

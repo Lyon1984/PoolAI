@@ -94,6 +94,39 @@ public sealed class GeneratedContractRoundTripTests
     }
 
     [Fact]
+    public void AuthoritativeOutboxReplayReceiptRoundTripsWithoutExposingEnvelopeData()
+    {
+        string root = FindRepositoryRoot();
+        string payload = File.ReadAllText(Path.Combine(
+            root,
+            "docs",
+            "contracts",
+            "fixtures",
+            "control-plane-outbox-replay-accepted.json"));
+
+        (OutboxReplayReceipt first, string serialized, OutboxReplayReceipt second) =
+            RoundTrip<OutboxReplayReceipt>(payload);
+
+        Assert.Equal(
+            Guid.Parse("0190f8bf-a040-7444-a2ca-c4bc32e48b48"),
+            first.MessageId);
+        Assert.Equal("42", first.EventSequence);
+        Assert.Equal(
+            Guid.Parse("0190f8bf-a040-7444-a2ca-c4bc32e48b47"),
+            first.ReplayOf);
+        Assert.Equal("pending", first.Status);
+        Assert.Equal(first.MessageId, second.MessageId);
+        Assert.Equal(first.EventSequence, second.EventSequence);
+        Assert.Equal(first.ReplayOf, second.ReplayOf);
+        Assert.Equal(first.Status, second.Status);
+
+        using JsonDocument document = JsonDocument.Parse(serialized);
+        Assert.False(document.RootElement.TryGetProperty("payload", out _));
+        Assert.False(document.RootElement.TryGetProperty("last_error", out _));
+        Assert.False(document.RootElement.TryGetProperty("deduplication_key", out _));
+    }
+
+    [Fact]
     public void AuthoritativeResponsesSseEventsRoundTripWithoutDroppingProtocolFields()
     {
         string root = FindRepositoryRoot();
