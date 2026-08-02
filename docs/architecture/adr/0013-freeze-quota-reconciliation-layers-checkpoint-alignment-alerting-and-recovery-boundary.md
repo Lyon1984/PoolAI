@@ -1,6 +1,6 @@
 # ADR 0013: Freeze quota-reconciliation layers, checkpoint alignment, alerting, and the recovery boundary
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-03
 - Decider: PoolAI architecture, GroupQuota, Usage, Operations, public-contract, database, and security owner (`@Lyon1984`)
 - Relates to: [M3-E5 Issue #23](https://github.com/Lyon1984/PoolAI/issues/23), ADR 0002, ADR 0012, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
@@ -9,7 +9,9 @@
 - Base OpenAPI SHA-256: `e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4`
 - Target OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055395)
+- Architecture approval evidence: [Issue #44 permanent ADR 0013 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824)
+- Database/no-migration approval evidence: [Issue #44 permanent database boundary approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055552)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation`
 
 ## Context
@@ -64,11 +66,11 @@ explicit control-plane action and keeps the detector read-only.
 
 ## Decision
 
-This decision remains non-effective while its status is `Proposed`. It may become
-effective only for an exact candidate approved by `@Lyon1984`, with permanent
-architecture, OpenAPI, and database/no-migration evidence recorded in Issue #44.
-Proposed text, a local candidate, or a proposed compatibility-window registry
-entry is not approval and cannot waive a contract gate.
+This decision became effective when `@Lyon1984` approved exact candidate
+`e4fea33d517c436e5f26f75d79dd675fd8aa63af` through the permanent architecture,
+OpenAPI compatibility-window, and database/no-migration evidence linked above.
+Those approvals are limited to the exact hashes, base, and diagnostic recorded
+here and cannot waive another contract gate.
 
 ### Three independent reconciliation layers
 
