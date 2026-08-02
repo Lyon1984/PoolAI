@@ -1,11 +1,13 @@
 # ADR 0012: Freeze quota-event replay ordering and the Usage projection boundary
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-01
-- Decider: PoolAI architecture, GroupQuota, Usage, Operations, and security owner (`@Lyon1984`) — pending explicit approval
+- Decider: PoolAI architecture, GroupQuota, Usage, Operations, and security owner (`@Lyon1984`)
 - Relates to: DEC-038, DEC-040, AC-040, AC-041, AC-045, [M3-E4 Issue #22](https://github.com/Lyon1984/PoolAI/issues/22), ADR 0002, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Architecture approval evidence: pending
+- Architecture approval evidence: [Issue #44 permanent approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5159233350)
+- Coupled OpenAPI approval evidence: [Issue #44 permanent approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5159233643)
+- Coupled database approval evidence: [Issue #44 permanent approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5159233945)
 
 ## Context
 
@@ -39,11 +41,12 @@ a database transaction across an unbounded delivery attempt. The publication
 attempt therefore needs three short transactions separated by in-process work:
 claim and commit; durable consumer transaction; terminal delivery CAS.
 
-## Proposed decision
+## Decision
 
-This proposal becomes effective only after `@Lyon1984` approves one exact
-candidate through a permanent Issue #44 comment and this ADR is changed to
-`Accepted` with that evidence.
+This decision became effective when `@Lyon1984` approved exact candidate
+`0c8e88e4a5f72164d7dd96f8d5497828239881e4` and GroupQuota Event v1 SHA-256
+`68292acc214a018e13147201cce4ce3789a696b288abdd50eefe64d7669631c0`
+through the permanent Issue #44 evidence linked above.
 
 ### Published Language and the two sequences
 
@@ -252,8 +255,9 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
   published non-replay history is outside all three metric inputs.
 - Projection and settlement audit are idempotent at database commit boundaries,
   including crash-after-commit redelivery.
-- While this ADR remains Proposed, its ordering clarification cannot be used as
-  M3-E4 completion or release evidence.
+- This Accepted decision is normative only for the exact approved candidate and
+  event schema; it does not by itself constitute M3-E4 completion or release
+  evidence.
 
 ## Migration and rollback impact
 
@@ -294,9 +298,9 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
   allowlisted append-once function. Neither path grants Audit reads or mutation
   of existing rows.
 
-## Acceptance evidence gate
+## Acceptance evidence
 
-Before changing this ADR to `Accepted`, the exact candidate must pass:
+The exact approved candidate passed:
 
 - machine contract/schema and all positive/negative event fixtures;
 - the normative physical-20/21/replay-42 ordering case and cross-Group progress;
@@ -311,8 +315,8 @@ Before changing this ADR to `Accepted`, the exact candidate must pass:
 - Architecture Tests proving the Context Map and Host loading boundaries; and
 - the repository quality and security gates for the exact candidate commit.
 
-The permanent approval must bind the full candidate commit and the SHA-256 of
-`docs/contracts/group-quota-events-v1.json`. Acceptance alone does not authorize
+The permanent approval binds the full candidate commit and the SHA-256 of
+`docs/contracts/group-quota-events-v1.json`. Acceptance does not authorize
 remote database/Redis operations, deployment, M3-E4 closeout, M3 Exit, RC, GA,
 or production acceptance.
 
