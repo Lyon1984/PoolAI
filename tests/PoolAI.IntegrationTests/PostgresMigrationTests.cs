@@ -65,6 +65,8 @@ public sealed partial class PostgresMigrationTests
             .ConfigureAwait(true);
         await AssertM3E4DeliveryAndFactAuditClosureAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
+        await AssertM3E4OutboxQueryScalingIndexesAsync(connectionString, cancellationToken)
+            .ConfigureAwait(true);
         await AssertM3E4OutboxReplayAsync(connectionString, cancellationToken)
             .ConfigureAwait(true);
         await AssertM1E5RuntimePermissionsAsync(connectionString, cancellationToken)
@@ -156,6 +158,9 @@ public sealed partial class PostgresMigrationTests
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
         await AssertM3E4DeliveryAndFactAuditClosureAsync(
+            administratorConnectionString,
+            cancellationToken).ConfigureAwait(true);
+        await AssertM3E4OutboxQueryScalingIndexesAsync(
             administratorConnectionString,
             cancellationToken).ConfigureAwait(true);
         await AssertM1E5RuntimePermissionsAsync(

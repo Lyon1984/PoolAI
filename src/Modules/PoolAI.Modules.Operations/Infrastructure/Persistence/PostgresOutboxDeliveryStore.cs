@@ -9,7 +9,7 @@ internal sealed class PostgresOutboxDeliveryStore : IOutboxDeliveryStore
 {
     private const string QuotaTopic = "poolai.quota.v1";
     private const string ClaimRoutedSql = """
-        WITH lineage_state AS MATERIALIZED (
+        WITH unresolved_lineages AS MATERIALIZED (
             SELECT message.topic,
                    CASE
                        WHEN message.topic = 'poolai.quota.v1' THEN 'group'
@@ -17,10 +17,10 @@ internal sealed class PostgresOutboxDeliveryStore : IOutboxDeliveryStore
                    END AS partition_type,
                    message.aggregate_id,
                    message.source_event_sequence,
-                   min(message.event_sequence) AS first_event_sequence,
-                   bool_or(message.status = 'published') AS is_complete
+                   min(message.event_sequence) AS first_event_sequence
             FROM public.outbox_messages AS message
             WHERE message.topic = ANY($1)
+              AND message.status <> 'published'
             GROUP BY message.topic,
                      CASE
                          WHEN message.topic = 'poolai.quota.v1' THEN 'group'
@@ -28,6 +28,27 @@ internal sealed class PostgresOutboxDeliveryStore : IOutboxDeliveryStore
                      END,
                      message.aggregate_id,
                      message.source_event_sequence
+        ),
+        lineage_state AS MATERIALIZED (
+            SELECT lineage.topic,
+                   lineage.partition_type,
+                   lineage.aggregate_id,
+                   lineage.source_event_sequence,
+                   lineage.first_event_sequence,
+                   EXISTS (
+                       SELECT 1
+                       FROM public.outbox_messages AS published
+                       WHERE published.status = 'published'
+                         AND published.topic = lineage.topic
+                         AND CASE
+                             WHEN published.topic = 'poolai.quota.v1' THEN 'group'
+                             ELSE published.aggregate_type
+                         END = lineage.partition_type
+                         AND published.aggregate_id = lineage.aggregate_id
+                         AND coalesce(published.source_event_sequence, 0) =
+                             coalesce(lineage.source_event_sequence, 0)
+                   ) AS is_complete
+            FROM unresolved_lineages AS lineage
         ),
         earliest_incomplete AS MATERIALIZED (
             SELECT DISTINCT ON (
@@ -79,8 +100,8 @@ internal sealed class PostgresOutboxDeliveryStore : IOutboxDeliveryStore
                       AND published.aggregate_version IS NOT DISTINCT FROM
                           source.aggregate_version
                       AND published.event_type = source.event_type
-                      AND published.source_event_sequence IS NOT DISTINCT FROM
-                          source.source_event_sequence
+                      AND coalesce(published.source_event_sequence, 0) =
+                          coalesce(source.source_event_sequence, 0)
                       AND published.correlation_id = source.correlation_id
                       AND published.causation_id IS NOT DISTINCT FROM
                           source.causation_id

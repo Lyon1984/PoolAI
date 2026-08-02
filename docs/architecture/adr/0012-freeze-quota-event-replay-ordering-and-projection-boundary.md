@@ -245,6 +245,11 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
 - Operations owns delivery state and dispatch, GroupQuota owns the event language
   and immutable facts, and Usage owns only projections and watermarks.
 - The publisher cannot silently drain unregistered topics.
+- Routed claim planning builds lineage state only from unresolved physical
+  messages and uses an indexed published-lineage existence proof; retained
+  published history cannot be materialized on every claim or idle poll.
+- Exact backlog/dead/replay telemetry reads purpose-specific partial indexes;
+  published non-replay history is outside all three metric inputs.
 - Projection and settlement audit are idempotent at database commit boundaries,
   including crash-after-commit redelivery.
 - While this ADR remains Proposed, its ordering clarification cannot be used as
@@ -265,8 +270,11 @@ delivery accounting fragile. Immutable-fact recomputation is deterministic.
   Unicode-scalar, non-whitespace, control-free 1..500 validation. Its exact
   candidate requires the normal incremental OpenAPI approval. This ADR does not
   authorize executing any migration remotely.
-- A future performance-only index or consumer dead-letter store requires a new
-  forward migration and independent database approval; it cannot rewrite 0015.
+- Forward migration 0017 adds only the five partial indexes needed by the
+  unresolved/published lineage and backlog/dead/replay query shapes. It changes
+  no authority, fact, state transition, or public contract, requires independent
+  database approval, and cannot rewrite 0015 or 0016. A future consumer
+  dead-letter store still requires its own forward migration and decision.
 - Before acceptance, the candidate can be withdrawn. After acceptance, changing
   the partition, sequence roles, publication guard, or projection ownership needs
   a superseding ADR and atomic contract/test updates rather than reinterpretation.
@@ -297,6 +305,8 @@ Before changing this ADR to `Accepted`, the exact candidate must pass:
 - a malformed quota `aggregate_type` that cannot escape the canonical Group
   partition, plus a multi-consumer replay where only the consumer with the exact
   direct-predecessor Inbox receipt converges as duplicate;
+- PostgreSQL 18 query-plan evidence showing routed claim/idle poll and Outbox
+  telemetry do not scan published non-replay history as retention grows;
 - settlement fact/event/outbox/audit commit-point fault injection and exact replay;
 - Architecture Tests proving the Context Map and Host loading boundaries; and
 - the repository quality and security gates for the exact candidate commit.
@@ -316,6 +326,7 @@ or production acceptance.
 - `docs/contracts/openapi-v1.yaml`
 - `docs/contracts/fixtures/group-quota-events-v1-*.json`
 - `docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql`
+- `docs/database/0017_operations_outbox_query_scaling_m3_e4.sql`
 - `docs/database/README.md`
 - `docs/开发执行规格-v1.0.md`
 - GroupQuota event-codec Contract/Unit tests

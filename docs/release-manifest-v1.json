@@ -8,8 +8,8 @@
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 16,
-    "maximum_compatible_version": 16,
+    "minimum_compatible_version": 17,
+    "maximum_compatible_version": 17,
     "migrations": [
       {
         "version": 1,
@@ -106,6 +106,12 @@
         "name": "0016_operations_delivery_and_fact_audit_m3_e4.sql",
         "source": "docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql",
         "sha256": "a0c8a395f6d51aab108a3ad3e1912e4008f3bdabfe01e809701737ed24b569db"
+      },
+      {
+        "version": 17,
+        "name": "0017_operations_outbox_query_scaling_m3_e4.sql",
+        "source": "docs/database/0017_operations_outbox_query_scaling_m3_e4.sql",
+        "sha256": "11b7131a580a62725cb2ddbe3d82d4c626c7b63506f3848005856dc9dda7e15a"
       }
     ]
   },

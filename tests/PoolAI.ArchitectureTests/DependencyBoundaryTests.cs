@@ -154,6 +154,10 @@ public sealed partial class DependencyBoundaryTests
             "../../docs/database/0016_operations_delivery_and_fact_audit_m3_e4.sql",
             project,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "../../docs/database/0017_operations_outbox_query_scaling_m3_e4.sql",
+            project,
+            StringComparison.Ordinal);
     }
 
     [Fact]

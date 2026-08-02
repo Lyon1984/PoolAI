@@ -113,6 +113,34 @@ public sealed class OperationsOutboxPublisherBoundaryTests
     }
 
     [Fact]
+    public void RoutedClaimBuildsLineageOnlyFromUnresolvedPhysicalMessages()
+    {
+        // Security regression: retained published history must not be the input
+        // to every routed claim. Completion remains an indexed existence proof.
+        string root = RepositoryRoot.Find();
+        string store = Read(
+            root,
+            "src",
+            "Modules",
+            "PoolAI.Modules.Operations",
+            "Infrastructure",
+            "Persistence",
+            "PostgresOutboxDeliveryStore.cs");
+
+        Assert.Contains(
+            "AND message.status <> 'published'",
+            store,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "published.status = 'published'",
+            store,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(store, "coalesce(published.source_event_sequence, 0)"));
+    }
+
+    [Fact]
     public void PublisherSignalsShareOneFrozenLowCardinalityClassifier()
     {
         string root = RepositoryRoot.Find();
