@@ -29,4 +29,4 @@ Accepted decisions:
 
 Proposed decisions:
 
-- None.
+- [`0013-freeze-quota-reconciliation-layers-checkpoint-alignment-alerting-and-recovery-boundary.md`](0013-freeze-quota-reconciliation-layers-checkpoint-alignment-alerting-and-recovery-boundary.md) — propose the exact three-layer authoritative/projection/delivery reconciliation boundary, logical-checkpoint comparison, explicit recovery controls, and the base/hash/diagnostic-pinned malformed-period compatibility window for M3-E5.

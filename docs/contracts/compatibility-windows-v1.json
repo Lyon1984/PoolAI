@@ -106,6 +106,20 @@
         "#/components/schemas/AccountUpdateRequest/properties/base_url/maxLength: maxLength tightened from <none> to 2048",
         "#/components/schemas/AccountUpdateRequest/properties/base_url/pattern: pattern changed from <none> to ^(?:https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\\[[0-9A-Fa-f:.]+\\])|http://(?:localhost|127\\.0\\.0\\.1|\\[::1\\]))(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[^\\s?#]*)?$"
       ]
+    },
+    {
+      "id": "m3-e5-quota-reconciliation-bad-request",
+      "status": "proposed",
+      "scope": "openapi-v1-compatibility-window",
+      "baseRef": "0ee892bf26713326cea667b524f59005b03ea9fd",
+      "baseOpenApiSha256": "e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4",
+      "headOpenApiSha256": "9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf",
+      "adr": "docs/architecture/adr/0013-freeze-quota-reconciliation-layers-checkpoint-alignment-alerting-and-recovery-boundary.md",
+      "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
+      "approvalEvidence": null,
+      "allowedFailures": [
+        "#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation"
+      ]
     }
   ]
 }

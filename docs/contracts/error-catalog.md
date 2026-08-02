@@ -239,6 +239,8 @@ Chat Completions 正常流发送 chunk 后以 `data: [DONE]` 结束。官方 Cha
 Golden fixtures：
 
 - [Control Plane 字段校验错误](fixtures/control-plane-validation-error.json)
+- [Group quota 对账成功快照](fixtures/control-plane-group-quota-reconciliation.json)
+- [Group quota 对账 period query 语法错误](fixtures/control-plane-group-quota-reconciliation-invalid-period.json)
 - [Outbox 安全重放 202 receipt](fixtures/control-plane-outbox-replay-accepted.json)
 - [Outbox 安全重放 reason 校验错误](fixtures/control-plane-outbox-replay-validation-error.json)
 - [非流 upstream usage 超出范围 502](fixtures/gateway-upstream-usage-out-of-range.json)
