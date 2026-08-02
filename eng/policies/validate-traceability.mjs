@@ -121,7 +121,7 @@ const adr0006AcceptedMemoryStatus = adr0006AcceptedPlanStatus
 const adr0006AllowedCurrentStateReferenceDigests = new Set([
   'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
   'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
-  '60de75d8cedf5c55f86f1f2bb6279c8f29a6c6fcb63c6297640dba2721162319',
+  '75ee8301d0ec2e31ecb874a901675161c6feaa67c34ba6150a129f6a5df067d5',
   '767059d288ec3cecac50236643f645135beb9c66647f7bd0c4c184d1ed4a9261',
 ])
 // Accepted bases may predate a reviewed current-state refresh. Historical
@@ -182,6 +182,15 @@ const adr0006HistoricalBaseReferenceDigestsByMemoryBlob = new Map([
       '767059d288ec3cecac50236643f645135beb9c66647f7bd0c4c184d1ed4a9261',
     ]),
   ],
+  [
+    'a05935e8c2a7dbe7ca01b6b4bcc1a8b71004b500',
+    new Set([
+      'a7659e62b990cd15bc48cd908ba0b2a985a2c5dc06e41a5ebfe9ccb08e2a7531',
+      'f94337f80152dce6c203be2951ce6e2ffd666c1bbaaadfa32d3c6cfd6e9c0b7f',
+      '60de75d8cedf5c55f86f1f2bb6279c8f29a6c6fcb63c6297640dba2721162319',
+      '767059d288ec3cecac50236643f645135beb9c66647f7bd0c4c184d1ed4a9261',
+    ]),
+  ],
 ])
 const selectAdr0006CurrentStateReferenceDigests = (
   memoryBlob,
@@ -191,8 +200,8 @@ const selectAdr0006CurrentStateReferenceDigests = (
     ?? adr0006AllowedCurrentStateReferenceDigests
   : adr0006AllowedCurrentStateReferenceDigests
 
-if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 6) {
-  fail('ADR 0006 historical current-state policy must register exactly six reviewed base blobs.')
+if (adr0006HistoricalBaseReferenceDigestsByMemoryBlob.size !== 7) {
+  fail('ADR 0006 historical current-state policy must register exactly seven reviewed base blobs.')
 }
 for (const [memoryBlob, digests] of adr0006HistoricalBaseReferenceDigestsByMemoryBlob) {
   if (!/^[0-9a-f]{40}$/u.test(memoryBlob)
