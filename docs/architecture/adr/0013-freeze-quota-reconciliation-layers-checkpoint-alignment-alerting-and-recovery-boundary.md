@@ -10,7 +10,7 @@
 - Target OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055395)
-- Architecture approval evidence: [Issue #44 permanent final-candidate re-sign](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5164928196), binding candidate `7ddb80fabbbab3bebb2e143e69154fdcc0ffa599`, tree `591e102dc5e24cc55d5440fd2265f60366476b1c`, and pre-evidence-backwrite ADR SHA-256 `e7cc80eba402902255adfcf07c9edade63f676ae3864bddd92e7bcaafd899199`; the [prior final-candidate approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5164002774), [earlier superseding approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5162578270), and [initial approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remain permanent history for candidates `ca4381053995cc0e586a36a91396ee6bb541b4d0`, `23eb5338bf3aeca8adf7d4645812ec8d3ea21577`, and `e4fea33d517c436e5f26f75d79dd675fd8aa63af` respectively, and are superseded for the final candidate.
+- Architecture approval evidence: [Issue #44 permanent final corrective re-sign](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5165258374), binding candidate `fdbf07c7e23236318377274c507f97e15bc9d574`, tree `10464706b8c4f4a351b50703bc6b4116b8f9f94d`, and pre-evidence-backwrite ADR SHA-256 `51c294ac9e59e66de745c6f2cd855e1915f2ad49c1b4132c31d87ab76679b76a`; the [prior bounded-continuation approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5164928196), [point-read candidate approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5164002774), [earlier superseding approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5162578270), and [initial approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remain permanent history for candidates `7ddb80fabbbab3bebb2e143e69154fdcc0ffa599`, `ca4381053995cc0e586a36a91396ee6bb541b4d0`, `23eb5338bf3aeca8adf7d4645812ec8d3ea21577`, and `e4fea33d517c436e5f26f75d79dd675fd8aa63af` respectively, and are superseded for the corrected final candidate.
 - Database/no-migration approval evidence: [Issue #44 permanent database boundary approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055552)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation`
 
@@ -68,13 +68,14 @@ explicit control-plane action and keeps the detector read-only.
 
 This revised decision is effective through the permanent final-candidate
 architecture approval bound to exact candidate
-`7ddb80fabbbab3bebb2e143e69154fdcc0ffa599` and pre-evidence-backwrite ADR
-SHA-256 `e7cc80eba402902255adfcf07c9edade63f676ae3864bddd92e7bcaafd899199`.
+`fdbf07c7e23236318377274c507f97e15bc9d574` and pre-evidence-backwrite ADR
+SHA-256 `51c294ac9e59e66de745c6f2cd855e1915f2ad49c1b4132c31d87ab76679b76a`.
 The prior architecture approvals bind only exact candidates
+`7ddb80fabbbab3bebb2e143e69154fdcc0ffa599`,
 `ca4381053995cc0e586a36a91396ee6bb541b4d0`,
 `23eb5338bf3aeca8adf7d4645812ec8d3ea21577`, and
 `e4fea33d517c436e5f26f75d79dd675fd8aa63af`; they remain historical evidence,
-not approval for the final bounded-continuation candidate. The
+not approval for the corrected final candidate. The
 independently approved OpenAPI compatibility window and database/no-migration
 boundary remain valid only for their unchanged exact hashes, base, diagnostic,
 and migration bounds; the final-candidate architecture approval does not widen
