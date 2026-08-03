@@ -87,3 +87,13 @@ paths = [
   '''^docs/contracts/compatibility-windows-v1\.json$''',
 ]
 regexes = ['''^(1c9dee2fe48cd3e2f0fa5a00805e07e21d303b5a4fa070faeab66f3be6132141|6f3bde282140f66e7c73ef811b17e11c51bbacb58bce6516a3ca4f3f98e977bb)$''']
+
+[[allowlists]]
+description = "Accepted ADR 0013 public OpenAPI digests are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0013-freeze-quota-reconciliation-layers-checkpoint-alignment-alerting-and-recovery-boundary\.md$''',
+  '''^docs/contracts/compatibility-windows-v1\.json$''',
+]
+regexes = ['''^(e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4|9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf)$''']

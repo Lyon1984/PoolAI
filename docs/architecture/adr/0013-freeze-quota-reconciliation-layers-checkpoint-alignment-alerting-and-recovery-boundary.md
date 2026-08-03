@@ -68,12 +68,13 @@ explicit control-plane action and keeps the detector read-only.
 
 This revised decision is effective through the permanent final-candidate
 architecture approval bound to exact candidate
-`ca4381053995cc0e586a36a91396ee6bb541b4d0` and pre-evidence-backwrite ADR
-SHA-256 `2190efc78f6398bc2489a4053c850378871437aa62f43abff7ae2e3cd8014e49`.
+`7ddb80fabbbab3bebb2e143e69154fdcc0ffa599` and pre-evidence-backwrite ADR
+SHA-256 `e7cc80eba402902255adfcf07c9edade63f676ae3864bddd92e7bcaafd899199`.
 The prior architecture approvals bind only exact candidates
-`23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and
+`ca4381053995cc0e586a36a91396ee6bb541b4d0`,
+`23eb5338bf3aeca8adf7d4645812ec8d3ea21577`, and
 `e4fea33d517c436e5f26f75d79dd675fd8aa63af`; they remain historical evidence,
-not approval for the final indexed point-reconciliation candidate. The
+not approval for the final bounded-continuation candidate. The
 independently approved OpenAPI compatibility window and database/no-migration
 boundary remain valid only for their unchanged exact hashes, base, diagnostic,
 and migration bounds; the final-candidate architecture approval does not widen

@@ -235,9 +235,14 @@ public sealed partial class PostgresQuotaCrashCompensationTests
         }
 
         Assert.Equal(ReservationSweepProcessDisposition.Completed, result.Disposition);
-        Assert.Equal(3, result.PageCount);
-        Assert.Equal(2, result.ScannedCount);
-        Assert.Equal(2, result.ExpiredCount);
+        // PostgreSQL integration tests share one runtime and xUnit does not
+        // guarantee class order. Other reconciliation tests may leave valid
+        // globally due reservations for this global Worker to drain. With a
+        // page size of one, a completed strict keyset scan must read exactly
+        // one page per candidate plus the final empty page.
+        Assert.True(result.ScannedCount >= 2);
+        Assert.Equal(result.ScannedCount + 1, result.PageCount);
+        Assert.Equal(result.ScannedCount, result.ExpiredCount);
         Assert.Equal(0, result.RaceLostCount);
         Assert.Equal(TimeSpan.FromSeconds(30), ReservationSweeperService.SweepInterval);
         Assert.True(
