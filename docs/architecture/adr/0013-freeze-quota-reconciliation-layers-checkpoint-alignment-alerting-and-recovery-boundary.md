@@ -10,7 +10,7 @@
 - Target OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055395)
-- Architecture approval evidence: [Issue #44 permanent superseding approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5162578270), binding candidate `23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and ADR SHA-256 `b22d0625d5410950e973cbc53db29e6c7b35e414d0668cc7577b634624067d6a`; the [previous approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remains permanent history but binds only candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af` and is superseded for the expanded decision text below.
+- Architecture approval evidence: [Issue #44 permanent final-candidate approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5164002774), binding candidate `ca4381053995cc0e586a36a91396ee6bb541b4d0` and pre-evidence-backwrite ADR SHA-256 `2190efc78f6398bc2489a4053c850378871437aa62f43abff7ae2e3cd8014e49`; the [prior superseding approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5162578270) binds only candidate `23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and ADR SHA-256 `b22d0625d5410950e973cbc53db29e6c7b35e414d0668cc7577b634624067d6a`, while the [initial approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) binds only candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af`; both remain permanent history and are superseded for the final candidate.
 - Database/no-migration approval evidence: [Issue #44 permanent database boundary approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055552)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation`
 
@@ -66,17 +66,18 @@ explicit control-plane action and keeps the detector read-only.
 
 ## Decision
 
-This revised decision is effective through the permanent superseding architecture
-approval bound to exact candidate
-`23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and ADR SHA-256
-`b22d0625d5410950e973cbc53db29e6c7b35e414d0668cc7577b634624067d6a`.
-The previous architecture approval binds only exact candidate
-`e4fea33d517c436e5f26f75d79dd675fd8aa63af` and remains historical evidence,
-not approval for the later exact-period lineage, closed-period checkpoint,
-API/Worker ownership, or bounded-rebuild clarifications. The independently
-approved OpenAPI compatibility window and database/no-migration boundary remain
-valid only for their unchanged exact hashes, base, diagnostic, and migration
-bounds; the superseding architecture approval does not widen either one.
+This revised decision is effective through the permanent final-candidate
+architecture approval bound to exact candidate
+`ca4381053995cc0e586a36a91396ee6bb541b4d0` and pre-evidence-backwrite ADR
+SHA-256 `2190efc78f6398bc2489a4053c850378871437aa62f43abff7ae2e3cd8014e49`.
+The prior architecture approvals bind only exact candidates
+`23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and
+`e4fea33d517c436e5f26f75d79dd675fd8aa63af`; they remain historical evidence,
+not approval for the final indexed point-reconciliation candidate. The
+independently approved OpenAPI compatibility window and database/no-migration
+boundary remain valid only for their unchanged exact hashes, base, diagnostic,
+and migration bounds; the final-candidate architecture approval does not widen
+either one.
 
 ### Three independent reconciliation layers
 
