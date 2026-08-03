@@ -127,6 +127,60 @@ public sealed class GeneratedContractRoundTripTests
     }
 
     [Fact]
+    public void AuthoritativeGroupQuotaReconciliationRoundTripsCheckpointAlignedProjection()
+    {
+        string root = FindRepositoryRoot();
+        string payload = File.ReadAllText(Path.Combine(
+            root,
+            "docs",
+            "contracts",
+            "fixtures",
+            "control-plane-group-quota-reconciliation.json"));
+
+        (GroupQuotaReconciliation first, string serialized, GroupQuotaReconciliation second) =
+            RoundTrip<GroupQuotaReconciliation>(payload);
+
+        Assert.True(first.IsReconciled);
+        Assert.Equal("0", first.ConsumedVariance);
+        Assert.True(first.UsageProjection.HasValue);
+        GroupQuotaUsageProjectionReconciliation projection =
+            Assert.IsType<GroupQuotaUsageProjectionReconciliation>(
+                first.UsageProjection.Value);
+        Assert.Equal("lagging", projection.Status);
+        Assert.Equal("42", projection.CheckpointSourceEventSequence);
+        Assert.Equal("44", projection.LatestSourceEventSequence);
+        Assert.Equal("0", projection.ConsumedVariance);
+        Assert.True(second.UsageProjection.HasValue);
+
+        using JsonDocument document = JsonDocument.Parse(serialized);
+        JsonElement jsonProjection = document.RootElement.GetProperty("usage_projection");
+        Assert.Equal("400", jsonProjection.GetProperty("expected_consumed_tokens").GetString());
+        Assert.Equal("400", jsonProjection.GetProperty("projected_consumed_tokens").GetString());
+        Assert.False(jsonProjection.TryGetProperty("group_id", out _));
+    }
+
+    [Fact]
+    public void AuthoritativeGroupQuotaInvalidPeriodProblemUsesStableInvalidRequestCode()
+    {
+        string root = FindRepositoryRoot();
+        string payload = File.ReadAllText(Path.Combine(
+            root,
+            "docs",
+            "contracts",
+            "fixtures",
+            "control-plane-group-quota-reconciliation-invalid-period.json"));
+
+        (ControlPlaneProblem first, string _, ControlPlaneProblem second) =
+            RoundTrip<ControlPlaneProblem>(payload);
+
+        Assert.Equal(400, first.Status);
+        Assert.Equal("invalid_request", first.Code);
+        Assert.True(first.Errors.HasValue);
+        Assert.Contains("/period_id", first.Errors.Value!.Keys);
+        Assert.Equal(first.Code, second.Code);
+    }
+
+    [Fact]
     public void AuthoritativeResponsesSseEventsRoundTripWithoutDroppingProtocolFields()
     {
         string root = FindRepositoryRoot();

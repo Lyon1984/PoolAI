@@ -18,8 +18,15 @@ public static class DependencyInjection
             "Usage",
             HostCapability.Api | HostCapability.Worker));
         services.AddSingleton<IUsageAggregationCheckpoint, PostgresUsageAggregationCheckpoint>();
-        services.AddSingleton<IUsageHourlyProjectionWriter,
-            PostgresUsageHourlyProjectionWriter>();
+        services.AddSingleton<PostgresUsageHourlyProjectionWriter>();
+        services.AddSingleton<IUsageHourlyProjectionWriter>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresUsageHourlyProjectionWriter>());
+        services.AddSingleton<IBoundedUsageProjectionWriter>(static serviceProvider =>
+            serviceProvider.GetRequiredService<PostgresUsageHourlyProjectionWriter>());
+        services.AddSingleton<IUsageReconciliationProjectionReader,
+            PostgresUsageReconciliationProjectionReader>();
+        services.AddSingleton<IGetGroupQuotaReconciliationUseCase,
+            QuotaReconciliationService>();
         services.AddSingleton<IIntegrationEventConsumer>(static serviceProvider =>
             new GroupQuotaUsageProjectorConsumer(
                 serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),

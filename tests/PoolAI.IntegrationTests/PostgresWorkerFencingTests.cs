@@ -460,6 +460,7 @@ public sealed class PostgresWorkerFencingTests
             (WorkerJobs.OutboxPublisher, -7_621_624_086_400_655_958),
             (WorkerJobs.UsageAggregator, 451_344_536_216_699_593),
             (WorkerJobs.UsageRebuild, 2_109_179_889_849_020_703),
+            (WorkerJobs.QuotaReconciliation, 3_574_250_530_161_801_542),
             (WorkerJobs.EmailOutboxSender, 5_101_722_440_924_637_420),
             (WorkerJobs.SupplyHealth, -2_750_803_758_266_494_581),
             (WorkerJobs.OperationsAlerts, -7_697_813_494_015_939_377),

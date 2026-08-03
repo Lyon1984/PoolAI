@@ -1,0 +1,23 @@
+{
+  "group_id": "0190f8bf-a040-7444-a2ca-c4bc32e48b40",
+  "period_id": "0190f8bf-a040-7444-a2ca-c4bc32e48b41",
+  "ledger_total_tokens": "1000",
+  "ledger_consumed_tokens": "420",
+  "ledger_reserved_tokens": "20",
+  "fact_consumed_tokens": "420",
+  "pending_reservation_tokens": "20",
+  "consumed_variance": "0",
+  "reserved_variance": "0",
+  "is_reconciled": true,
+  "usage_projection": {
+    "status": "lagging",
+    "expected_consumed_tokens": "400",
+    "projected_consumed_tokens": "400",
+    "consumed_variance": "0",
+    "checkpoint_source_event_sequence": "42",
+    "latest_source_event_sequence": "44",
+    "data_through": "2026-08-03T01:02:03Z"
+  },
+  "checked_at": "2026-08-03T01:02:05Z",
+  "data_watermark": "2026-08-03T01:02:04Z"
+}

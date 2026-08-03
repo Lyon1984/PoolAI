@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using Npgsql;
+using NpgsqlTypes;
 using PoolAI.Modules.Operations;
 using PoolAI.Modules.Operations.Infrastructure.Persistence;
 
@@ -45,7 +46,7 @@ public sealed class PostgresOutboxQueryScalingPlanTests
             transaction,
             cancellationToken).ConfigureAwait(true);
 
-        await SeedExactReplayScenarioAsync(
+        long exactQuotaSourceSequence = await SeedExactReplayScenarioAsync(
             connection,
             transaction,
             groupId,
@@ -60,6 +61,12 @@ public sealed class PostgresOutboxQueryScalingPlanTests
             connection,
             transaction,
             cancellationToken).ConfigureAwait(true);
+        OutboxPlan quotaDeliveryHealth = await ExplainQuotaDeliveryHealthAsync(
+            connection,
+            transaction,
+            groupId,
+            exactQuotaSourceSequence,
+            cancellationToken).ConfigureAwait(true);
 
         AssertBounded(idle, "ix_outbox_messages_unresolved_lineage");
         AssertBounded(
@@ -71,6 +78,10 @@ public sealed class PostgresOutboxQueryScalingPlanTests
             "ix_outbox_messages_backlog_metrics",
             "ix_outbox_messages_dead_metrics",
             "ix_outbox_messages_replay_metrics");
+        AssertBounded(
+            quotaDeliveryHealth,
+            "ix_outbox_messages_unresolved_lineage",
+            "ix_outbox_messages_published_lineage");
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(true);
     }
 
@@ -107,7 +118,7 @@ public sealed class PostgresOutboxQueryScalingPlanTests
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false));
     }
 
-    private static async Task SeedExactReplayScenarioAsync(
+    private static async Task<long> SeedExactReplayScenarioAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid groupId,
@@ -126,6 +137,7 @@ public sealed class PostgresOutboxQueryScalingPlanTests
         await InsertReplayAsync(
             connection, transaction, sourceId, groupId, prefix,
             sourceSequence, occurredAt, published: false, cancellationToken).ConfigureAwait(false);
+        return sourceSequence;
     }
 
     private static async Task InsertDeadSourceAsync(
@@ -212,7 +224,10 @@ public sealed class PostgresOutboxQueryScalingPlanTests
     {
         using NpgsqlCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "ANALYZE public.outbox_messages;";
+        command.CommandText = """
+            SET LOCAL default_statistics_target = 10000;
+            ANALYZE public.outbox_messages;
+            """;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -244,6 +259,25 @@ public sealed class PostgresOutboxQueryScalingPlanTests
         command.Parameters.AddWithValue(OutboxTelemetryClassifier.EventTypes.ToArray());
         command.Parameters.AddWithValue(OutboxTelemetryClassifier.Topics.ToArray());
         command.Parameters.AddWithValue(OutboxTelemetryClassifier.Reasons.ToArray());
+        return await ReadPlanAsync(command, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<OutboxPlan> ExplainQuotaDeliveryHealthAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid groupId,
+        long sourceEventSequence,
+        CancellationToken cancellationToken)
+    {
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+            + ReadSqlConstant(typeof(PostgresQuotaDeliveryHealthReader), "ReadSql");
+        command.Parameters.AddWithValue(NpgsqlDbType.Uuid, groupId);
+        command.Parameters.AddWithValue(
+            NpgsqlDbType.Array | NpgsqlDbType.Bigint,
+            new[] { sourceEventSequence });
+        command.Parameters.AddWithValue(NpgsqlDbType.Bigint, sourceEventSequence);
         return await ReadPlanAsync(command, cancellationToken).ConfigureAwait(false);
     }
 
@@ -283,10 +317,18 @@ public sealed class PostgresOutboxQueryScalingPlanTests
     {
         foreach (string expectedIndex in expectedIndexes)
         {
-            Assert.Contains(plan.Nodes, node => string.Equals(
-                node.IndexName,
-                expectedIndex,
-                StringComparison.Ordinal));
+            Assert.True(
+                plan.Nodes.Any(node => string.Equals(
+                    node.IndexName,
+                    expectedIndex,
+                    StringComparison.Ordinal)),
+                $"Expected index {expectedIndex}; actual indexes: "
+                + string.Join(
+                    ", ",
+                    plan.Nodes
+                        .Select(node => node.IndexName)
+                        .Where(index => !string.IsNullOrWhiteSpace(index))
+                        .Distinct(StringComparer.Ordinal)));
         }
 
         long forbiddenWork = PublishedHistoryCount / 10;

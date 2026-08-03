@@ -439,8 +439,8 @@ public sealed class IdentityAuthorizationTests : IAsyncDisposable
             ["adminCreateGroup"] = ["admin"],
             ["adminUpdateGroup"] = ["admin"],
             ["adminGetGroupQuota"] = ["admin", "auditor", "operator"],
-            // The outer gate admits every canonical role so Application can
-            // append AC-004 denial audits before returning 403 to non-admins.
+            ["adminGetGroupQuotaReconciliation"] = ["admin", "auditor", "operator"],
+            // The outer gate admits every role so Application can audit AC-004 denials.
             ["adminAdjustGroupQuota"] = ["admin", "auditor", "operator", "user"],
             ["adminResetGroupQuota"] = ["admin", "auditor", "operator", "user"],
             ["adminListSubscriptionTemplates"] = ["admin", "auditor", "operator"],

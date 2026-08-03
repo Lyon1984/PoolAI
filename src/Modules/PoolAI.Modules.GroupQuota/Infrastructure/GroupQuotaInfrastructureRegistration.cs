@@ -21,10 +21,14 @@ internal static class GroupQuotaInfrastructureRegistration
         services.AddSingleton<IQuotaLedgerRepository, PostgresQuotaLedgerRepository>();
         services.AddSingleton<IAttemptSettlementHourFactReader,
             PostgresAttemptSettlementHourFactReader>();
+        services.AddSingleton<IBoundedUsageRebuildFactReader,
+            PostgresBoundedUsageRebuildFactReader>();
         services.AddSingleton<IAttemptSettlementFactExistenceReader,
             PostgresAttemptSettlementFactExistenceReader>();
         services.AddSingleton<IGroupQuotaEventFactReader,
             PostgresGroupQuotaEventFactReader>();
+        services.AddSingleton<IGroupQuotaReconciliationFactReader,
+            PostgresGroupQuotaReconciliationFactReader>();
         services.AddSingleton<IGroupPoolSummaryReader>(static serviceProvider =>
             new PostgresGroupPoolSummaryReader(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));

@@ -1,3 +1,4 @@
+using PoolAI.BuildingBlocks;
 using PoolAI.Infrastructure.Postgres;
 using PoolAI.Modules.Operations.Abstractions;
 
@@ -33,6 +34,10 @@ internal sealed class PostgresWorkerSessionLockProvider(
 
         public ValueTask<bool> VerifyOwnershipAsync(CancellationToken cancellationToken) =>
             _lease.VerifyOwnershipAsync(cancellationToken);
+
+        public ValueTask<IUnitOfWork?> TryBeginFencedUnitOfWorkAsync(
+            CancellationToken cancellationToken) =>
+            _lease.TryBeginFencedUnitOfWorkAsync(cancellationToken);
 
         public ValueTask DisposeAsync() => _lease.DisposeAsync();
     }

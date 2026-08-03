@@ -23,6 +23,7 @@ internal static class Observability
             .WithMetrics(metrics => metrics
                 .AddMeter("PoolAI.Identity.EmailOutbox")
                 .AddMeter("PoolAI.Operations.Outbox")
+                .AddMeter("PoolAI.Usage.QuotaReconciliation")
                 .AddMeter("PoolAI.Routing")
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation())

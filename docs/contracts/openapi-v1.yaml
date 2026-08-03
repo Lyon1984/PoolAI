@@ -2140,7 +2140,9 @@ paths:
       tags: [AdminGroups]
       operationId: adminGetGroupQuotaReconciliation
       summary: 查询 Group quota 对账快照
-      description: 对比 period 账面值、pending reservation 汇总与已核销 attempt/adjustment 事实。
+      description: >-
+        对比 period 账面值、pending reservation 汇总与已核销 attempt/adjustment 权威事实；
+        可选 usage_projection 固定在 Usage logical source checkpoint 上比较投影，绝不把当前账本与滞后投影直接比较。
       x-required-roles: [admin, operator, auditor]
       security:
         - UserJwt: []
@@ -2162,6 +2164,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GroupQuotaReconciliation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -6303,10 +6307,46 @@ components:
         is_reconciled:
           type: boolean
           description: consumed_variance 与 reserved_variance 都为字符串 `0` 时为 true，表示本次配额账本核对一致
+        usage_projection:
+          $ref: '#/components/schemas/GroupQuotaUsageProjectionReconciliation'
         checked_at:
           $ref: '#/components/schemas/Timestamp'
         data_watermark:
           $ref: '#/components/schemas/Timestamp'
+          description: 本次权威快照纳入的 selected period 最新 quota event occurred_at
+    GroupQuotaUsageProjectionReconciliation:
+      type: object
+      additionalProperties: false
+      required:
+        [status, expected_consumed_tokens, projected_consumed_tokens, consumed_variance,
+         checkpoint_source_event_sequence, latest_source_event_sequence, data_through]
+      properties:
+        status:
+          type: string
+          enum: [blocked, not_started, mismatched, lagging, reconciled]
+          description: >-
+            权威完整性不成立时 blocked；无 checkpoint 时 not_started；checkpoint 对齐值非零时 mismatched；
+            对齐值为零但 checkpoint 落后于 selected period 最新事件时 lagging；其余为 reconciled。
+        expected_consumed_tokens:
+          $ref: '#/components/schemas/AggregateTokenCount'
+          description: selected period 在 checkpoint_source_event_sequence 时点的权威 consumed
+        projected_consumed_tokens:
+          $ref: '#/components/schemas/AggregateTokenCount'
+          description: Usage 在同一 Group/period 的小时投影累计
+        consumed_variance:
+          $ref: '#/components/schemas/SignedAggregateTokenCount'
+          description: expected_consumed_tokens - projected_consumed_tokens
+        checkpoint_source_event_sequence:
+          $ref: '#/components/schemas/AggregateTokenCount'
+          description: Usage projector 已提交的 GroupQuota logical source sequence；未启动时为字符串 `0`
+        latest_source_event_sequence:
+          $ref: '#/components/schemas/AggregateTokenCount'
+          description: selected period 当前最新 GroupQuota logical source sequence
+        data_through:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          description: Usage checkpoint 已处理到的事件时间；未启动时为 null
     QuotaAdjustRequest:
       type: object
       additionalProperties: false

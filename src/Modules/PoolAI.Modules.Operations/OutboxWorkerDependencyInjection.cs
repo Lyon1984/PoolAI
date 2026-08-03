@@ -24,6 +24,9 @@ public static class OutboxWorkerDependencyInjection
         services.TryAddSingleton<
             IIntegrationEventConsumerExceptionClassifier,
             PostgresIntegrationEventConsumerExceptionClassifier>();
+        services.TryAddSingleton<
+            IQuotaDeliveryHealthReader,
+            PostgresQuotaDeliveryHealthReader>();
         services.TryAddSingleton<IOutboxObservabilityStore, PostgresOutboxObservabilityStore>();
         services.TryAddSingleton<IntegrationEventDispatcher>();
         services.TryAddSingleton<OutboxPublisherMetrics>();

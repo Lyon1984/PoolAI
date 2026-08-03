@@ -201,7 +201,9 @@ R1 只有管理员手工 reset，没有日/月定时 reset。调整和 reset 必
 - 订阅续期不重置 Group period。
 - 降低 total 可以使 `consumed + reserved > total`，从而立即停止新预留；既有 reservation 不取消，仍在原 period 核销、释放或过期。
 - reset 不迁移、不释放 pending reservation。旧 period 立即 closed，pending 永久引用旧 period并继续 renew/settle/release/expire；新请求只进入新 current period，迟到事实仍调整原 period。
-- 账实对账以 `SUM(effective attempt tokens)` 和 quota event ledger 重算 period。发现 `reserved_tokens != SUM(pending.estimated_tokens)`、重复 attempt、缺 event/outbox 或 78 位边界风险时 fail closed、禁用 quota 并发 P0 告警，不自动覆盖事实。
+- 账实对账分成三个不可混用的层次，具体口径由 [`ADR 0013`](../architecture/adr/0013-freeze-quota-reconciliation-layers-checkpoint-alignment-alerting-and-recovery-boundary.md) 冻结：GroupQuota 权威完整性以 `SUM(effective attempt tokens)`、pending reservation 与 quota event ledger 重算 selected period；Usage 投影只比较 projector logical source checkpoint 时点的权威 consumed，禁止把当前 ledger 与滞后 projection 直接相减；Outbox/Inbox/dead/replay/backlog 属于 Operations 交付健康。
+- 发现 `reserved_tokens != SUM(pending.estimated_tokens)`、重复/cross-Group attempt、event 链或末态不一致、缺原始 event/outbox 或 78 位边界风险时立即产生 P0 事件并停止受影响 Group 的新模型准入。Detector 自身只读，不能静默 UPDATE/DELETE 权威 counter、reservation、attempt、adjustment、event 或 outbox；隔离必须由既有 Admin Group PATCH 带 reason、幂等键、ETag 与审计显式置为 `disabled`。恢复只允许正式 adjustment、fix-forward/PITR，或对 Usage-owned derived projection 做有界 replace/rebuild；验证三层归零后再由 Admin 显式启用。
+- M3-E5 不新增表、函数或运行时写权限。API 只读取既有 GroupQuota/Usage 读集，不读取 Outbox/Inbox；Worker 通过各 owner 的窄端口扫描 current period，并用 PostgreSQL session advisory lock 保证单 owner。现有 `(period_id,event_sequence)`、`(group_id,event_sequence DESC)`、reservation/attempt 唯一键、Usage projection 主键与 0017 Outbox partial index 必须由 PostgreSQL 18 `EXPLAIN` 回归证明查询有界。
 
 ## 8. Transactional Outbox、Inbox 与事件契约
 

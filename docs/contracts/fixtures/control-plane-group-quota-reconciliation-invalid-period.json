@@ -1,0 +1,15 @@
+{
+  "type": "https://poolai.example/problems/invalid-request",
+  "title": "Invalid request",
+  "status": 400,
+  "detail": "The period_id query value must be a non-empty UUID.",
+  "instance": "/api/v1/admin/groups/0190f8bf-a040-7444-a2ca-c4bc32e48b40/quota/reconciliation",
+  "code": "invalid_request",
+  "request_id": "0190f8bf-a040-7444-a2ca-c4bc32e48b47",
+  "retryable": false,
+  "errors": {
+    "/period_id": [
+      "The period_id query value must be a non-empty UUID."
+    ]
+  }
+}

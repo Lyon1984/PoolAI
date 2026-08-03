@@ -4,6 +4,8 @@ import path from 'node:path'
 import { Ajv2020, addFormats, contractPaths, invariant } from './context.mjs'
 
 const JSON_FIXTURE_SCHEMAS = Object.freeze({
+  'control-plane-group-quota-reconciliation-invalid-period.json': 'ControlPlaneProblem',
+  'control-plane-group-quota-reconciliation.json': 'GroupQuotaReconciliation',
   'control-plane-outbox-replay-accepted.json': 'OutboxReplayReceipt',
   'control-plane-outbox-replay-validation-error.json': 'ControlPlaneProblem',
   'control-plane-validation-error.json': 'ControlPlaneProblem',
