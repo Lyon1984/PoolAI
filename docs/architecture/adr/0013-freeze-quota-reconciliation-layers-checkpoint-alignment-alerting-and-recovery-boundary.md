@@ -1,6 +1,6 @@
 # ADR 0013: Freeze quota-reconciliation layers, checkpoint alignment, alerting, and the recovery boundary
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-03
 - Decider: PoolAI architecture, GroupQuota, Usage, Operations, public-contract, database, and security owner (`@Lyon1984`)
 - Relates to: [M3-E5 Issue #23](https://github.com/Lyon1984/PoolAI/issues/23), ADR 0002, ADR 0012, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
@@ -10,7 +10,7 @@
 - Target OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055395)
-- Architecture approval evidence: **Pending superseding approval**; the [previous approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remains permanent history but binds only candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af` and is superseded for the expanded decision text below.
+- Architecture approval evidence: [Issue #44 permanent superseding approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5162578270), binding candidate `23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and ADR SHA-256 `b22d0625d5410950e973cbc53db29e6c7b35e414d0668cc7577b634624067d6a`; the [previous approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remains permanent history but binds only candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af` and is superseded for the expanded decision text below.
 - Database/no-migration approval evidence: [Issue #44 permanent database boundary approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055552)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation`
 
@@ -66,15 +66,17 @@ explicit control-plane action and keeps the detector read-only.
 
 ## Decision
 
-This revised decision is not yet effective. The previous architecture approval
-binds only exact candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af`
-and does not approve the later exact-period lineage, closed-period checkpoint,
-API/Worker ownership, or bounded-rebuild clarifications. A new permanent
-architecture approval must bind the final exact candidate before this ADR returns
-to `Accepted`. The independently approved OpenAPI compatibility window and
-database/no-migration boundary remain valid only for their unchanged exact hashes,
-base, diagnostic, and migration bounds; they cannot waive the superseding
-architecture gate.
+This revised decision is effective through the permanent superseding architecture
+approval bound to exact candidate
+`23eb5338bf3aeca8adf7d4645812ec8d3ea21577` and ADR SHA-256
+`b22d0625d5410950e973cbc53db29e6c7b35e414d0668cc7577b634624067d6a`.
+The previous architecture approval binds only exact candidate
+`e4fea33d517c436e5f26f75d79dd675fd8aa63af` and remains historical evidence,
+not approval for the later exact-period lineage, closed-period checkpoint,
+API/Worker ownership, or bounded-rebuild clarifications. The independently
+approved OpenAPI compatibility window and database/no-migration boundary remain
+valid only for their unchanged exact hashes, base, diagnostic, and migration
+bounds; the superseding architecture approval does not widen either one.
 
 ### Three independent reconciliation layers
 
@@ -463,11 +465,11 @@ No Redis contract or GroupQuota event-schema change is permitted. The release
 manifest changes only for the exact OpenAPI SHA-256; PostgreSQL migration bounds
 and GroupQuota event-contract digest remain unchanged under this decision.
 
-The proposed compatibility window is inert until exact hashes, the complete
-diagnostic, permanent approval evidence, and accepted statuses agree. Before
-approval, rollback is to withdraw the candidate OpenAPI/registry/generated
-artifacts while leaving this Proposed ADR as non-effective history or deleting it
-before merge. After acceptance and protected merge, the window closes for every
+The accepted compatibility window is effective only while its exact hashes, the
+complete diagnostic, permanent approval evidence, and accepted statuses agree.
+Before protected merge, rollback is to withdraw the candidate
+OpenAPI/registry/generated artifacts and supersede this decision through normal
+governance. After acceptance and protected merge, the window closes for every
 other base/target pair and cannot authorize a later response change. A later
 change to a top-level field meaning, checkpoint ordering, recovery authority, or
 automatic quarantine needs a superseding ADR and normal contract governance.
@@ -528,7 +530,7 @@ Acceptance does not authorize a remote database or Redis operation, deployment,
 automatic Group/quota disable, production paging configuration, M3-E5 closeout,
 M3 Exit, RC, GA, or production acceptance.
 
-## Contract and test files coupled to the future candidate
+## Contract and test files coupled to the accepted candidate
 
 - `docs/README.md`
 - `docs/architecture/adr/README.md`
