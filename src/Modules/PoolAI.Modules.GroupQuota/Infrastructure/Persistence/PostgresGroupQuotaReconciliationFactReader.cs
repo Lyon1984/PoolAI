@@ -15,6 +15,15 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
     private static readonly BigInteger MaximumAggregateTokenCount =
         BigInteger.Pow(10, 78) - BigInteger.One;
 
+    private const string ResolvePeriodSql = """
+        SELECT period.id
+        FROM public.group_token_quotas AS quota
+        JOIN public.group_quota_periods AS period
+          ON period.group_id = quota.group_id
+         AND period.id = coalesce($2::uuid, quota.current_period_id)
+        WHERE quota.group_id = $1;
+        """;
+
     private const string ReadSql = """
         WITH reconciliation_clock AS MATERIALIZED (
             SELECT clock_timestamp() AS checked_at
@@ -30,8 +39,28 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
             FROM public.group_token_quotas AS quota
             JOIN public.group_quota_periods AS period
               ON period.group_id = quota.group_id
-             AND period.id = coalesce($2::uuid, quota.current_period_id)
+             AND period.id = $2::uuid
             WHERE quota.group_id = $1
+        ),
+        period_events AS MATERIALIZED (
+            SELECT
+                event.id,
+                event.group_id,
+                event.period_id,
+                event.event_type,
+                event.reservation_id,
+                event.attempt_id,
+                event.event_sequence,
+                event.delta_total_tokens,
+                event.delta_consumed_tokens,
+                event.delta_reserved_tokens,
+                event.total_tokens_after,
+                event.consumed_tokens_after,
+                event.reserved_tokens_after,
+                event.occurred_at
+            FROM public.group_quota_events AS event
+            WHERE event.period_id = $2::uuid
+              AND event.group_id = $1
         ),
         settlement_facts AS MATERIALIZED (
             SELECT coalesce(
@@ -110,11 +139,7 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
                 )
                 AND NOT EXISTS (
                     SELECT 1
-                    FROM selected_period AS period
-                    JOIN public.group_quota_events AS event
-                      ON event.group_id = period.group_id
-                     AND event.period_id = period.id
-                     AND event.event_type IN ('settled', 'expired')
+                    FROM period_events AS event
                     LEFT JOIN public.group_token_reservations AS reservation
                       ON reservation.id = event.reservation_id
                      AND reservation.period_id = event.period_id
@@ -126,19 +151,17 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
                      AND attempt.request_id = reservation.request_id
                      AND attempt.attempt_index = reservation.attempt_index
                      AND attempt.quota_group_id = event.group_id
-                    WHERE reservation.id IS NULL OR attempt.attempt_id IS NULL
+                    WHERE event.event_type IN ('settled', 'expired')
+                      AND (reservation.id IS NULL OR attempt.attempt_id IS NULL)
                 )
                 AND NOT EXISTS (
                     SELECT 1
-                    FROM selected_period AS period
-                    JOIN public.group_quota_events AS event
-                      ON event.group_id = period.group_id
-                     AND event.period_id = period.id
-                     AND event.event_type = 'usage_adjusted'
+                    FROM period_events AS event
                     LEFT JOIN public.usage_attempt_adjustments AS adjustment
                       ON adjustment.quota_event_id = event.id
                      AND adjustment.attempt_id = event.attempt_id
-                    WHERE adjustment.attempt_id IS NULL
+                    WHERE event.event_type = 'usage_adjusted'
+                      AND adjustment.attempt_id IS NULL
                 ) AS is_consistent
         ),
         ordered_events AS MATERIALIZED (
@@ -156,10 +179,7 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
                     AS prior_consumed_tokens,
                 lag(event.reserved_tokens_after) OVER event_order
                     AS prior_reserved_tokens
-            FROM selected_period AS period
-            JOIN public.group_quota_events AS event
-              ON event.period_id = period.id
-             AND event.group_id = period.group_id
+            FROM period_events AS event
             WINDOW event_order AS (ORDER BY event.event_sequence)
         ),
         event_chain AS MATERIALIZED (
@@ -196,10 +216,14 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
         ),
         latest_group_event AS MATERIALIZED (
             SELECT event.event_sequence
-            FROM selected_period AS period
-            JOIN public.group_quota_events AS event
-              ON event.group_id = period.group_id
-            ORDER BY event.event_sequence DESC
+            FROM public.group_quota_events AS event
+            -- Keep this as a composite range so PostgreSQL cannot satisfy the
+            -- latest-Group lookup by walking unrelated global sequence rows.
+            WHERE (event.group_id, event.event_sequence)
+                      >= ($1::uuid, '-9223372036854775808'::bigint)
+              AND (event.group_id, event.event_sequence)
+                      <= ($1::uuid, '9223372036854775807'::bigint)
+            ORDER BY event.group_id, event.event_sequence DESC
             LIMIT 1
         ),
         checkpoint_event AS MATERIALIZED (
@@ -279,6 +303,45 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
         LIMIT $5;
         """;
 
+    public async ValueTask<EntityId?> ResolvePeriodAsync(
+        EntityId groupId,
+        EntityId? periodId,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ValidateId(groupId, nameof(groupId));
+        if (periodId is { } requestedPeriod)
+        {
+            ValidateId(requestedPeriod, nameof(periodId));
+        }
+
+        ArgumentNullException.ThrowIfNull(unitOfWorkContext);
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(
+            unitOfWorkContext);
+        using NpgsqlCommand command = session.CreateCommand(ResolvePeriodSql);
+        command.Parameters.AddWithValue(groupId.Value);
+        command.Parameters.Add(new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.Uuid,
+            Value = periodId is { } value ? value.Value : DBNull.Value,
+        });
+        using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        EntityId resolved = ReadAbi(
+            () => new EntityId(reader.GetGuid(0)),
+            "The PostgreSQL Group quota period identity violated its ABI.");
+        ValidateId(resolved, nameof(periodId));
+        ValidateSingleSnapshot(
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
+        return resolved;
+    }
+
     public async ValueTask<GroupQuotaReconciliationFactSnapshot?> ReadAsync(
         EntityId groupId,
         EntityId? periodId,
@@ -296,13 +359,23 @@ internal sealed class PostgresGroupQuotaReconciliationFactReader :
         ArgumentNullException.ThrowIfNull(unitOfWorkContext);
         PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(
             unitOfWorkContext);
+        EntityId? resolvedPeriodId = periodId;
+        if (resolvedPeriodId is null)
+        {
+            resolvedPeriodId = await ResolvePeriodAsync(
+                groupId,
+                periodId: null,
+                unitOfWorkContext,
+                cancellationToken).ConfigureAwait(false);
+            if (resolvedPeriodId is null)
+            {
+                return null;
+            }
+        }
+
         using NpgsqlCommand command = session.CreateCommand(ReadSql);
         command.Parameters.AddWithValue(groupId.Value);
-        command.Parameters.Add(new NpgsqlParameter
-        {
-            NpgsqlDbType = NpgsqlDbType.Uuid,
-            Value = periodId is { } value ? value.Value : DBNull.Value,
-        });
+        command.Parameters.AddWithValue(resolvedPeriodId.Value.Value);
         command.Parameters.AddWithValue(checkpointSourceEventSequence);
         using NpgsqlDataReader reader = await command
             .ExecuteReaderAsync(cancellationToken)

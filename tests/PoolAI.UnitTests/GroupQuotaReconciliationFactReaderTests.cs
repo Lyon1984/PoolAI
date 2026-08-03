@@ -83,19 +83,36 @@ public sealed class GroupQuotaReconciliationFactReaderTests
     public async Task InvalidReadBoundaryFailsBeforeOpeningPostgres()
     {
         PostgresGroupQuotaReconciliationFactReader reader = new();
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => reader.ResolvePeriodAsync(
+            default,
+            null,
+            null!,
+            cancellationToken).AsTask());
+        await Assert.ThrowsAsync<ArgumentException>(() => reader.ResolvePeriodAsync(
+            EntityId.New(),
+            default(EntityId),
+            null!,
+            cancellationToken).AsTask());
+        await Assert.ThrowsAsync<ArgumentNullException>(() => reader.ResolvePeriodAsync(
+            EntityId.New(),
+            null,
+            null!,
+            cancellationToken).AsTask());
 
         await Assert.ThrowsAsync<ArgumentException>(() => reader.ReadAsync(
             default,
             null,
             checkpointSourceEventSequence: 0,
             null!,
-            TestContext.Current.CancellationToken).AsTask());
+            cancellationToken).AsTask());
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => reader.ReadAsync(
             EntityId.New(),
             null,
             checkpointSourceEventSequence: -1,
             null!,
-            TestContext.Current.CancellationToken).AsTask());
+            cancellationToken).AsTask());
     }
 
     [Theory]

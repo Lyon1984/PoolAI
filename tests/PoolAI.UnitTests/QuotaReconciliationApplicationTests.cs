@@ -147,10 +147,9 @@ public sealed class QuotaReconciliationApplicationTests
     }
 
     [Fact]
-    public async Task ServiceReadsIdentityProjectionAndExactFactsInThreeIndependentUnits()
+    public async Task ServiceResolvesPeriodThenReadsProjectionAndExactFactsInIndependentUnits()
     {
         List<string> operations = [];
-        GroupQuotaReconciliationFactSnapshot identity = Fact(checkpoint: 0);
         GroupQuotaReconciliationFactSnapshot exact = Fact(
             checkpoint: 17,
             expectedConsumedAtCheckpoint: new BigInteger(400),
@@ -160,7 +159,7 @@ public sealed class QuotaReconciliationApplicationTests
             checkpoint: 17,
             projectedConsumedTokens: new BigInteger(400));
         RecordingUnitOfWorkFactory unitOfWorkFactory = new(operations);
-        RecordingFactReader factReader = new([identity, exact], operations);
+        RecordingFactReader factReader = new(PeriodId, [exact], operations);
         RecordingProjectionReader projectionReader = new(projection, operations);
         QuotaReconciliationService service = new(
             unitOfWorkFactory,
@@ -179,7 +178,7 @@ public sealed class QuotaReconciliationApplicationTests
         Assert.Equal(
             [
                 "begin:1",
-                "fact:0:uow:1",
+                "period:uow:1",
                 "commit:1",
                 "dispose:1",
                 "begin:2",
@@ -197,14 +196,15 @@ public sealed class QuotaReconciliationApplicationTests
         Assert.Equal(3, unitOfWorkFactory.DisposeCalls);
         Assert.NotSame(unitOfWorkFactory.Contexts[0], unitOfWorkFactory.Contexts[1]);
         Assert.NotSame(unitOfWorkFactory.Contexts[1], unitOfWorkFactory.Contexts[2]);
-        Assert.Null(factReader.Calls[0].PeriodId);
-        Assert.Equal(0, factReader.Calls[0].CheckpointSourceEventSequence);
-        Assert.Same(unitOfWorkFactory.Contexts[0], factReader.Calls[0].Context);
+        Assert.Null(factReader.ResolveCalls[0].PeriodId);
+        Assert.Same(
+            unitOfWorkFactory.Contexts[0],
+            factReader.ResolveCalls[0].Context);
         Assert.Equal(PeriodId, projectionReader.Calls[0].PeriodId);
         Assert.Same(unitOfWorkFactory.Contexts[1], projectionReader.Calls[0].Context);
-        Assert.Equal(PeriodId, factReader.Calls[1].PeriodId);
-        Assert.Equal(17, factReader.Calls[1].CheckpointSourceEventSequence);
-        Assert.Same(unitOfWorkFactory.Contexts[2], factReader.Calls[1].Context);
+        Assert.Equal(PeriodId, factReader.Calls[0].PeriodId);
+        Assert.Equal(17, factReader.Calls[0].CheckpointSourceEventSequence);
+        Assert.Same(unitOfWorkFactory.Contexts[2], factReader.Calls[0].Context);
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public sealed class QuotaReconciliationApplicationTests
     {
         List<string> operations = [];
         RecordingUnitOfWorkFactory unitOfWorkFactory = new(operations);
-        RecordingFactReader factReader = new([null], operations);
+        RecordingFactReader factReader = new(null, [], operations);
         RecordingProjectionReader projectionReader = new(Projection(), operations);
         QuotaReconciliationService service = new(
             unitOfWorkFactory,
@@ -230,23 +230,23 @@ public sealed class QuotaReconciliationApplicationTests
             "The requested Group quota period was not found.",
             result.Error.Description);
         Assert.Equal(
-            ["begin:1", "fact:0:uow:1", "commit:1", "dispose:1"],
+            ["begin:1", "period:uow:1", "commit:1", "dispose:1"],
             operations);
         Assert.Equal(1, unitOfWorkFactory.BeginCalls);
         Assert.Equal(1, unitOfWorkFactory.CommitCalls);
         Assert.Equal(1, unitOfWorkFactory.DisposeCalls);
         Assert.Empty(projectionReader.Calls);
-        Assert.Equal(OtherPeriodId, factReader.Calls[0].PeriodId);
+        Assert.Empty(factReader.Calls);
+        Assert.Equal(OtherPeriodId, factReader.ResolveCalls[0].PeriodId);
     }
 
     [Fact]
     public async Task ServiceReturnsResourceNotFoundWhenExactFactReadNoLongerResolves()
     {
         List<string> operations = [];
-        GroupQuotaReconciliationFactSnapshot identity = Fact(checkpoint: 0);
         UsageReconciliationProjectionSnapshot projection = Projection(checkpoint: 17);
         RecordingUnitOfWorkFactory unitOfWorkFactory = new(operations);
-        RecordingFactReader factReader = new([identity, null], operations);
+        RecordingFactReader factReader = new(PeriodId, [null], operations);
         RecordingProjectionReader projectionReader = new(projection, operations);
         QuotaReconciliationService service = new(
             unitOfWorkFactory,
@@ -263,7 +263,7 @@ public sealed class QuotaReconciliationApplicationTests
         Assert.Equal(
             [
                 "begin:1",
-                "fact:0:uow:1",
+                "period:uow:1",
                 "commit:1",
                 "dispose:1",
                 "begin:2",
@@ -345,12 +345,18 @@ public sealed class QuotaReconciliationApplicationTests
         long CheckpointSourceEventSequence,
         IUnitOfWorkContext Context);
 
+    private sealed record PeriodResolveCall(
+        EntityId GroupId,
+        EntityId? PeriodId,
+        IUnitOfWorkContext Context);
+
     private sealed record ProjectionReadCall(
         EntityId GroupId,
         EntityId PeriodId,
         IUnitOfWorkContext Context);
 
     private sealed class RecordingFactReader(
+        EntityId? resolvedPeriod,
         IEnumerable<GroupQuotaReconciliationFactSnapshot?> snapshots,
         ICollection<string> operations) : IGroupQuotaReconciliationFactReader
     {
@@ -359,6 +365,25 @@ public sealed class QuotaReconciliationApplicationTests
         private readonly ICollection<string> _operations = operations;
 
         internal List<FactReadCall> Calls { get; } = [];
+
+        internal List<PeriodResolveCall> ResolveCalls { get; } = [];
+
+        public ValueTask<EntityId?> ResolvePeriodAsync(
+            EntityId groupId,
+            EntityId? periodId,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            TestUnitOfWorkContext context = Assert.IsType<TestUnitOfWorkContext>(
+                unitOfWorkContext);
+            _operations.Add($"period:uow:{context.Sequence}");
+            ResolveCalls.Add(new PeriodResolveCall(
+                groupId,
+                periodId,
+                unitOfWorkContext));
+            return ValueTask.FromResult(resolvedPeriod);
+        }
 
         public ValueTask<GroupQuotaReconciliationFactSnapshot?> ReadAsync(
             EntityId groupId,

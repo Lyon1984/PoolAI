@@ -22,23 +22,22 @@ internal sealed class QuotaReconciliationService(
         EntityId? periodId,
         CancellationToken cancellationToken)
     {
-        GroupQuotaReconciliationFactSnapshot? identity = await ReadFactAsync(
+        EntityId? resolvedPeriodId = await ResolvePeriodAsync(
             groupId,
             periodId,
-            checkpointSourceEventSequence: 0,
             cancellationToken).ConfigureAwait(false);
-        if (identity is null)
+        if (resolvedPeriodId is null)
         {
             return NotFound();
         }
 
         UsageReconciliationProjectionSnapshot projection = await ReadProjectionAsync(
             groupId,
-            identity.PeriodId,
+            resolvedPeriodId.Value,
             cancellationToken).ConfigureAwait(false);
         GroupQuotaReconciliationFactSnapshot? authoritative = await ReadFactAsync(
             groupId,
-            identity.PeriodId,
+            resolvedPeriodId.Value,
             projection.CheckpointSourceEventSequence,
             cancellationToken).ConfigureAwait(false);
         return authoritative is null
@@ -46,6 +45,26 @@ internal sealed class QuotaReconciliationService(
             : Result.Success(QuotaReconciliationCalculator.Calculate(
                 authoritative,
                 projection));
+    }
+
+    private async ValueTask<EntityId?> ResolvePeriodAsync(
+        EntityId groupId,
+        EntityId? periodId,
+        CancellationToken cancellationToken)
+    {
+        IUnitOfWork unitOfWork = await _unitOfWorkFactory
+            .BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using (unitOfWork.ConfigureAwait(false))
+        {
+            EntityId? resolved = await _factReader.ResolvePeriodAsync(
+                groupId,
+                periodId,
+                unitOfWork.Context,
+                cancellationToken).ConfigureAwait(false);
+            await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return resolved;
+        }
     }
 
     private async ValueTask<GroupQuotaReconciliationFactSnapshot?> ReadFactAsync(

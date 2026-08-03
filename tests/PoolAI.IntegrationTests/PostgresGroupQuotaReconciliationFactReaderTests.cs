@@ -16,6 +16,7 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
     PostgresRuntimeFixture fixture)
 {
     private const int PlanHistoryCount = 50_000;
+    private const int ForeignGroupHistoryCount = PlanHistoryCount / 5;
 
     [Fact]
     [Trait("Category", "PostgreSQL")]
@@ -23,6 +24,27 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         SeededScenario scenario = await SeedAsync(cancellationToken).ConfigureAwait(true);
+
+        Assert.Equal(
+            scenario.PeriodId,
+            await ResolvePeriodAsync(
+                scenario.GroupId,
+                periodId: null,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Equal(
+            scenario.ClosedPeriodId,
+            await ResolvePeriodAsync(
+                scenario.GroupId,
+                scenario.ClosedPeriodId,
+                cancellationToken).ConfigureAwait(true));
+        Assert.Null(await ResolvePeriodAsync(
+            scenario.GroupId,
+            new EntityId(Guid.NewGuid()),
+            cancellationToken).ConfigureAwait(true));
+        Assert.Null(await ResolvePeriodAsync(
+            new EntityId(Guid.NewGuid()),
+            periodId: null,
+            cancellationToken).ConfigureAwait(true));
 
         GroupQuotaReconciliationFactSnapshot snapshot = Assert.IsType<
             GroupQuotaReconciliationFactSnapshot>(await ReadAsync(
@@ -255,6 +277,63 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(true);
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task ExactPointReconciliationUsesIndexesWithoutScanningUnrelatedHistory()
+    {
+        // Governing contract: ADR 0013 requires the point reconciliation read
+        // to use existing indexes and avoid unbounded global event history.
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        using NpgsqlConnection connection = await fixture.AdministratorDataSource
+            .OpenConnectionAsync(cancellationToken).ConfigureAwait(true);
+        using NpgsqlTransaction transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(true);
+        EntityId groupId = EntityId.New();
+        EntityId periodId = EntityId.New();
+        long latestSourceSequence = await SeedPlanHistoryAsync(
+            connection,
+            transaction,
+            groupId,
+            periodId,
+            cancellationToken).ConfigureAwait(true);
+
+        using NpgsqlCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+            + ReadSqlConstant(
+                typeof(PoolAI.Modules.GroupQuota.Infrastructure.Persistence
+                    .PostgresGroupQuotaReconciliationFactReader),
+                "ReadSql");
+        command.Parameters.AddWithValue(NpgsqlDbType.Uuid, groupId.Value);
+        command.Parameters.AddWithValue(NpgsqlDbType.Uuid, periodId.Value);
+        command.Parameters.AddWithValue(
+            NpgsqlDbType.Bigint,
+            latestSourceSequence);
+        IReadOnlyList<PlanNode> nodes = await ReadPlanAsync(
+            command,
+            cancellationToken).ConfigureAwait(true);
+
+        Assert.True(
+            nodes.Any(static node => string.Equals(
+                node.IndexName,
+                "ix_group_quota_events_period_sequence",
+                StringComparison.Ordinal)),
+            string.Join(
+                Environment.NewLine,
+                nodes.Select(static node => node.ToString())));
+        Assert.True(
+            nodes.Any(static node => string.Equals(
+                node.IndexName,
+                "ix_group_quota_events_group_sequence",
+                StringComparison.Ordinal)),
+            string.Join(
+                Environment.NewLine,
+                nodes.Select(static node => node.ToString())));
+        Assert.DoesNotContain(nodes, static node =>
+            node.TouchesQuotaEvents && node.RowsExamined >= PlanHistoryCount / 10);
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(true);
+    }
+
     private static async ValueTask<long> SeedPlanHistoryAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -263,6 +342,8 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
         CancellationToken cancellationToken)
     {
         EntityId historicalPeriodId = EntityId.New();
+        EntityId foreignGroupId = EntityId.New();
+        EntityId foreignPeriodId = EntityId.New();
         using (NpgsqlCommand constraints = new(
             "SET CONSTRAINTS ALL DEFERRED;",
             connection,
@@ -274,13 +355,17 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
 
         using (NpgsqlCommand group = new(
             "INSERT INTO public.groups (id, name, status) "
-                + "VALUES ($1, 'm3e5-plan-' || $1::text, 'disabled');",
+                + "VALUES ($1, 'm3e5-plan-' || $1::text, 'disabled'), "
+                + "($2, 'm3e5-plan-' || $2::text, 'disabled');",
             connection,
             transaction))
         {
             group.Parameters.AddWithValue(NpgsqlDbType.Uuid, groupId.Value);
+            group.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignGroupId.Value);
             Assert.Equal(
-                1,
+                2,
                 await group.ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false));
         }
@@ -288,14 +373,20 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
         using (NpgsqlCommand quota = new(
             "INSERT INTO public.group_token_quotas "
                 + "(group_id, current_period_id, enabled, version) "
-                + "VALUES ($1, $2, true, 1);",
+                + "VALUES ($1, $2, true, 1), ($3, $4, true, 1);",
             connection,
             transaction))
         {
             quota.Parameters.AddWithValue(NpgsqlDbType.Uuid, groupId.Value);
             quota.Parameters.AddWithValue(NpgsqlDbType.Uuid, periodId.Value);
+            quota.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignGroupId.Value);
+            quota.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignPeriodId.Value);
             Assert.Equal(
-                1,
+                2,
                 await quota.ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false));
         }
@@ -310,6 +401,8 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
                     clock_timestamp() - interval '2 days',
                     clock_timestamp() - interval '1 day', 'plan rollover', 1),
                 ($3, $2, 2, 1, 0, 0, 'current',
+                    clock_timestamp(), NULL, NULL, 1),
+                ($4, $5, 1, 1, 0, 0, 'current',
                     clock_timestamp(), NULL, NULL, 1);
             """,
             connection,
@@ -320,8 +413,14 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
                 historicalPeriodId.Value);
             period.Parameters.AddWithValue(NpgsqlDbType.Uuid, groupId.Value);
             period.Parameters.AddWithValue(NpgsqlDbType.Uuid, periodId.Value);
+            period.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignPeriodId.Value);
+            period.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignGroupId.Value);
             Assert.Equal(
-                2,
+                3,
                 await period.ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false));
         }
@@ -355,6 +454,37 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
             Assert.Equal(
                 PlanHistoryCount,
                 await events.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false));
+        }
+
+        using (NpgsqlCommand foreignEvents = new(
+            """
+            INSERT INTO public.group_quota_events (
+                id, group_id, period_id, event_type,
+                delta_total_tokens, delta_consumed_tokens, delta_reserved_tokens,
+                total_tokens_after, consumed_tokens_after, reserved_tokens_after,
+                actor_type, idempotency_key, metadata, occurred_at)
+            SELECT gen_random_uuid(), $1, $2, 'total_adjusted',
+                   0, 0, 0, 1, 0, 0,
+                   'system', $3 || source::text, '{}'::jsonb, clock_timestamp()
+            FROM generate_series(1, $4) AS source;
+            """,
+            connection,
+            transaction))
+        {
+            foreignEvents.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignGroupId.Value);
+            foreignEvents.Parameters.AddWithValue(
+                NpgsqlDbType.Uuid,
+                foreignPeriodId.Value);
+            foreignEvents.Parameters.AddWithValue(
+                NpgsqlDbType.Text,
+                $"m3e5-plan:{foreignGroupId.Value:N}:");
+            foreignEvents.Parameters.AddWithValue(ForeignGroupHistoryCount);
+            Assert.Equal(
+                ForeignGroupHistoryCount,
+                await foreignEvents.ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false));
         }
 
@@ -466,6 +596,28 @@ public sealed class PostgresGroupQuotaReconciliationFactReaderTests(
             cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return snapshot;
+    }
+
+    private async ValueTask<EntityId?> ResolvePeriodAsync(
+        EntityId groupId,
+        EntityId? periodId,
+        CancellationToken cancellationToken)
+    {
+        IGroupQuotaReconciliationFactReader reader = fixture.ApiServices
+            .GetRequiredService<IGroupQuotaReconciliationFactReader>();
+        IUnitOfWorkFactory factory = fixture.ApiServices
+            .GetRequiredService<IUnitOfWorkFactory>();
+        IUnitOfWork unitOfWork = await factory.BeginAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        EntityId? resolved = await reader.ResolvePeriodAsync(
+            groupId,
+            periodId,
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(false);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return resolved;
     }
 
     private async ValueTask<IReadOnlyList<GroupQuotaReconciliationCandidate>>

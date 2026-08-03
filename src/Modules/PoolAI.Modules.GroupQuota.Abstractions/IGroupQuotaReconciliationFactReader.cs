@@ -6,6 +6,12 @@ namespace PoolAI.Modules.GroupQuota.Abstractions;
 /// </summary>
 public interface IGroupQuotaReconciliationFactReader
 {
+    ValueTask<EntityId?> ResolvePeriodAsync(
+        EntityId groupId,
+        EntityId? periodId,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken);
+
     ValueTask<GroupQuotaReconciliationFactSnapshot?> ReadAsync(
         EntityId groupId,
         EntityId? periodId,

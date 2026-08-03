@@ -628,6 +628,12 @@ public sealed class BoundedUsagePeriodRebuilderTests
 
         internal int ReadCalls { get; private set; }
 
+        public ValueTask<EntityId?> ResolvePeriodAsync(
+            EntityId groupId,
+            EntityId? periodId,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public ValueTask<GroupQuotaReconciliationFactSnapshot?> ReadAsync(
             EntityId groupId,
             EntityId? periodId,

@@ -1263,6 +1263,12 @@ public sealed class QuotaReconciliationWorkerTests
 
         internal List<DeliveryCall> DeliveryCalls { get; } = [];
 
+        public ValueTask<EntityId?> ResolvePeriodAsync(
+            EntityId groupId,
+            EntityId? periodId,
+            IUnitOfWorkContext unitOfWorkContext,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
         public ValueTask<IReadOnlyList<GroupQuotaReconciliationCandidate>>
             ListCurrentCandidatesAsync(
                 EntityId? afterGroupId,
