@@ -67,8 +67,9 @@ internal sealed partial class QuotaReconciliationProcessor(
                 await ReadPageAsync(pageCursor, pageSize, cancellationToken)
                     .ConfigureAwait(false);
             pageCount++;
-            ValidatePage(page, pageCursor, pageSize);
-            DiscardContinuationMissingFromPage(page);
+            if (DiscardContinuationMissingFromPage(page))
+                return CurrentResult(pageCount, scannedCount);
+
             foreach (GroupQuotaReconciliationCandidate candidate in page)
             {
                 if (!await HasOwnershipAsync(jobLock, cancellationToken).ConfigureAwait(false))
@@ -133,17 +134,114 @@ internal sealed partial class QuotaReconciliationProcessor(
         }
         catch (ReconciliationScanInvariantException exception)
         {
-            _deliveryContinuation = null;
+            bool restartPass = _deliveryContinuation is not null;
+            if (restartPass)
+            {
+                RestartCandidatePass();
+            }
+            else
+            {
+                _deliveryContinuation = null;
+            }
+
             MutableMetrics failure = new();
             failure.RecordInvariantFailure(exception.Layer);
             await EmitScanInvariantFailureAsync(candidate, exception)
                 .ConfigureAwait(false);
-            return failure.Snapshot();
+            return restartPass ? null : failure.Snapshot();
         }
     }
 
     private async ValueTask<QuotaReconciliationMetricSnapshot?>
         ProcessCandidateCoreAsync(
+        GroupQuotaReconciliationCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        DeliveryScanContinuation? continuation = _deliveryContinuation;
+        if (continuation is null)
+        {
+            CandidateSnapshots? initial = await ReadCandidateSnapshotsAsync(
+                candidate,
+                cancellationToken).ConfigureAwait(false);
+            if (initial is null)
+            {
+                return await HandleMissingFactAsync(
+                    candidate,
+                    restartPass: false).ConfigureAwait(false);
+            }
+
+            continuation = new(
+                CandidateScanIdentity.Create(initial.Projection, initial.Fact),
+                initial.Projection,
+                initial.Fact);
+            _deliveryContinuation = continuation;
+        }
+
+        bool deliveryComplete = await ScanOneDeliveryPageAsync(
+            continuation,
+            cancellationToken).ConfigureAwait(false);
+        if (!deliveryComplete)
+        {
+            return null;
+        }
+
+        return await CompleteCandidateAsync(
+            candidate,
+            continuation,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<QuotaReconciliationMetricSnapshot?> CompleteCandidateAsync(
+        GroupQuotaReconciliationCandidate candidate,
+        DeliveryScanContinuation continuation,
+        CancellationToken cancellationToken)
+    {
+        CandidateSnapshots? current;
+        try
+        {
+            current = await ReadCandidateSnapshotsAsync(
+                candidate,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ReconciliationScanInvariantException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            RestartCandidatePass();
+            throw;
+        }
+
+        if (current is null)
+        {
+            return await HandleMissingFactAsync(
+                candidate,
+                restartPass: true).ConfigureAwait(false);
+        }
+
+        CandidateScanIdentity currentIdentity = CandidateScanIdentity.Create(
+            current.Projection,
+            current.Fact);
+        if (currentIdentity != continuation.Identity)
+        {
+            RestartCandidatePass();
+            return null;
+        }
+
+        continuation.UpdateSnapshots(current.Projection, current.Fact);
+        _deliveryContinuation = null;
+        QuotaDeliveryHealthSnapshot delivery = continuation.Delivery.Snapshot();
+        QuotaReconciliationView view = CalculateInvariantChecked(
+            continuation.Fact,
+            continuation.Projection);
+        MutableMetrics completed = new();
+        completed.Add(view, continuation.Projection, delivery);
+        await EmitOperationalEventsAsync(view, delivery).ConfigureAwait(false);
+        return completed.Snapshot();
+    }
+
+    private async ValueTask<CandidateSnapshots?> ReadCandidateSnapshotsAsync(
         GroupQuotaReconciliationCandidate candidate,
         CancellationToken cancellationToken)
     {
@@ -160,46 +258,35 @@ internal sealed partial class QuotaReconciliationProcessor(
                 candidate,
                 projection.CheckpointSourceEventSequence,
                 cancellationToken)).ConfigureAwait(false);
-        if (fact is null)
+        return fact is null ? null : new(projection, fact);
+    }
+
+    private async ValueTask<QuotaReconciliationMetricSnapshot?> HandleMissingFactAsync(
+        GroupQuotaReconciliationCandidate candidate,
+        bool restartPass)
+    {
+        if (restartPass)
+        {
+            RestartCandidatePass();
+        }
+        else
         {
             _deliveryContinuation = null;
-            MutableMetrics missingFact = new();
-            missingFact.RecordMissingFact();
-            await TryWriteOperationalEventAsync(
-                "usage.quota_reconciliation_authoritative_failure",
-                JsonSerializer.SerializeToElement(new
-                {
-                    severity = "P0",
-                    layer = "authoritative",
-                    classification = "candidate_fact_missing",
-                    group_id = candidate.GroupId.Value,
-                    period_id = candidate.PeriodId.Value,
-                })).ConfigureAwait(false);
-            return missingFact.Snapshot();
         }
 
-        CandidateScanIdentity identity = CandidateScanIdentity.Create(
-            projection,
-            fact);
-        DeliveryScanContinuation continuation = GetOrRestartContinuation(
-            identity,
-            projection,
-            fact);
-        bool deliveryComplete = await ScanOneDeliveryPageAsync(
-            continuation,
-            cancellationToken).ConfigureAwait(false);
-        if (!deliveryComplete)
-        {
-            return null;
-        }
-
-        _deliveryContinuation = null;
-        QuotaDeliveryHealthSnapshot delivery = continuation.Delivery.Snapshot();
-        QuotaReconciliationView view = CalculateInvariantChecked(fact, projection);
-        MutableMetrics completed = new();
-        completed.Add(view, projection, delivery);
-        await EmitOperationalEventsAsync(view, delivery).ConfigureAwait(false);
-        return completed.Snapshot();
+        MutableMetrics missingFact = new();
+        missingFact.RecordMissingFact();
+        await TryWriteOperationalEventAsync(
+            "usage.quota_reconciliation_authoritative_failure",
+            JsonSerializer.SerializeToElement(new
+            {
+                severity = "P0",
+                layer = "authoritative",
+                classification = "candidate_fact_missing",
+                group_id = candidate.GroupId.Value,
+                period_id = candidate.PeriodId.Value,
+            })).ConfigureAwait(false);
+        return restartPass ? null : missingFact.Snapshot();
     }
 
     private static async ValueTask<T> InvariantCheckedAsync<T>(
@@ -272,20 +359,30 @@ internal sealed partial class QuotaReconciliationProcessor(
             _publishedSnapshot);
     }
 
-    private void DiscardContinuationMissingFromPage(
+    private bool DiscardContinuationMissingFromPage(
         IReadOnlyList<GroupQuotaReconciliationCandidate> page)
     {
         if (_deliveryContinuation is not { } continuation)
         {
-            return;
+            return false;
         }
 
         if (page.Count == 0
             || page[0].GroupId != continuation.Fact.GroupId
             || page[0].PeriodId != continuation.Fact.PeriodId)
         {
-            _deliveryContinuation = null;
+            RestartCandidatePass();
+            return true;
         }
+
+        return false;
+    }
+
+    private void RestartCandidatePass()
+    {
+        _candidateCursor = null;
+        _deliveryContinuation = null;
+        _passMetrics = new();
     }
 
     private void CompleteCandidatePass()
@@ -313,6 +410,7 @@ internal sealed partial class QuotaReconciliationProcessor(
                 unitOfWork.Context,
                 cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
+        ValidatePage(page, afterGroupId, pageSize);
         return page;
     }
 
@@ -349,23 +447,6 @@ internal sealed partial class QuotaReconciliationProcessor(
             cancellationToken).ConfigureAwait(false);
         await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(false);
         return snapshot;
-    }
-
-    private DeliveryScanContinuation GetOrRestartContinuation(
-        CandidateScanIdentity identity,
-        UsageReconciliationProjectionSnapshot projection,
-        GroupQuotaReconciliationFactSnapshot fact)
-    {
-        if (_deliveryContinuation is { } continuation
-            && continuation.Identity == identity)
-        {
-            continuation.UpdateSnapshots(projection, fact);
-            return continuation;
-        }
-
-        continuation = new(identity, projection, fact);
-        _deliveryContinuation = continuation;
-        return continuation;
     }
 
     private async ValueTask<bool> ScanOneDeliveryPageAsync(
@@ -721,6 +802,10 @@ internal sealed partial class QuotaReconciliationProcessor(
                 fact with { CheckedAt = DateTimeOffset.UnixEpoch });
         }
     }
+
+    private sealed record CandidateSnapshots(
+        UsageReconciliationProjectionSnapshot Projection,
+        GroupQuotaReconciliationFactSnapshot Fact);
 
     private sealed class DeliveryScanContinuation(
         CandidateScanIdentity identity,

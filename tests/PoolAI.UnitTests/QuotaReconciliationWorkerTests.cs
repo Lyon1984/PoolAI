@@ -150,10 +150,10 @@ public sealed class QuotaReconciliationWorkerTests
         Assert.False(result.OwnershipLost);
         Assert.Equal(1, result.PageCount);
         Assert.Equal(1, result.ScannedCount);
-        Assert.Equal(5, units.BeginCalls);
-        Assert.Equal(5, units.CommitCalls);
-        Assert.Equal(5, units.DisposeCalls);
-        Assert.Equal(5, units.Contexts.Distinct().Count());
+        Assert.Equal(7, units.BeginCalls);
+        Assert.Equal(7, units.CommitCalls);
+        Assert.Equal(7, units.DisposeCalls);
+        Assert.Equal(7, units.Contexts.Distinct().Count());
         Assert.Equal(
             [
                 "begin:1", "page:1", "commit:1", "dispose:1",
@@ -161,6 +161,8 @@ public sealed class QuotaReconciliationWorkerTests
                 "begin:3", "fact:3", "commit:3", "dispose:3",
                 "begin:4", "sequences:4", "commit:4", "dispose:4",
                 "begin:5", "delivery:5", "commit:5", "dispose:5",
+                "begin:6", "projection:6", "commit:6", "dispose:6",
+                "begin:7", "fact:7", "commit:7", "dispose:7",
             ],
             operations);
         Assert.Equal(0, units.ActiveCount);
@@ -229,7 +231,10 @@ public sealed class QuotaReconciliationWorkerTests
         Assert.Equal(2, readers.PageCalls.Count);
         Assert.Null(readers.PageCalls[0].AfterGroupId);
         Assert.Equal(candidate.GroupId, readers.PageCalls[1].AfterGroupId);
-        Assert.Single(readers.ProjectionContexts);
+        Assert.Equal(2, readers.ProjectionContexts.Count);
+        Assert.Equal(2, readers.FactContexts.Count);
+        Assert.Single(readers.SequenceContexts);
+        Assert.Single(readers.DeliveryContexts);
     }
 
     [Fact]
@@ -392,6 +397,46 @@ public sealed class QuotaReconciliationWorkerTests
                 "poolai_quota_reconciliation_delta_tokens").Value);
     }
 
+    [Fact]
+    public async Task ThreePageLineageReusesFrozenSnapshotsAcrossThreeRounds()
+    {
+        GroupQuotaReconciliationCandidate candidate = Candidate(26);
+        RecordingUnitOfWorkFactory units = new([]);
+        ScriptedReaders readers = new(
+            units,
+            [],
+            [[candidate], [candidate], [candidate]]);
+        ConfigureThreePageCandidate(readers, candidate);
+        using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
+        QuotaReconciliationProcessor processor = Processor(
+            units,
+            readers,
+            NoOpOperationalEventWriter.Instance,
+            metrics);
+
+        QuotaReconciliationProcessResult first = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 2,
+            TestContext.Current.CancellationToken);
+        AssertFrozenContinuationRound(first, readers, completedPages: 1);
+        AssertPublishedDelta(metrics, 777d);
+
+        QuotaReconciliationProcessResult second = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 2,
+            TestContext.Current.CancellationToken);
+        AssertFrozenContinuationRound(second, readers, completedPages: 2);
+        AssertPublishedDelta(metrics, 777d);
+
+        QuotaReconciliationProcessResult completed = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 2,
+            TestContext.Current.CancellationToken);
+
+        AssertThreePageLineageCompleted(completed, readers, metrics);
+    }
+
     [Theory]
     [InlineData("fact")]
     [InlineData("checkpoint")]
@@ -412,35 +457,46 @@ public sealed class QuotaReconciliationWorkerTests
         ScriptedReaders readers = new(
             units,
             [],
-            [[original], [current]]);
-        ConfigureMultiPageCandidate(readers, original, 1000, 1000);
+            [[original], [current], [current], [current], []]);
+        bool changesAtFinalRevalidation = !string.Equals(
+            change,
+            "period",
+            StringComparison.Ordinal);
+        long currentCheckpoint = string.Equals(
+            change,
+            "checkpoint",
+            StringComparison.Ordinal)
+            ? 6
+            : 5;
+        ConfigureIdentityChangeScenario(
+            readers,
+            original,
+            changesAtFinalRevalidation,
+            currentCheckpoint);
         using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
         QuotaReconciliationProcessor processor = Processor(
             units,
             readers,
             NoOpOperationalEventWriter.Instance,
             metrics);
 
-        _ = await processor.ProcessAsync(
-            new ScriptedSessionLock(),
-            pageSize: 1,
-            TestContext.Current.CancellationToken);
-
-        ApplyIdentityChange(readers, original, current, change);
-
-        _ = await processor.ProcessAsync(
-            new ScriptedSessionLock(),
-            pageSize: 1,
-            TestContext.Current.CancellationToken);
-
-        Assert.Equal(
-            [0L, 0L],
-            readers.SequencePageCalls.Select(
-                static call => call.AfterSourceEventSequence));
-        Assert.Equal(
-            [null, null],
-            readers.PageCalls.Select(static call => call.AfterGroupId));
-        Assert.Equal(current.PeriodId, readers.SequencePageCalls[^1].PeriodId);
+        QuotaReconciliationProcessResult completed =
+            await RunIdentityChangeScenarioAsync(
+                processor,
+                readers,
+                metrics,
+                original,
+                current,
+                change,
+                changesAtFinalRevalidation);
+        AssertIdentityChangeRestartedCleanly(
+            completed,
+            readers,
+            original,
+            current,
+            changesAtFinalRevalidation,
+            currentCheckpoint);
     }
 
     [Fact]
@@ -506,7 +562,7 @@ public sealed class QuotaReconciliationWorkerTests
         ScriptedReaders readers = new(
             units,
             [],
-            [[failed, survivor], []]);
+            [[failed, survivor], [failed, survivor], []]);
         readers.Projections[failed.GroupId] = Projection(failed);
         readers.Facts[failed.GroupId] = Fact(failed);
         readers.Deliveries[failed.GroupId] = HealthyDelivery();
@@ -517,20 +573,24 @@ public sealed class QuotaReconciliationWorkerTests
             "must-not-leak-sequence-secret");
         RecordingOperationalEventWriter events = new();
         using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
         QuotaReconciliationProcessor processor = Processor(
             units,
             readers,
             events,
             metrics);
 
-        QuotaReconciliationProcessResult result = await processor.ProcessAsync(
+        QuotaReconciliationProcessResult failedRound = await processor.ProcessAsync(
             new ScriptedSessionLock(),
             pageSize: 2,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(2, result.ScannedCount);
-        Assert.Equal(1, result.Metrics.AuthoritativeMismatchedGroups);
-        Assert.Equal(0, result.Metrics.DeliveryMismatchedGroups);
+        AssertContinuationFailureStopsPass(
+            failedRound,
+            readers,
+            failed,
+            metrics,
+            deliveryAttempted: false);
         OperationalEvent failure = Assert.Single(events.Events);
         Assert.Equal(
             "usage.quota_reconciliation_authoritative_failure",
@@ -542,8 +602,100 @@ public sealed class QuotaReconciliationWorkerTests
             "must-not-leak-sequence-secret",
             failure.Payload.GetRawText(),
             StringComparison.Ordinal);
-        Assert.Single(readers.DeliveryCalls);
-        Assert.Equal(survivor.GroupId, readers.DeliveryCalls[0].GroupId);
+
+        QuotaReconciliationProcessResult completed = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 2,
+            TestContext.Current.CancellationToken);
+
+        AssertRestartedPassCompletes(
+            completed,
+            readers,
+            failed,
+            survivor,
+            initialDeliveryAttempted: false);
+    }
+
+    [Fact]
+    public async Task FinalFactMissingDiscardsPassAndRestartsFromFirstPage()
+    {
+        GroupQuotaReconciliationCandidate candidate = Candidate(28);
+        RecordingUnitOfWorkFactory units = new([]);
+        ScriptedReaders readers = new(
+            units,
+            [],
+            [[candidate], [candidate], []]);
+        GroupQuotaReconciliationFactSnapshot fact = Fact(candidate);
+        readers.Projections[candidate.GroupId] = Projection(candidate);
+        readers.Facts[candidate.GroupId] = fact;
+        readers.FactReadResults[candidate.GroupId] = new(
+            [fact, null, fact, fact]);
+        readers.Deliveries[candidate.GroupId] = HealthyDelivery();
+        RecordingOperationalEventWriter events = new();
+        using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
+        QuotaReconciliationProcessor processor = Processor(
+            units,
+            readers,
+            events,
+            metrics);
+
+        QuotaReconciliationProcessResult missing = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken);
+
+        AssertFinalReadRestarted(missing, readers, metrics);
+        OperationalEvent failure = Assert.Single(events.Events);
+        Assert.Equal(
+            "candidate_fact_missing",
+            failure.Payload.GetProperty("classification").GetString());
+
+        QuotaReconciliationProcessResult completed = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken);
+
+        AssertCleanPassAfterFinalReadRestart(completed, readers, candidate);
+        Assert.Empty(readers.FactReadResults[candidate.GroupId]);
+    }
+
+    [Fact]
+    public async Task FinalTransientFactFailureRestartsFromFirstPage()
+    {
+        GroupQuotaReconciliationCandidate candidate = Candidate(29);
+        RecordingUnitOfWorkFactory units = new([]);
+        ScriptedReaders readers = new(
+            units,
+            [],
+            [[candidate], [candidate], []]);
+        ConfigureHealthyCandidate(readers, candidate);
+        readers.FactReadFailures[candidate.GroupId] = new(
+            [null, new TimeoutException("final fact read timed out")]);
+        using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
+        QuotaReconciliationProcessor processor = Processor(
+            units,
+            readers,
+            NoOpOperationalEventWriter.Instance,
+            metrics);
+
+        TimeoutException failure = await Assert.ThrowsAsync<TimeoutException>(
+            () => processor.ProcessAsync(
+                new ScriptedSessionLock(),
+                pageSize: 1,
+                TestContext.Current.CancellationToken).AsTask());
+
+        Assert.Equal("final fact read timed out", failure.Message);
+        AssertFinalReadRestarted(null, readers, metrics);
+
+        QuotaReconciliationProcessResult completed = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken);
+
+        AssertCleanPassAfterFinalReadRestart(completed, readers, candidate);
+        Assert.Empty(readers.FactReadFailures[candidate.GroupId]);
     }
 
     [Fact]
@@ -672,8 +824,16 @@ public sealed class QuotaReconciliationWorkerTests
     {
         GroupQuotaReconciliationCandidate candidate = Candidate(10);
         GroupQuotaReconciliationCandidate survivor = Candidate(11);
+        bool restartsPass = string.Equals(
+            layer,
+            "delivery",
+            StringComparison.Ordinal);
         RecordingUnitOfWorkFactory units = new([]);
-        ScriptedReaders readers = new(units, [], [[candidate, survivor], []]);
+        IReadOnlyList<IReadOnlyList<GroupQuotaReconciliationCandidate>> pages =
+            restartsPass
+                ? [[candidate, survivor], [candidate, survivor], []]
+                : [[candidate, survivor], []];
+        ScriptedReaders readers = new(units, [], pages);
         readers.Projections[candidate.GroupId] = Projection(candidate);
         readers.Facts[candidate.GroupId] = Fact(candidate);
         readers.Deliveries[candidate.GroupId] = HealthyDelivery();
@@ -683,6 +843,7 @@ public sealed class QuotaReconciliationWorkerTests
         ConfigureInvariantFailure(readers, layer, exceptionKind);
         RecordingOperationalEventWriter events = new();
         using QuotaReconciliationMetrics metrics = new();
+        metrics.Publish(SentinelMetrics());
         QuotaReconciliationProcessor processor = Processor(
             units,
             readers,
@@ -695,27 +856,27 @@ public sealed class QuotaReconciliationWorkerTests
             TestContext.Current.CancellationToken);
 
         Assert.False(result.OwnershipLost);
-        Assert.Equal(2, result.PageCount);
-        Assert.Equal(2, result.ScannedCount);
-        AssertInvariantFailureMetrics(result.Metrics, metrics, layer);
-        OperationalEvent failure = Assert.Single(events.Events);
-        Assert.Equal(InvariantFailureEventName(layer), failure.Name);
-        Assert.False(failure.Token.CanBeCanceled);
-        Assert.Equal("P0", failure.Payload.GetProperty("severity").GetString());
-        Assert.Equal(layer, failure.Payload.GetProperty("layer").GetString());
-        Assert.Equal(
-            InvariantFailureClassification(layer),
-            failure.Payload.GetProperty("classification").GetString());
-        Assert.Equal(
-            ["classification", "group_id", "layer", "period_id", "severity"],
-            failure.Payload.EnumerateObject()
-                .Select(static property => property.Name)
-                .Order(StringComparer.Ordinal)
-                .ToArray());
-        Assert.DoesNotContain(
-            "must-not-leak-secret",
-            failure.Payload.GetRawText(),
-            StringComparison.Ordinal);
+        if (restartsPass)
+        {
+            AssertContinuationFailureStopsPass(result, readers, candidate, metrics);
+            QuotaReconciliationProcessResult completed = await processor.ProcessAsync(
+                new ScriptedSessionLock(),
+                pageSize: 2,
+                TestContext.Current.CancellationToken);
+            AssertRestartedPassCompletes(
+                completed,
+                readers,
+                candidate,
+                survivor);
+        }
+        else
+        {
+            Assert.Equal(2, result.PageCount);
+            Assert.Equal(2, result.ScannedCount);
+            AssertInvariantFailureMetrics(result.Metrics, metrics, layer);
+        }
+
+        AssertInvariantFailureEvent(events, layer);
     }
 
     private static void ConfigureInvariantFailure(
@@ -776,6 +937,136 @@ public sealed class QuotaReconciliationWorkerTests
                 "poolai_quota_reconciliation_mismatched_groups",
                 StringComparison.Ordinal)
                 && reading.Value > 0));
+    }
+
+    private static void AssertContinuationFailureStopsPass(
+        QuotaReconciliationProcessResult result,
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate candidate,
+        QuotaReconciliationMetrics metrics,
+        bool deliveryAttempted = true)
+    {
+        Assert.Equal(1, result.PageCount);
+        Assert.Equal(1, result.ScannedCount);
+        Assert.Equal(0, result.Metrics.DeliveryMismatchedGroups);
+        Assert.Equal(
+            [null],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(
+            [candidate.GroupId],
+            readers.SequencePageCalls.Select(static call => call.GroupId));
+        Assert.Single(readers.ProjectionContexts);
+        Assert.Single(readers.FactContexts);
+        if (deliveryAttempted)
+        {
+            Assert.Equal(
+                [candidate.GroupId],
+                readers.DeliveryCalls.Select(static call => call.GroupId));
+        }
+        else
+        {
+            Assert.Empty(readers.DeliveryCalls);
+        }
+
+        AssertPublishedDelta(metrics, 777d);
+    }
+
+    private static void AssertRestartedPassCompletes(
+        QuotaReconciliationProcessResult completed,
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate candidate,
+        GroupQuotaReconciliationCandidate survivor,
+        bool initialDeliveryAttempted = true)
+    {
+        Assert.False(completed.OwnershipLost);
+        Assert.Equal(2, completed.PageCount);
+        Assert.Equal(2, completed.ScannedCount);
+        Assert.Equal(0, completed.Metrics.AuthoritativeMismatchedGroups);
+        Assert.Equal(0, completed.Metrics.DeliveryMismatchedGroups);
+        Assert.Equal(
+            [null, null, survivor.GroupId],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(
+            [candidate.GroupId, candidate.GroupId, survivor.GroupId],
+            readers.SequencePageCalls.Select(static call => call.GroupId));
+        IReadOnlyList<EntityId> expectedDeliveryGroups = initialDeliveryAttempted
+            ? [candidate.GroupId, candidate.GroupId, survivor.GroupId]
+            : [candidate.GroupId, survivor.GroupId];
+        Assert.Equal(
+            expectedDeliveryGroups,
+            readers.DeliveryCalls.Select(static call => call.GroupId));
+    }
+
+    private static void AssertInvariantFailureEvent(
+        RecordingOperationalEventWriter events,
+        string layer)
+    {
+        OperationalEvent failure = Assert.Single(events.Events);
+        Assert.Equal(InvariantFailureEventName(layer), failure.Name);
+        Assert.False(failure.Token.CanBeCanceled);
+        Assert.Equal("P0", failure.Payload.GetProperty("severity").GetString());
+        Assert.Equal(layer, failure.Payload.GetProperty("layer").GetString());
+        Assert.Equal(
+            InvariantFailureClassification(layer),
+            failure.Payload.GetProperty("classification").GetString());
+        Assert.Equal(
+            ["classification", "group_id", "layer", "period_id", "severity"],
+            failure.Payload.EnumerateObject()
+                .Select(static property => property.Name)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.DoesNotContain(
+            "must-not-leak-secret",
+            failure.Payload.GetRawText(),
+            StringComparison.Ordinal);
+    }
+
+    private static void AssertFinalReadRestarted(
+        QuotaReconciliationProcessResult? result,
+        ScriptedReaders readers,
+        QuotaReconciliationMetrics metrics)
+    {
+        if (result is not null)
+        {
+            Assert.False(result.OwnershipLost);
+            Assert.Equal(1, result.PageCount);
+            Assert.Equal(1, result.ScannedCount);
+            Assert.Equal(0, result.Metrics.AuthoritativeMismatchedGroups);
+        }
+
+        Assert.Equal(
+            [null],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(
+            [0L],
+            readers.SequencePageCalls.Select(
+                static call => call.AfterSourceEventSequence));
+        Assert.Single(readers.DeliveryCalls);
+        Assert.Equal(2, readers.ProjectionContexts.Count);
+        Assert.Equal(2, readers.FactContexts.Count);
+        AssertPublishedDelta(metrics, 777d);
+    }
+
+    private static void AssertCleanPassAfterFinalReadRestart(
+        QuotaReconciliationProcessResult completed,
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate candidate)
+    {
+        Assert.False(completed.OwnershipLost);
+        Assert.Equal(2, completed.PageCount);
+        Assert.Equal(1, completed.ScannedCount);
+        Assert.Equal(0, completed.Metrics.AuthoritativeMismatchedGroups);
+        Assert.Equal(0, completed.Metrics.DeliveryMismatchedGroups);
+        Assert.Equal(
+            [null, null, candidate.GroupId],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(
+            [0L, 0L],
+            readers.SequencePageCalls.Select(
+                static call => call.AfterSourceEventSequence));
+        Assert.Equal(2, readers.DeliveryCalls.Count);
+        Assert.Equal(4, readers.ProjectionContexts.Count);
+        Assert.Equal(4, readers.FactContexts.Count);
     }
 
     private static string InvariantFailureEventName(string layer) => layer switch
@@ -927,6 +1218,188 @@ public sealed class QuotaReconciliationWorkerTests
         readers.DeliveryPages[candidate.GroupId] = new(
             deliveryPageCounts.Select(
                 static count => HealthyDelivery(count)));
+    }
+
+    private static void ConfigureThreePageCandidate(
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate candidate)
+    {
+        readers.Projections[candidate.GroupId] = Projection(candidate);
+        readers.Facts[candidate.GroupId] = Fact(
+            candidate,
+            latestPeriodEventSequence: 2500,
+            periodEventCount: 2500);
+        readers.Deliveries[candidate.GroupId] = HealthyDelivery(2500);
+        readers.DeliveryPages[candidate.GroupId] = new(
+            [
+                HealthyDelivery(1000),
+                HealthyDelivery(1000),
+                HealthyDelivery(500),
+            ]);
+    }
+
+    private static void AssertFrozenContinuationRound(
+        QuotaReconciliationProcessResult result,
+        ScriptedReaders readers,
+        int completedPages)
+    {
+        Assert.False(result.OwnershipLost);
+        Assert.Equal(1, result.PageCount);
+        Assert.Equal(1, result.ScannedCount);
+        Assert.Single(readers.ProjectionContexts);
+        Assert.Single(readers.FactContexts);
+        Assert.Equal(completedPages, readers.SequencePageCalls.Count);
+        Assert.Equal(completedPages, readers.DeliveryCalls.Count);
+    }
+
+    private static void AssertThreePageLineageCompleted(
+        QuotaReconciliationProcessResult completed,
+        ScriptedReaders readers,
+        QuotaReconciliationMetrics metrics)
+    {
+        Assert.False(completed.OwnershipLost);
+        Assert.Equal(1, completed.PageCount);
+        Assert.Equal(1, completed.ScannedCount);
+        Assert.Equal(2, readers.ProjectionContexts.Count);
+        Assert.Equal(2, readers.FactContexts.Count);
+        Assert.Equal(3, readers.SequencePageCalls.Count);
+        Assert.Equal(3, readers.DeliveryCalls.Count);
+        Assert.Equal(
+            [null, null, null],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(
+            [0L, 1000L, 2000L],
+            readers.SequencePageCalls.Select(
+                static call => call.AfterSourceEventSequence));
+        Assert.All(
+            readers.SequencePageCalls,
+            static call =>
+            {
+                Assert.Equal(2500, call.ThroughSourceEventSequence);
+                Assert.Equal(1000, call.MaximumCount);
+            });
+        Assert.Equal(
+            [1000, 1000, 500],
+            readers.DeliveryCalls.Select(
+                static call => call.ExpectedSourceEventSequences.Count));
+        Assert.Equal(
+            [5L, 5L, 5L],
+            readers.DeliveryCalls.Select(
+                static call => call.CheckpointSourceEventSequence));
+        Assert.NotEqual(
+            777d,
+            Metric(
+                ObserveMetrics(metrics),
+                "poolai_quota_reconciliation_delta_tokens").Value);
+    }
+
+    private static void ConfigureIdentityChangeScenario(
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate original,
+        bool changesAtFinalRevalidation,
+        long currentCheckpoint)
+    {
+        ConfigureMultiPageCandidate(readers, original);
+        readers.DeliveryPages[original.GroupId] = new(
+            changesAtFinalRevalidation
+                ? [
+                    MissingOriginalDelivery(1000),
+                    HealthyDelivery(500),
+                    HealthyDelivery(1000),
+                    HealthyDelivery(500),
+                ]
+                : [
+                    MissingOriginalDelivery(1000),
+                    HealthyDelivery(1000),
+                    HealthyDelivery(500),
+                ]);
+        readers.ExpectedDeliveryCheckpoints[original.GroupId] = new(
+            changesAtFinalRevalidation
+                ? [5, 5, currentCheckpoint, currentCheckpoint]
+                : [5, currentCheckpoint, currentCheckpoint]);
+    }
+
+    private static async Task<QuotaReconciliationProcessResult>
+        RunIdentityChangeScenarioAsync(
+        QuotaReconciliationProcessor processor,
+        ScriptedReaders readers,
+        QuotaReconciliationMetrics metrics,
+        GroupQuotaReconciliationCandidate original,
+        GroupQuotaReconciliationCandidate current,
+        string change,
+        bool changesAtFinalRevalidation)
+    {
+        QuotaReconciliationProcessResult initial = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        AssertFrozenContinuationRound(initial, readers, completedPages: 1);
+        ApplyIdentityChange(readers, original, current, change);
+
+        QuotaReconciliationProcessResult changed = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        Assert.Equal(1, changed.PageCount);
+        Assert.Equal(changesAtFinalRevalidation ? 1 : 0, changed.ScannedCount);
+        Assert.Equal(
+            changesAtFinalRevalidation ? 2 : 1,
+            readers.ProjectionContexts.Count);
+        AssertPublishedDelta(metrics, 777d);
+
+        QuotaReconciliationProcessResult restarted = await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        Assert.Equal(1, restarted.PageCount);
+        Assert.Equal(1, restarted.ScannedCount);
+        Assert.Equal(
+            changesAtFinalRevalidation ? 3 : 2,
+            readers.ProjectionContexts.Count);
+        AssertPublishedDelta(metrics, 777d);
+
+        return await processor.ProcessAsync(
+            new ScriptedSessionLock(),
+            pageSize: 1,
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AssertIdentityChangeRestartedCleanly(
+        QuotaReconciliationProcessResult completed,
+        ScriptedReaders readers,
+        GroupQuotaReconciliationCandidate original,
+        GroupQuotaReconciliationCandidate current,
+        bool changesAtFinalRevalidation,
+        long currentCheckpoint)
+    {
+        Assert.False(completed.OwnershipLost);
+        Assert.Equal(2, completed.PageCount);
+        Assert.Equal(1, completed.ScannedCount);
+        Assert.Equal(
+            changesAtFinalRevalidation
+                ? [0L, 1000L, 0L, 1000L]
+                : [0L, 0L, 1000L],
+            readers.SequencePageCalls.Select(
+                static call => call.AfterSourceEventSequence));
+        Assert.Equal(
+            [null, null, null, null, current.GroupId],
+            readers.PageCalls.Select(static call => call.AfterGroupId));
+        Assert.Equal(current.PeriodId, readers.SequencePageCalls[^1].PeriodId);
+        Assert.Equal(
+            changesAtFinalRevalidation ? 4 : 3,
+            readers.ProjectionContexts.Count);
+        Assert.Equal(
+            readers.ProjectionContexts.Count,
+            readers.FactContexts.Count);
+        Assert.Equal(
+            changesAtFinalRevalidation
+                ? [5L, 5L, currentCheckpoint, currentCheckpoint]
+                : [5L, currentCheckpoint, currentCheckpoint],
+            readers.DeliveryCalls.Select(
+                static call => call.CheckpointSourceEventSequence));
+        Assert.Empty(readers.ExpectedDeliveryCheckpoints[original.GroupId]);
+        Assert.Equal(0, completed.Metrics.AuthoritativeMismatchedGroups);
+        Assert.Equal(0, completed.Metrics.DeliveryMismatchedGroups);
     }
 
     private static void ConfigureHealthyCandidate(
@@ -1159,6 +1632,21 @@ public sealed class QuotaReconciliationWorkerTests
         blockingSourceEventSequence: null,
         CheckedAt);
 
+    private static QuotaDeliveryHealthSnapshot MissingOriginalDelivery(
+        long originalCount) => new(
+        originalCount,
+        missingOriginalCount: 1,
+        duplicateOriginalCount: 0,
+        pendingLineageCount: 0,
+        processingLineageCount: 0,
+        deadLineageCount: 0,
+        expectedInboxReceiptCount: originalCount,
+        missingInboxReceiptCount: 0,
+        conflictingInboxReceiptCount: 0,
+        oldestUnresolvedAgeSeconds: 1,
+        blockingSourceEventSequence: 1,
+        CheckedAt);
+
     private static EntityId Id(string value) => new(Guid.Parse(value));
 
     private static QuotaReconciliationProcessResult EmptyProcessResult() => new(
@@ -1231,11 +1719,22 @@ public sealed class QuotaReconciliationWorkerTests
             Facts
         { get; } = [];
 
+        internal Dictionary<
+            EntityId,
+            Queue<GroupQuotaReconciliationFactSnapshot?>> FactReadResults
+        { get; } = [];
+
+        internal Dictionary<EntityId, Queue<Exception?>> FactReadFailures
+        { get; } = [];
+
         internal Dictionary<EntityId, QuotaDeliveryHealthSnapshot> Deliveries
         { get; } = [];
 
         internal Dictionary<EntityId, Queue<QuotaDeliveryHealthSnapshot>>
             DeliveryPages
+        { get; } = [];
+
+        internal Dictionary<EntityId, Queue<long>> ExpectedDeliveryCheckpoints
         { get; } = [];
 
         internal Exception? ProjectionFailure { get; set; }
@@ -1320,14 +1819,34 @@ public sealed class QuotaReconciliationWorkerTests
             TestUnitOfWorkContext context = _units.AssertActive(unitOfWorkContext);
             _operations.Add($"fact:{context.Sequence}");
             FactContexts.Add(unitOfWorkContext);
+            if (FactReadFailures.TryGetValue(
+                    groupId,
+                    out Queue<Exception?>? failures)
+                && failures.Count > 0
+                && failures.Dequeue() is { } scriptedFailure)
+            {
+                throw scriptedFailure;
+            }
+
             if (FactFailure is { } factFailure)
             {
                 FactFailure = null;
                 throw factFailure;
             }
 
-            GroupQuotaReconciliationFactSnapshot? fact = Facts[groupId];
-            Assert.NotNull(fact);
+            GroupQuotaReconciliationFactSnapshot? fact =
+                FactReadResults.TryGetValue(
+                    groupId,
+                    out Queue<GroupQuotaReconciliationFactSnapshot?>? results)
+                && results.Count > 0
+                    ? results.Dequeue()
+                    : Facts[groupId];
+            if (fact is null)
+            {
+                return ValueTask.FromResult<
+                    GroupQuotaReconciliationFactSnapshot?>(null);
+            }
+
             Assert.Equal(periodId, fact.PeriodId);
             Assert.Equal(
                 checkpointSourceEventSequence,
@@ -1392,8 +1911,14 @@ public sealed class QuotaReconciliationWorkerTests
             TestUnitOfWorkContext context = _units.AssertActive(unitOfWorkContext);
             _operations.Add($"delivery:{context.Sequence}");
             DeliveryContexts.Add(unitOfWorkContext);
+            long expectedCheckpoint = ExpectedDeliveryCheckpoints.TryGetValue(
+                groupId,
+                out Queue<long>? checkpoints)
+                && checkpoints.Count > 0
+                ? checkpoints.Dequeue()
+                : Projections[groupId].CheckpointSourceEventSequence;
             Assert.Equal(
-                Projections[groupId].CheckpointSourceEventSequence,
+                expectedCheckpoint,
                 checkpointSourceEventSequence);
             DeliveryCalls.Add(new(
                 groupId,

@@ -255,13 +255,19 @@ Continuous scanning runs only in `PoolAI.Worker` as the versioned job
 `WorkerJobs.QuotaReconciliation`. One dedicated PostgreSQL session advisory lock
 provides single active ownership and crash takeover. Work is bounded by stable
 keyset batches; it must not materialize all Groups or retained event history on
-every poll. At most one candidate lineage continuation is retained globally, and
-one candidate visit reads at most one 1000-identity page. An incomplete lineage
-does not advance the Group cursor or scan a later candidate, and metrics are
-published only after the complete Group keyset pass finishes. Lock ownership loss
-or any Group/period/fact/checkpoint identity change discards the partial
-continuation and unpublished pass aggregate before a restart from the beginning
-of that candidate. `PoolAI.Api` serves the on-demand query but never starts this
+every poll. At the start of a candidate lineage, the Worker freezes the complete
+projection/fact snapshot and its Group/period/fact/checkpoint identity in the
+continuation. At most one candidate lineage continuation is retained globally,
+and every candidate visit reads at most one 1000-identity page. Intermediate
+visits reuse that frozen snapshot and must not rescan the complete selected period
+for every page. An incomplete lineage does not advance the Group cursor or scan a
+later candidate. Immediately before completing the candidate and publishing its
+metrics, the Worker exactly rereads the projection/fact snapshot and compares its
+Group/period/fact/checkpoint identity with the frozen identity. Lock ownership
+loss, an incomplete-lineage invariant failure, a missing or failed final reread,
+or any identity change discards the partial continuation, Group cursor, and
+unpublished pass aggregate before restarting the complete candidate keyset pass
+from the beginning. `PoolAI.Api` serves the on-demand query but never starts this
 loop.
 
 The scanner is read-only. It does not adjust consumed/reserved/total, synthesize
