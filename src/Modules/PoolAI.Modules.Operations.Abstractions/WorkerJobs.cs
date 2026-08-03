@@ -14,6 +14,9 @@ public static class WorkerJobs
     public static WorkerJobIdentity UsageRebuild { get; } =
         new("poolai:r1:worker:usage-rebuild:v1");
 
+    public static WorkerJobIdentity QuotaReconciliation { get; } =
+        new("poolai:r1:worker:quota-reconciliation:v1");
+
     public static WorkerJobIdentity EmailOutboxSender { get; } =
         new("poolai:r1:worker:email-outbox-sender:v1");
 

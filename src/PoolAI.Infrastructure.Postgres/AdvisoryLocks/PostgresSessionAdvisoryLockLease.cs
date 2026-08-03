@@ -1,4 +1,6 @@
+using System.Data;
 using Npgsql;
+using PoolAI.BuildingBlocks;
 
 namespace PoolAI.Infrastructure.Postgres;
 
@@ -45,6 +47,44 @@ internal sealed class PostgresSessionAdvisoryLockLease : IAsyncDisposable
         finally
         {
             _lifecycleGate.Release();
+        }
+    }
+
+    internal async ValueTask<IUnitOfWork?> TryBeginFencedUnitOfWorkAsync(
+        CancellationToken cancellationToken)
+    {
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        bool connectionLeaseTransferred = false;
+        try
+        {
+            NpgsqlConnection? current = _connection;
+            if (current is null || current.FullState != ConnectionState.Open)
+            {
+                return null;
+            }
+
+            try
+            {
+                var transaction = await current
+                    .BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                    .ConfigureAwait(false);
+                connectionLeaseTransferred = true;
+                return new PostgresUnitOfWork(
+                    current,
+                    transaction,
+                    () => _lifecycleGate.Release());
+            }
+            catch (NpgsqlException)
+            {
+                return null;
+            }
+        }
+        finally
+        {
+            if (!connectionLeaseTransferred)
+            {
+                _lifecycleGate.Release();
+            }
         }
     }
 

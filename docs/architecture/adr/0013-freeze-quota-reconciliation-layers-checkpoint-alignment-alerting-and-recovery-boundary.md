@@ -1,6 +1,6 @@
 # ADR 0013: Freeze quota-reconciliation layers, checkpoint alignment, alerting, and the recovery boundary
 
-- Status: **Accepted**
+- Status: **Proposed**
 - Date: 2026-08-03
 - Decider: PoolAI architecture, GroupQuota, Usage, Operations, public-contract, database, and security owner (`@Lyon1984`)
 - Relates to: [M3-E5 Issue #23](https://github.com/Lyon1984/PoolAI/issues/23), ADR 0002, ADR 0012, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
@@ -10,7 +10,7 @@
 - Target OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055395)
-- Architecture approval evidence: [Issue #44 permanent ADR 0013 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824)
+- Architecture approval evidence: **Pending superseding approval**; the [previous approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160040824) remains permanent history but binds only candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af` and is superseded for the expanded decision text below.
 - Database/no-migration approval evidence: [Issue #44 permanent database boundary approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5160055552)
 - Allowed diagnostic: `#/paths/~1api~1v1~1admin~1groups~1{groupId}~1quota~1reconciliation/get/responses/400: new response status was added to an existing operation`
 
@@ -66,11 +66,15 @@ explicit control-plane action and keeps the detector read-only.
 
 ## Decision
 
-This decision became effective when `@Lyon1984` approved exact candidate
-`e4fea33d517c436e5f26f75d79dd675fd8aa63af` through the permanent architecture,
-OpenAPI compatibility-window, and database/no-migration evidence linked above.
-Those approvals are limited to the exact hashes, base, and diagnostic recorded
-here and cannot waive another contract gate.
+This revised decision is not yet effective. The previous architecture approval
+binds only exact candidate `e4fea33d517c436e5f26f75d79dd675fd8aa63af`
+and does not approve the later exact-period lineage, closed-period checkpoint,
+API/Worker ownership, or bounded-rebuild clarifications. A new permanent
+architecture approval must bind the final exact candidate before this ADR returns
+to `Accepted`. The independently approved OpenAPI compatibility window and
+database/no-migration boundary remain valid only for their unchanged exact hashes,
+base, diagnostic, and migration bounds; they cannot waive the superseding
+architecture gate.
 
 ### Three independent reconciliation layers
 
@@ -93,9 +97,11 @@ Group and period, one short PostgreSQL read snapshot computes:
 - `reserved_variance = ledger_reserved_tokens - pending_reservation_tokens`;
 - whether the latest validated quota-event state for the period agrees with the
   period total and the current quota consumed/reserved counters;
-- whether each fact-producing transaction has the required quota event; Operations
-  separately correlates that event identity with immutable original Outbox lineage,
-  without treating a later replay as a new fact; and
+- whether each fact-producing transaction has the required quota event; GroupQuota
+  exposes the selected period's exact event-sequence identities through bounded,
+  strictly ordered keyset pages, and Operations separately correlates every identity
+  with exactly one immutable original Outbox lineage without treating a later replay
+  as a new fact; and
 - duplicate identity, cross-Group/period reference, non-canonical integer, and
   PostgreSQL `numeric(78,0)` boundary violations.
 
@@ -145,9 +151,11 @@ The comparison point is exactly the watermark's logical
 selected period at that checkpoint from the latest validated
 `group_quota_events.consumed_tokens_after` whose logical event sequence is less
 than or equal to the checkpoint. A later event is excluded even if it committed
-before the reconciliation request. Because quota events are immutable and the
-Usage projection/checkpoint commit is atomic, the two contexts do not need a
-shared transaction for this historical comparison.
+before the reconciliation request. When a Group checkpoint has already advanced
+into a later period, a selected closed period is clamped to its own last event;
+that normal historical query is not a checkpoint-ahead failure. Because quota
+events are immutable and the Usage projection/checkpoint commit is atomic, the
+two contexts do not need a shared transaction for this historical comparison.
 
 The Layer 2 variance is:
 
@@ -176,13 +184,13 @@ existing v1 response requirement. Its closed object contains:
 Status classification has this precedence:
 
 1. `blocked` when Layer 1/event-chain validation failed, the checkpoint is ahead
-   of the latest logical source sequence, or a safe checkpoint expectation
-   cannot be established;
+   of the latest logical source sequence for the Group as a whole, or a safe
+   checkpoint expectation cannot be established;
 2. `not_started` when no `usage-hourly-v1` watermark exists or its initial
    checkpoint has not accepted a quota event;
 3. `mismatched` when the exact checkpoint-aligned variance is non-zero;
 4. `lagging` when the checkpoint-aligned variance is zero but the checkpoint is
-   behind the latest logical source sequence; and
+   behind the selected period's latest logical source sequence; and
 5. `reconciled` only when the checkpoint-aligned variance is zero and the
    checkpoint has caught up to the latest logical source sequence.
 
@@ -205,14 +213,35 @@ Layer 2 mismatch. Structured diagnostics may carry bounded Group/period/message
 identifiers needed by an authorized operator, but those identifiers never become
 metric labels.
 
+For every exact selected-period logical source identity at or below the accepted
+`usage-hourly-v1` checkpoint, Operations also requires one exact durable Inbox
+receipt on any physical message in that logical lineage: the original or a replay.
+The narrow reader verifies the literal consumer name, quota topic, physical Outbox
+`event_sequence`, and schema version. It does not parse payloads or return payload
+hashes; the existing Inbox appender remains responsible for the transactional
+payload-hash invariant. No receipt is required for a source identity newer than
+the checkpoint. A missing receipt or any receipt metadata conflict is a Layer 3
+P0 and contributes to the bounded blocking source identity and oldest diagnostic
+age without being reclassified as a Token variance.
+
 ### Runtime ownership and scheduling
 
 The HTTP route remains tagged `AdminGroups`, but the tag does not transfer domain
-ownership. Endpoint code calls a Usage Application query. The query composes:
+ownership. Endpoint code calls a Usage Application query. The on-demand API
+query composes:
 
 - a Usage-owned projection/checkpoint reader;
-- a narrow `GroupQuota.Abstractions` reconciliation-fact reader; and
-- a narrow Operations delivery-health reader.
+- a narrow `GroupQuota.Abstractions` reconciliation-fact reader.
+
+The API role deliberately cannot read Outbox/Inbox and the public response does
+not claim Layer 3 health. The continuous Worker scan additionally composes the
+narrow Operations delivery-health reader. It keyset-pages the exact
+selected-period source sequences from GroupQuota, submits only a bounded page of
+those identities to Operations, and correlates each with exactly one original
+Outbox lineage. A same-Group event from another period cannot fill a missing
+identity, and a duplicate original is an authoritative failure. Only envelope
+metadata is read; neither Usage nor GroupQuota parses or queries Operations
+persistence directly.
 
 No returned port exposes a repository, queryable, DbContext, SQL fragment, or
 mutable entity. Each reader uses its own short read UoW. No database transaction
@@ -223,7 +252,14 @@ Continuous scanning runs only in `PoolAI.Worker` as the versioned job
 `WorkerJobs.QuotaReconciliation`. One dedicated PostgreSQL session advisory lock
 provides single active ownership and crash takeover. Work is bounded by stable
 keyset batches; it must not materialize all Groups or retained event history on
-every poll. `PoolAI.Api` serves the on-demand query but never starts this loop.
+every poll. At most one candidate lineage continuation is retained globally, and
+one candidate visit reads at most one 1000-identity page. An incomplete lineage
+does not advance the Group cursor or scan a later candidate, and metrics are
+published only after the complete Group keyset pass finishes. Lock ownership loss
+or any Group/period/fact/checkpoint identity change discards the partial
+continuation and unpublished pass aggregate before a restart from the beginning
+of that candidate. `PoolAI.Api` serves the on-demand query but never starts this
+loop.
 
 The scanner is read-only. It does not adjust consumed/reserved/total, synthesize
 an event or Outbox row, change a reservation, rewrite a projection, rewind an
@@ -289,8 +325,8 @@ Alert classification is fixed as follows:
 - a non-zero checkpoint-aligned Layer 2 variance alerts after it remains non-zero
   for five minutes; the monitoring rule, rather than a new application table,
   owns the sustained window and recovery notification;
-- aggregation lag, unresolved Outbox backlog, and dead lineage alert separately
-  from projection mismatch;
+- aggregation lag, unresolved Outbox backlog, dead lineage, and checkpoint-covered
+  Inbox receipt faults alert separately from projection mismatch;
 - a reservation still pending more than 60 seconds after lease expiry is a
   critical recovery-SLO violation; and
 - overage without integrity damage is a capacity warning, not an integrity P0.
@@ -315,11 +351,29 @@ projection, or delivery:
    Operators never directly UPDATE/DELETE counters, attempts, adjustments,
    reservations, quota events, Outbox, or Inbox rows.
 3. A projection-only mismatch may run a Usage-owned, single-Group/single-period,
-   fenced bounded rebuild. It recomputes and replaces derived buckets from
-   immutable facts at the current accepted checkpoint. It does not change a
-   GroupQuota fact, Inbox receipt, or checkpoint. A damaged checkpoint or Inbox
-   requires a separately reviewed fix-forward; M3-E5 does not add a general
-   rewind facility. M5-E1 retains ownership of general rebuild capability.
+   fenced bounded rebuild over at most 744 ordered exact UTC-hour buckets. It
+   requires the dedicated `poolai:r1:worker:usage-rebuild:v1` session lock, claims the existing
+   `usage-hourly-v1` checkpoint lease, and recomputes each bucket only from
+   immutable terminal facts and adjustments visible at that unchanged accepted
+   logical checkpoint. It replaces or deletes only the selected derived Group
+   and Account hourly rows. For each bucket it borrows a short PostgreSQL UoW from
+   the same session that owns the advisory lock, heartbeats the checkpoint
+   owner/version fence, writes or deletes the derived projection, and commits all
+   of those actions atomically. Lease expiry, owner/version takeover, or lock
+   session termination therefore rolls back the bucket and cannot leave a stale
+   projection write. It verifies the aligned variance before reporting completion.
+   It does not create, advance,
+   rewind, or otherwise change a checkpoint, GroupQuota fact, Outbox row, or
+   Inbox receipt. A missing/damaged checkpoint or Inbox requires a separately
+   reviewed fix-forward; M3-E5 does not add a general rewind facility. M5-E1
+   retains ownership of general rebuild capability.
+   The only production entry is a default-disabled, one-shot Worker mode selected
+   by `WorkerJobs:UsageRebuild:Enabled=true` with exact UUID `GroupId`/`PeriodId`
+   and exact UTC-hour `FirstBucketStart`/`LastBucketStart` values. That mode starts
+   no normal Worker loops, attempts the rebuild exactly once, stops the Host, and
+   exits non-zero for busy, ownership/lease loss, invalid authoritative state,
+   remaining variance, cancellation, or failure. Operators must return `Enabled`
+   to false or remove it before restarting the normal Worker.
 4. A delivery-only fault uses the existing owner/generation fences, retry, poison,
    and Admin Outbox replay boundary. Replay preserves logical
    `source_event_sequence`; it does not become a second usage fact.
@@ -455,15 +509,18 @@ The exact candidate must provide all of the following:
   projection/checkpoint snapshots, current and closed periods, checkpoint-aligned
   comparison, and no false mismatch from newer source events;
 - privileged fault injection for counter, fact, pending reservation, event,
-  Outbox, projection, checkpoint, duplicate, cross-Group, and numeric-boundary
-  discrepancies, with correct layer classification and no detector mutation;
+  Outbox, checkpoint-covered Inbox receipt, projection, checkpoint, duplicate,
+  cross-Group, and numeric-boundary discrepancies, with correct layer
+  classification and no detector mutation;
 - PostgreSQL 18 `EXPLAIN` evidence that normal scans and point reconciliation use
   existing indexes and do not scan unbounded published/event history;
-- Worker advisory-lock ownership, crash takeover, bounded batching, alert-sink
-  failure, and Api/Worker host-boundary tests;
+- Worker advisory-lock ownership, crash takeover, globally bounded cross-round
+  continuation, alert-sink failure, and Api/Worker host-boundary tests;
 - bounded projection rebuild and delivery replay tests proving only derived or
-  delivery state changes, plus a runbook exercise proving explicit Group disable,
-  evidence preservation, verification, and explicit re-enable; and
+  delivery state changes; same-session rollback tests for lease expiry,
+  owner/version takeover, and lock-session termination; default-disabled one-shot
+  entry tests; plus a runbook exercise proving explicit Group disable, evidence
+  preservation, verification, and explicit re-enable; and
 - the complete repository quality, architecture, contract, integration,
   end-to-end, security, and image-evidence gates for the exact candidate.
 
@@ -485,6 +542,7 @@ M3 Exit, RC, GA, or production acceptance.
 - `docs/database/README.md`
 - `docs/开发执行规格-v1.0.md`
 - `docs/release-manifest-v1.json`
-- `ops/runbooks/quota-reconciliation.md` and `ops/runbooks/README.md`
+- `ops/monitoring/quota-reconciliation-alert-rules-v1.json`,
+  `ops/runbooks/quota-reconciliation.md`, and `ops/runbooks/README.md`
 - Usage/GroupQuota/Operations Unit, Architecture, Contract, Integration,
   End-to-End, and Worker ownership tests

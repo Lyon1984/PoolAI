@@ -1,3 +1,5 @@
+using PoolAI.BuildingBlocks;
+
 namespace PoolAI.Modules.Operations.Abstractions;
 
 public interface IWorkerSessionLock : IAsyncDisposable
@@ -7,4 +9,8 @@ public interface IWorkerSessionLock : IAsyncDisposable
     long LockId { get; }
 
     ValueTask<bool> VerifyOwnershipAsync(CancellationToken cancellationToken);
+
+    ValueTask<IUnitOfWork?> TryBeginFencedUnitOfWorkAsync(
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult<IUnitOfWork?>(null);
 }

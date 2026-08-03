@@ -16,6 +16,7 @@ using PoolAI.Modules.SubscriptionAccess.Endpoints;
 using PoolAI.Modules.Supply;
 using PoolAI.Modules.Supply.Endpoints;
 using PoolAI.Modules.Usage;
+using PoolAI.Modules.Usage.Endpoints;
 using PoolAI.Api;
 using PoolAI.Infrastructure.Postgres;
 
@@ -77,6 +78,7 @@ app.MapUserGroupPoolEndpoints();
 app.MapApiKeyEndpoints();
 app.MapSupplyEndpoints();
 app.MapOutboxReplayEndpoints();
+app.MapQuotaReconciliationEndpoints();
 app.MapHealthChecks(
     "/health/live",
     new HealthCheckOptions { Predicate = _ => false });

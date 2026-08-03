@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "evaluation_interval_seconds": 30,
+  "rules": [
+    {
+      "id": "quota_projection_mismatch_sustained",
+      "metric": "poolai_quota_reconciliation_mismatched_groups",
+      "match_labels": {
+        "kind": "projection"
+      },
+      "comparison": "greater_than",
+      "threshold": 0,
+      "hold_seconds": 300,
+      "severity": "P1",
+      "layer": "projection",
+      "notify_on_resolved": true,
+      "runbook": "ops/runbooks/quota-reconciliation.md"
+    }
+  ]
+}

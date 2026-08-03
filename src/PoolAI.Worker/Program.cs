@@ -20,23 +20,33 @@ PoolAiRuntimeConfigurationValidator.Validate(
     builder.Environment.EnvironmentName,
     PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
 
-builder.Services
+IServiceCollection services = builder.Services
     .AddPoolAiPostgresRuntime(
         builder.Configuration["Data:Postgres:ConnectionString"]!,
         builder.Configuration.GetValue("Data:Postgres:CommandTimeoutSeconds", 30),
         builder.Configuration.GetValue("Data:Postgres:MaxPoolSize", 100))
     .AddIdentityModule()
-    .AddIdentityEmailOutboxWorker(builder.Configuration)
     .AddGroupQuotaModule()
-    .AddGroupQuotaReservationSweeper(builder.Configuration)
     .AddSupplyModule(
         builder.Configuration,
         builder.Environment.EnvironmentName)
-    .AddRoutingHealthModule(builder.Configuration)
-    .AddSupplyCredentialRewrapWorker(builder.Configuration)
     .AddUsageModule()
-    .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)
-    .AddOperationsOutboxPublisher(builder.Configuration);
+    .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName);
+if (builder.Configuration.GetValue("WorkerJobs:UsageRebuild:Enabled", false))
+{
+    services.AddUsageProjectionRebuildWorker(builder.Configuration);
+}
+else
+{
+    services
+        .AddRoutingHealthModule(builder.Configuration)
+        .AddIdentityEmailOutboxWorker(builder.Configuration)
+        .AddGroupQuotaReservationSweeper(builder.Configuration)
+        .AddSupplyCredentialRewrapWorker(builder.Configuration)
+        .AddOperationsOutboxPublisher(builder.Configuration)
+        .AddUsageQuotaReconciliationWorker();
+}
+
 builder.Services.AddPoolAiObservability(builder.Configuration);
 
 using IHost host = builder.Build();

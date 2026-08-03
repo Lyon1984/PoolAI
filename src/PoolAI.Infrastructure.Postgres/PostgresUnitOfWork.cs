@@ -6,17 +6,46 @@ namespace PoolAI.Infrastructure.Postgres;
 internal sealed class PostgresUnitOfWork : IUnitOfWork
 {
     private readonly NpgsqlConnection _connection;
+    private readonly bool _ownsConnection;
+    private readonly Action? _releaseConnectionLease;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly PostgresTransactionSession _session;
     private readonly NpgsqlTransaction _transaction;
+    private int _connectionLeaseReleased;
     private UnitOfWorkState _state;
 
     internal PostgresUnitOfWork(
         NpgsqlConnection connection,
-        NpgsqlTransaction transaction)
+        NpgsqlTransaction transaction) : this(
+            connection,
+            transaction,
+            ownsConnection: true,
+            releaseConnectionLease: null)
+    {
+    }
+
+    internal PostgresUnitOfWork(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Action releaseConnectionLease) : this(
+            connection,
+            transaction,
+            ownsConnection: false,
+            releaseConnectionLease ?? throw new ArgumentNullException(
+                nameof(releaseConnectionLease)))
+    {
+    }
+
+    private PostgresUnitOfWork(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        bool ownsConnection,
+        Action? releaseConnectionLease)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         _transaction = transaction ?? throw new ArgumentNullException(nameof(transaction));
+        _ownsConnection = ownsConnection;
+        _releaseConnectionLease = releaseConnectionLease;
         _session = new PostgresTransactionSession(connection, transaction);
         Context = _session;
     }
@@ -89,13 +118,22 @@ internal sealed class PostgresUnitOfWork : IUnitOfWork
                 }
                 finally
                 {
-                    await _connection.DisposeAsync().ConfigureAwait(false);
+                    if (_ownsConnection)
+                    {
+                        await _connection.DisposeAsync().ConfigureAwait(false);
+                    }
                 }
             }
         }
         finally
         {
             _state = UnitOfWorkState.Disposed;
+            if (_releaseConnectionLease is not null
+                && Interlocked.Exchange(ref _connectionLeaseReleased, 1) == 0)
+            {
+                _releaseConnectionLease();
+            }
+
             _lifecycleGate.Release();
         }
     }

@@ -7,7 +7,9 @@ using PoolAI.Modules.Usage.Application.Ports;
 
 namespace PoolAI.Modules.Usage.Infrastructure.Persistence;
 
-internal sealed class PostgresUsageHourlyProjectionWriter : IUsageHourlyProjectionWriter
+internal sealed class PostgresUsageHourlyProjectionWriter :
+    IUsageHourlyProjectionWriter,
+    IBoundedUsageProjectionWriter
 {
     private const string UpsertGroupSql = """
         INSERT INTO public.group_usage_hourly (
@@ -41,6 +43,20 @@ internal sealed class PostgresUsageHourlyProjectionWriter : IUsageHourlyProjecti
           AND period_id = $2
           AND bucket_start = $3
           AND NOT (account_id = ANY($4::uuid[]));
+        """;
+
+    private const string DeleteHourAccountsSql = """
+        DELETE FROM public.account_usage_hourly
+        WHERE group_id = $1
+          AND period_id = $2
+          AND bucket_start = $3;
+        """;
+
+    private const string DeleteHourGroupSql = """
+        DELETE FROM public.group_usage_hourly
+        WHERE group_id = $1
+          AND period_id = $2
+          AND bucket_start = $3;
         """;
 
     private const string UpsertAccountSql = """
@@ -114,6 +130,53 @@ internal sealed class PostgresUsageHourlyProjectionWriter : IUsageHourlyProjecti
         }
     }
 
+    public async ValueTask ReplaceOrDeleteAsync(
+        EntityId groupId,
+        EntityId periodId,
+        DateTimeOffset bucketStart,
+        UsageHourProjection? projection,
+        IUnitOfWorkContext unitOfWorkContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(unitOfWorkContext);
+        if (projection is not null)
+        {
+            if (projection.GroupId != groupId
+                || projection.PeriodId != periodId
+                || projection.BucketStart != bucketStart)
+            {
+                throw new ArgumentException(
+                    "The bounded Usage projection does not match its target bucket.",
+                    nameof(projection));
+            }
+
+            await ReplaceAsync(
+                projection,
+                unitOfWorkContext,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        PostgresTransactionSession session = PostgresUnitOfWorkAccessor.Require(
+            unitOfWorkContext);
+        using (NpgsqlCommand accounts = session.CreateCommand(DeleteHourAccountsSql))
+        {
+            AddBucketIdentity(accounts, groupId, periodId, bucketStart);
+            _ = await accounts.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        using NpgsqlCommand group = session.CreateCommand(DeleteHourGroupSql);
+        AddBucketIdentity(group, groupId, periodId, bucketStart);
+        int affected = await group.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (affected is < 0 or > 1)
+        {
+            throw new InvalidOperationException(
+                "The PostgreSQL Usage bounded delete violated its ABI.");
+        }
+    }
+
     private static void AddAggregate(
         NpgsqlParameterCollection parameters,
         UsageHourlyAggregate aggregate)
@@ -129,6 +192,17 @@ internal sealed class PostgresUsageHourlyProjectionWriter : IUsageHourlyProjecti
         AddNumeric(parameters, aggregate.CacheReadTokens);
         AddNumeric(parameters, aggregate.ThinkingTokens);
         AddNumeric(parameters, aggregate.TotalTokens);
+    }
+
+    private static void AddBucketIdentity(
+        NpgsqlCommand command,
+        EntityId groupId,
+        EntityId periodId,
+        DateTimeOffset bucketStart)
+    {
+        command.Parameters.AddWithValue(groupId.Value);
+        command.Parameters.AddWithValue(periodId.Value);
+        command.Parameters.AddWithValue(bucketStart);
     }
 
     private static void AddNumeric(
