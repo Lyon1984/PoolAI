@@ -158,6 +158,10 @@ public sealed partial class DependencyBoundaryTests
             "../../docs/database/0017_operations_outbox_query_scaling_m3_e4.sql",
             project,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "../../docs/database/0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql",
+            project,
+            StringComparison.Ordinal);
     }
 
     [Fact]

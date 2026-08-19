@@ -4,11 +4,13 @@
 
 这份声明只回答“在哪里、按什么形状、把证据归档到哪里”。它不表示物理环境已经提供，也不表示负载已经运行或通过：环境部署属于 M6-E3；第 8.2 节 11 个场景、每场景同一构建独立运行 3 次及其容量结论属于 M6-E2；Release Candidate 和生产验收继续受执行规格第 12.3 节约束。
 
+Proposed [`ADR 0014`](../architecture/adr/0014-separate-m3-repository-exit-from-release-load-certification.md) 只提议为 M3 Exit 定义一个真实 PostgreSQL 18、生产 GroupQuota port 的确定性 repository correctness gate，以解除“尚未实现的 M4 Gateway latency 必须先于 M4 认证”的循环依赖。该候选门不修改本目录的 plan/index，不具有 RPS、持续时间、Gateway SLO、参考硬件、同一构建三次或 Release asset 归档含义，也不能作为本节认证的部分通过证据。在 ADR 0014 获得 Issue #44 明确批准并转为 Accepted 前，该提议不生效，M3 Exit 和 M4-E1 仍保持阻断；即使以后获批，M6-E2 的完整物理认证也不减少任何场景、轮次或阈值。
+
 ## 环境与秘密边界
 
 - 认证环境使用非秘密逻辑标识 `r1.1-reference`，类型为专用预发布、生产等价拓扑；M0 状态保持 `not-provisioned`。
 - 私网主机名、IP、SSH/数据库/Redis/SMTP/OTLP 连接信息、云账号和 Secret Provider/KMS 标识不得写入本目录、项目记忆、公开 Release asset 或负载报告索引；脱敏配置摘要与原始指标也必须在归档前执行同一检查。
-- 本地 Compose 和共享开发依赖只能验证工程路径，不能自动充当第 8.2 节认证环境；实际环境必须在 M6 证明资源隔离、本地 SSD 和 RTT 等约束。
+- 本地 Compose、Testcontainers、GitHub Actions runner 和共享开发依赖只能验证工程或 M3 repository correctness 路径，不能自动充当第 8.2 节认证环境；实际环境必须在 M6 证明资源隔离、本地 SSD 和 RTT 等约束。
 
 ## 归档规则
 

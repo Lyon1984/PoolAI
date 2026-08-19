@@ -30,4 +30,4 @@ Accepted decisions:
 
 Proposed decisions:
 
-- None.
+- [`0014-separate-m3-repository-exit-from-release-load-certification.md`](0014-separate-m3-repository-exit-from-release-load-certification.md) — propose separating the real-PostgreSQL deterministic M3 repository correctness gate from the unchanged M6-E2 section 8.2 physical certification campaign; it remains non-effective and cannot authorize M3 Exit or M4 until `@Lyon1984` explicitly approves the exact candidate through Issue #44.
