@@ -1,4 +1,4 @@
-ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra@sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b
+ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.11-noble-chiseled-extra@sha256:c3ad730e0d886c5f5c1554048c88614811ea164e35ae3e8e06113a84a183f3d5
 FROM ${RUNTIME_IMAGE}
 
 ARG PUBLISH_DIR=artifacts/publish/PoolAI.Migrator
