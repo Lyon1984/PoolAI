@@ -425,7 +425,7 @@ public sealed class CrossContextSqlBoundaryTests
         Dictionary<string, string> adrBodies = adrFunctions
             .ToDictionary(
                 function => function,
-                function => Assert.Single(functions, definition => string.Equals(
+                function => functions.Last(definition => string.Equals(
                     definition.Name,
                     function,
                     StringComparison.Ordinal)).Body,
@@ -933,6 +933,8 @@ public sealed class CrossContextSqlBoundaryTests
     public void RegisteredCrossContextSqlPreservesLockAndPostWaitClockOrder()
     {
         Dictionary<string, string> quota = ReadFunctions("0002_quota_functions.sql");
+        Dictionary<string, string> dispatchCorrection = ReadFunctions(
+            "0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql");
         string reserve = NormalizeSql(quota["poolai_quota_reserve"]);
         AssertInOrder(
             reserve,
@@ -952,7 +954,12 @@ public sealed class CrossContextSqlBoundaryTests
                      "poolai_quota_adjust_usage",
                  })
         {
-            string body = NormalizeSql(quota[function]);
+            string body = NormalizeSql(string.Equals(
+                    function,
+                    "poolai_quota_mark_dispatched",
+                    StringComparison.Ordinal)
+                ? dispatchCorrection[function]
+                : quota[function]);
             AssertInOrder(
                 body,
                 "from group_token_quotas q",
@@ -962,6 +969,14 @@ public sealed class CrossContextSqlBoundaryTests
                 "for share of a, c",
                 "v_now := clock_timestamp()");
         }
+
+        AssertInOrder(
+            NormalizeSql(dispatchCorrection["poolai_quota_mark_dispatched"]),
+            "v_now := clock_timestamp()",
+            "v_reservation.lease_expires_at <= v_now",
+            "v_reservation.max_expires_at <= v_now",
+            "v_dispatch_at := greatest( v_now, v_reservation.created_at, v_reservation.updated_at )",
+            "set dispatch_started_at = v_dispatch_at");
 
         Dictionary<string, string> controlPlane =
             ReadFunctions("0007_group_subscription_m1_e4.sql");
@@ -1062,6 +1077,61 @@ public sealed class CrossContextSqlBoundaryTests
             Assert.DoesNotContain("when current_group.status", body, StringComparison.Ordinal);
             Assert.DoesNotContain("current_group.updated_at", body, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void M3ExitDispatchClockMigrationIsAnExact0002FunctionDelta()
+    {
+        string baseline = ReadFunctions("0002_quota_functions.sql")
+            ["poolai_quota_mark_dispatched"];
+        string expected = ReplaceExactlyOnce(
+            baseline,
+            "    v_now timestamptz;\n",
+            "    v_now timestamptz;\n    v_dispatch_at timestamptz;\n");
+        expected = ReplaceExactlyOnce(
+            expected,
+            """
+                IF v_reservation.max_expires_at <= v_now THEN
+                    PERFORM poolai_business_error('reservation_max_lifetime_reached');
+                END IF;
+
+                UPDATE group_token_reservations r
+            """,
+            """
+                IF v_reservation.max_expires_at <= v_now THEN
+                    PERFORM poolai_business_error('reservation_max_lifetime_reached');
+                END IF;
+
+                v_dispatch_at := greatest(
+                    v_now,
+                    v_reservation.created_at,
+                    v_reservation.updated_at
+                );
+
+                UPDATE group_token_reservations r
+            """);
+        expected = ReplaceExactlyOnce(
+            expected,
+            "    SET dispatch_started_at = v_now,",
+            "    SET dispatch_started_at = v_dispatch_at,");
+        expected = ReplaceExactlyOnce(
+            expected,
+            "        updated_at = v_now\n",
+            "        updated_at = v_dispatch_at\n");
+        expected = ReplaceExactlyOnce(
+            expected,
+            "            'dispatch_started_at', v_now\n",
+            "            'dispatch_started_at', v_dispatch_at\n");
+
+        string actual = ReadFunctions(
+            "0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql")
+            ["poolai_quota_mark_dispatched"];
+        Assert.Equal(expected, actual);
+        Assert.Equal(
+            "ce0a95bbb91961426fe90a3b46e993fa8d1f4a02cf0815ed2c6e6df2956f36c3",
+            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(actual))));
+        Assert.Contains("v_dispatch_at := greatest(", actual, StringComparison.Ordinal);
+        Assert.DoesNotContain("pg_catalog.greatest", actual, StringComparison.Ordinal);
     }
 
     private static Dictionary<string, string> ReadFunctions(string migration)
@@ -1755,6 +1825,17 @@ public sealed class CrossContextSqlBoundaryTests
             Assert.True(next >= position, $"Missing or out-of-order SQL fragment: {fragment}");
             position = next + fragment.Length;
         }
+    }
+
+    private static string ReplaceExactlyOnce(
+        string source,
+        string oldValue,
+        string newValue)
+    {
+        int index = source.IndexOf(oldValue, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Missing exact SQL delta source: {oldValue}");
+        Assert.Equal(index, source.LastIndexOf(oldValue, StringComparison.Ordinal));
+        return source.Replace(oldValue, newValue, StringComparison.Ordinal);
     }
 
     private static string NormalizeSql(string sql) =>
