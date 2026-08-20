@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-07-15",
+  "reviewedAt": "2026-08-20",
   "toolchains": {
-    "dotnetSdk": "10.0.302",
-    "dotnetRuntime": "10.0.10",
+    "dotnetSdk": "10.0.400",
+    "dotnetRuntime": "10.0.11",
     "node": "24.18.0",
     "pnpm": "11.13.0"
   },
@@ -59,17 +59,17 @@
     }
   },
   "containers": {
-    "dotnetSdk": "mcr.microsoft.com/dotnet/sdk:10.0.302-noble",
-    "dotnetAspNet": "mcr.microsoft.com/dotnet/aspnet:10.0.10-noble-chiseled-extra",
-    "dotnetRuntime": "mcr.microsoft.com/dotnet/runtime:10.0.10-noble-chiseled-extra",
+    "dotnetSdk": "mcr.microsoft.com/dotnet/sdk:10.0.400-noble",
+    "dotnetAspNet": "mcr.microsoft.com/dotnet/aspnet:10.0.11-noble-chiseled-extra",
+    "dotnetRuntime": "mcr.microsoft.com/dotnet/runtime:10.0.11-noble-chiseled-extra",
     "node": "node:24.18.0-bookworm-slim",
     "postgresql": "postgres:18.4-bookworm",
     "redis": "redis:8.8.0-alpine3.23",
     "mailpit": "axllent/mailpit:v1.30.4"
   },
   "containerDigests": {
-    "dotnetAspNet": "sha256:f9bd6be9b5ab75b8196bff0f0972580edaea7fa8ca04e6ef530950e33caee5b0",
-    "dotnetRuntime": "sha256:8afcb482ae0b9ab1511a228d352b937a3cfcac09a5dda342bbeda359884c750b",
+    "dotnetAspNet": "sha256:f5b3b2e2e548828d50e349726f51a5de001286f02c4bbde77db0dd34eb9f55ff",
+    "dotnetRuntime": "sha256:c3ad730e0d886c5f5c1554048c88614811ea164e35ae3e8e06113a84a183f3d5",
     "node": "sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
     "postgresql": "sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
     "redis": "sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005",
