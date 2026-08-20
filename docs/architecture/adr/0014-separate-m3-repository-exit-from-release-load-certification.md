@@ -1,11 +1,11 @@
 # ADR 0014: Separate M3 repository exit from Release 1 load certification
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-19
-- Decider: PoolAI architecture, GroupQuota, quality, performance, and release owner (`@Lyon1984`) — pending explicit approval
+- Decider: PoolAI architecture, GroupQuota, quality, performance, and release owner (`@Lyon1984`)
 - Relates to: M3 Exit, [M4-E1 Issue #24](https://github.com/Lyon1984/PoolAI/issues/24), [M6-E2 Issue #36](https://github.com/Lyon1984/PoolAI/issues/36), ADR 0002, ADR 0012, ADR 0013, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue #44 permanent ADR approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5352994972)
 
 ## Context
 
@@ -47,21 +47,22 @@ defect: PostgreSQL wall clock may move backward between a committed reserve and
 a later otherwise-valid dispatch. Lease and maximum-lifetime decisions must use
 the wall clock observed after the existing locks are acquired, but persisting
 that earlier value can violate the frozen reservation temporal constraint. The
-forward database candidate
+forward database correction
 `0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql` corrects only that
 defect by clamping the persisted dispatch timestamp to the reservation's already
 committed temporal frontier. Its database governance is independent of this
 ADR's milestone-evidence decision.
 
-## Proposed decision
+## Decision
 
-This decision has no effect while its status is `Proposed`. M3 Exit remains
-blocked, and M4-E1 must not start, until `@Lyon1984` explicitly approves the
-exact candidate through Issue #44, this ADR is changed to `Accepted` with the
-permanent approval evidence, the resulting readiness change passes the protected
-delivery path, and M3 Exit receives its own later approval.
+This decision was accepted through the permanent Issue #44 approval bound to
+candidate `4e6e8be298aa62238a6c8b77f097d284790e14eb`, tree
+`d2156eb623e78f44cbc66a46362a8713ff20e5b5`, and the pre-evidence-backwrite ADR
+SHA-256 `8ed148e09daa0aa7ed0bd92d7d754baef28c00544aec23e4cb7f4821edbc4058`.
+M3 Exit remains blocked, and M4-E1 must not start, until this evidence backwrite
+passes the protected delivery path and M3 Exit receives its own later approval.
 
-If accepted, the M3 and M6 gates are separated as follows.
+The M3 and M6 gates are separated as follows.
 
 ### M3 repository exit
 
@@ -158,15 +159,16 @@ on its own, it does not change:
 - any Release 1 SLI, SLO, reference hardware, physical load, archival, or
   production-acceptance threshold.
 
-The same readiness delivery may carry migration 0018 as a separately governed
-database correction. That candidate does not derive authority from this ADR:
+The same readiness delivery carries migration 0018 as a separately governed
+database correction. That correction does not derive authority from this ADR:
 it does not rewrite 0001/0002 or any prior signed migration, and it preserves
 the function ABI, Quota → Period → Reservation lock order, provider fence,
 lease/max-lifetime decision clock, event/Outbox exact replay, NOLOGIN owner, and
-API-only `EXECUTE` boundary. Its exact SQL SHA-256 and manifest `18..18` require
-a distinct permanent database approval in Issue #44. ADR approval does not
-approve migration 0018, and migration approval does not accept this ADR or M3
-Exit.
+API-only `EXECUTE` boundary. Its exact SQL SHA-256 and manifest `18..18` are
+frozen by the distinct permanent
+[Issue #44 database approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5353002953).
+ADR approval did not approve migration 0018, and migration approval did not
+accept this ADR or approve M3 Exit.
 
 ## Alternatives considered
 
@@ -210,18 +212,18 @@ stay unchanged in M6-E2.
 ## Migration and rollback impact
 
 The M3/M6 evidence split itself requires no database, Redis, deployment, data,
-or credential migration. Before ADR approval, rollback of that split is deletion
-of this Proposed ADR and its candidate contract wording. After acceptance, a
-reversal requires another reviewed contract decision; it cannot silently
-relabel M3 repository evidence as section 8.2 certification or remove an M6
-threshold.
+or credential migration. Before this accepted evidence backwrite is merged,
+rollback is removal of the unshipped backwrite. After protected merge, a reversal
+requires another reviewed contract decision; it cannot silently relabel M3
+repository evidence as section 8.2 certification or remove an M6 threshold.
 
-Migration 0018 is an independent forward-only database correction and remains
-pending until its exact SQL and manifest have their own permanent database
-approval. Before any authorized execution, it can be omitted as a candidate;
-after execution, normal forward-only migration rules apply and no prior signed
-SQL may be rewritten. Neither this ADR nor its protected merge authorizes
-remote migration execution or data repair.
+Migration 0018 is an independent forward-only database correction approved by
+the separate [Issue #44 database review](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5353002953),
+which binds its exact SQL SHA-256 and manifest `18..18`. Remote environments
+remain unchanged unless a separate execution authorization is later granted;
+after any such execution, normal forward-only migration rules apply and no
+prior signed SQL may be rewritten. Neither approval nor the protected merge
+authorizes remote migration execution or data repair.
 
 ## Security impact
 
@@ -236,7 +238,7 @@ credentials, KMS/key operations, RC, GA, or production acceptance.
 
 ## Coupled contract and test files
 
-The candidate decision is coupled to:
+The accepted decision is coupled to:
 
 - `docs/开发执行规格-v1.0.md`;
 - `docs/release-evidence/README.md`;
@@ -253,5 +255,5 @@ embedded-resource list. These files are not approved by accepting this ADR.
 
 OpenAPI, the error catalog, fixtures, Redis contracts/scripts, and project
 memory are intentionally unchanged. Database SQL and the release manifest
-change only for the separate 0018 database candidate, not as an effect of this
-Proposed architecture decision.
+change only for the separately approved 0018 database correction, not as an
+effect of this Accepted architecture decision.

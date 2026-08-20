@@ -4,7 +4,7 @@
 
 这份声明只回答“在哪里、按什么形状、把证据归档到哪里”。它不表示物理环境已经提供，也不表示负载已经运行或通过：环境部署属于 M6-E3；第 8.2 节 11 个场景、每场景同一构建独立运行 3 次及其容量结论属于 M6-E2；Release Candidate 和生产验收继续受执行规格第 12.3 节约束。
 
-Proposed [`ADR 0014`](../architecture/adr/0014-separate-m3-repository-exit-from-release-load-certification.md) 只提议为 M3 Exit 定义一个真实 PostgreSQL 18、生产 GroupQuota port 的确定性 repository correctness gate，以解除“尚未实现的 M4 Gateway latency 必须先于 M4 认证”的循环依赖。该候选门不修改本目录的 plan/index，不具有 RPS、持续时间、Gateway SLO、参考硬件、同一构建三次或 Release asset 归档含义，也不能作为本节认证的部分通过证据。在 ADR 0014 获得 Issue #44 明确批准并转为 Accepted 前，该提议不生效，M3 Exit 和 M4-E1 仍保持阻断；即使以后获批，M6-E2 的完整物理认证也不减少任何场景、轮次或阈值。
+Accepted [`ADR 0014`](../architecture/adr/0014-separate-m3-repository-exit-from-release-load-certification.md) 已由 `@Lyon1984` 的 [Issue #44 永久架构批准](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5352994972) 为 M3 Exit 定义一个真实 PostgreSQL 18、生产 GroupQuota port 的确定性 repository correctness gate，以解除“尚未实现的 M4 Gateway latency 必须先于 M4 认证”的循环依赖。该仓库门不修改本目录的 plan/index，不具有 RPS、持续时间、Gateway SLO、参考硬件、同一构建三次或 Release asset 归档含义，也不能作为本节认证的部分通过证据。ADR 接受不等于 readiness 受保护合并或 M3 Exit 批准，在二者完成前 M4-E1 仍保持阻断；M6-E2 的完整物理认证不减少任何场景、轮次或阈值。
 
 ## 环境与秘密边界
 
