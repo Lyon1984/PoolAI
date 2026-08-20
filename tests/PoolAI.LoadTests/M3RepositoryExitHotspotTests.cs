@@ -15,7 +15,7 @@ public sealed class M3RepositoryExitHotspotTests(PostgresQuotaHotspotFixture fix
     private const int MaxConcurrency = 32;
     private const long TokensPerRequest = 5;
 
-    [Fact]
+    [Fact(Timeout = PostgresQuotaHotspotFixture.ClockRollbackProofHardTimeoutMilliseconds)]
     [Trait("Category", "PostgreSQL")]
     [Trait("Category", "Load")]
     public async Task M3RepositoryExitHotspotPreservesQuotaInvariants()
@@ -23,6 +23,24 @@ public sealed class M3RepositoryExitHotspotTests(PostgresQuotaHotspotFixture fix
         // ADR 0014 intentionally scopes this deterministic repository gate to
         // M3 ledger invariants. It is not the section 8.2 physical performance
         // certification, Gateway latency evidence, or an M6 release report.
+        Assert.True(
+            PostgresQuotaHotspotFixture.ClockRollbackTemporalFrontierOffset
+                > TimeSpan.FromMilliseconds(
+                    PostgresQuotaHotspotFixture.ClockRollbackProofHardTimeoutMilliseconds));
+        Assert.True(
+            PostgresQuotaHotspotFixture.ClockRollbackLeaseOffset
+                > PostgresQuotaHotspotFixture.ClockRollbackTemporalFrontierOffset);
+        Assert.True(
+            PostgresQuotaHotspotFixture.ClockRollbackMaxOffset
+                > PostgresQuotaHotspotFixture.ClockRollbackLeaseOffset);
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            PostgresQuotaHotspotFixture.ClockRollbackLeaseOffset
+                - PostgresQuotaHotspotFixture.ClockRollbackTemporalFrontierOffset);
+        Assert.Equal(
+            TimeSpan.FromMinutes(10),
+            PostgresQuotaHotspotFixture.ClockRollbackMaxOffset
+                - PostgresQuotaHotspotFixture.ClockRollbackTemporalFrontierOffset);
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
         long totalTokens = (ExpectedAcceptedCount + 1) * TokensPerRequest;
         QuotaHotspotScenario scenario = await fixture

@@ -9,13 +9,39 @@ namespace PoolAI.IntegrationTests;
 
 public sealed partial class PostgresMigrationTests
 {
-    [Fact]
+    private const int M3ExitDispatchClockHardTimeoutMilliseconds = 3 * 60 * 1000;
+    private static readonly TimeSpan M3ExitDispatchClockTemporalFrontierOffset =
+        TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan M3ExitDispatchClockLeaseOffset =
+        TimeSpan.FromMinutes(20);
+    private static readonly TimeSpan M3ExitDispatchClockMaxOffset =
+        TimeSpan.FromMinutes(25);
+    private static readonly TimeSpan M3ExitExpiredTemporalFrontierOffset =
+        TimeSpan.FromMinutes(4);
+
+    [Fact(Timeout = M3ExitDispatchClockHardTimeoutMilliseconds)]
     [Trait("Category", "PostgreSQL")]
     public async Task M3ExitDispatchClockRegressionFailsAt17AndIsCorrectedAt18()
     {
         // Governing contract: DEC-026 assigns reservation time to PostgreSQL,
         // while the frozen dispatch CHECK requires the persisted fence to be no
         // earlier than reservation creation even if that wall clock steps back.
+        Assert.True(
+            M3ExitDispatchClockTemporalFrontierOffset
+                > TimeSpan.FromMilliseconds(M3ExitDispatchClockHardTimeoutMilliseconds));
+        Assert.True(
+            M3ExitDispatchClockLeaseOffset > M3ExitDispatchClockTemporalFrontierOffset);
+        Assert.True(M3ExitDispatchClockMaxOffset > M3ExitDispatchClockLeaseOffset);
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            M3ExitDispatchClockLeaseOffset - M3ExitDispatchClockTemporalFrontierOffset);
+        Assert.Equal(
+            TimeSpan.FromMinutes(10),
+            M3ExitDispatchClockMaxOffset - M3ExitDispatchClockTemporalFrontierOffset);
+        Assert.True(
+            M3ExitExpiredTemporalFrontierOffset
+                > TimeSpan.FromMilliseconds(M3ExitDispatchClockHardTimeoutMilliseconds));
+        Assert.True(M3ExitExpiredTemporalFrontierOffset < TimeSpan.FromMinutes(4.5));
         string postgresPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         string migratorPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         PostgreSqlContainer container = new PostgreSqlBuilder(ReadPostgresImage())
@@ -299,10 +325,10 @@ public sealed partial class PostgresMigrationTests
                 '01900000-0000-7000-8000-00000000f015'::uuid,
                 '01900000-0000-7000-8000-00000000f014'::uuid,
                 5, 'pending', false, 'm3-exit-clock-owner',
-                database_time.value + interval '5 minutes',
-                database_time.value + interval '10 minutes',
-                database_time.value + interval '30 seconds',
-                database_time.value + interval '30 seconds'
+                database_time.value + interval '20 minutes',
+                database_time.value + interval '25 minutes',
+                database_time.value + interval '15 minutes',
+                database_time.value + interval '15 minutes'
             FROM database_time
             UNION ALL
             SELECT
@@ -317,7 +343,7 @@ public sealed partial class PostgresMigrationTests
                 database_time.value - interval '30 seconds',
                 database_time.value + interval '4 minutes 30 seconds',
                 database_time.value - interval '5 minutes 30 seconds',
-                database_time.value + interval '30 seconds'
+                database_time.value + interval '4 minutes'
             FROM database_time;
             UPDATE public.group_quota_periods
             SET reserved_tokens = 10,

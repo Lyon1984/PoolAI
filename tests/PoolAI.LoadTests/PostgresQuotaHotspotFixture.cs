@@ -14,6 +14,12 @@ namespace PoolAI.LoadTests;
 
 public sealed class PostgresQuotaHotspotFixture : IAsyncLifetime
 {
+    internal const int ClockRollbackProofHardTimeoutMilliseconds = 3 * 60 * 1000;
+    internal static readonly TimeSpan ClockRollbackTemporalFrontierOffset =
+        TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan ClockRollbackLeaseOffset = TimeSpan.FromMinutes(20);
+    internal static readonly TimeSpan ClockRollbackMaxOffset = TimeSpan.FromMinutes(25);
+
     private PostgreSqlContainer? _container;
 
     public NpgsqlDataSource AdministratorDataSource { get; private set; } = null!;
@@ -106,7 +112,7 @@ public sealed class PostgresQuotaHotspotFixture : IAsyncLifetime
         return scenario;
     }
 
-    #pragma warning disable MA0051 // Keep the atomic evidence query readable and auditable in one place.
+#pragma warning disable MA0051 // Keep the atomic evidence query readable and auditable in one place.
     public async ValueTask<QuotaHotspotEvidence> ReadEvidenceAsync(
         QuotaHotspotScenario scenario,
         CancellationToken cancellationToken)
@@ -261,28 +267,33 @@ public sealed class PostgresQuotaHotspotFixture : IAsyncLifetime
         Assert.False(await reader.ReadAsync(cancellationToken).ConfigureAwait(false));
         return evidence;
     }
-    #pragma warning restore MA0051
+#pragma warning restore MA0051
 
     public async ValueTask<DateTimeOffset> AdvanceReservationTemporalFrontierAsync(
         Guid attemptId,
         CancellationToken cancellationToken)
     {
         using NpgsqlCommand command = AdministratorDataSource.CreateCommand("""
-            WITH temporal_frontier AS MATERIALIZED (
-                SELECT pg_catalog.clock_timestamp() + interval '30 seconds' AS value
+            WITH database_time AS MATERIALIZED (
+                SELECT pg_catalog.clock_timestamp() AS value
             )
             UPDATE public.group_token_reservations AS reservation
-            SET created_at = temporal_frontier.value,
-                updated_at = temporal_frontier.value
-            FROM temporal_frontier
+            SET created_at = database_time.value + $2,
+                updated_at = database_time.value + $2,
+                lease_expires_at = database_time.value + $3,
+                max_expires_at = database_time.value + $4
+            FROM database_time
             WHERE reservation.attempt_id = $1
               AND reservation.status = 'pending'
               AND reservation.dispatch_started_at IS NULL
-              AND reservation.lease_expires_at > temporal_frontier.value
-              AND reservation.max_expires_at > temporal_frontier.value
+              AND reservation.lease_expires_at > database_time.value
+              AND reservation.max_expires_at > database_time.value
             RETURNING reservation.updated_at;
             """);
         command.Parameters.AddWithValue(attemptId);
+        command.Parameters.AddWithValue(ClockRollbackTemporalFrontierOffset);
+        command.Parameters.AddWithValue(ClockRollbackLeaseOffset);
+        command.Parameters.AddWithValue(ClockRollbackMaxOffset);
         object? scalar = await command
             .ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
