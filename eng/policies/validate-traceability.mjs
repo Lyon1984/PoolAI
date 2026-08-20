@@ -2797,7 +2797,7 @@ const stripCSharpConditionalRegions = (source) => {
 const isXunitTestMethod = (source, symbol) => {
   const escapedSymbol = symbol.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
   const method = new RegExp(
-    `^\\s*\\[(?:Fact|Theory)\\]\\s*$`
+    `^\\s*\\[(?:Fact|Theory)(?:\\(\\s*Timeout\\s*=\\s*[^,\\r\\n)]+\\s*\\))?\\]\\s*$`
       + `(?:\\r?\\n\\s*\\[[^\\]\\r\\n]+\\]\\s*$)*`
       + `\\r?\\n\\s*(?:public|internal)\\s+(?:async\\s+)?`
       + `(?:Task|ValueTask|void)\\s+${escapedSymbol}\\s*\\(`,
@@ -2836,6 +2836,12 @@ for (const decoy of [
 }
 if (!isXunitTestMethod('[Theory]\n[InlineData(1)]\npublic void RealTest(int value) { }', 'RealTest')) {
   fail('Traceability validator self-test rejected a real attributed xUnit method.')
+}
+if (!isXunitTestMethod(
+  '[Fact(Timeout = 3 * 60 * 1000)]\npublic async Task TimedTest() { }',
+  'TimedTest',
+)) {
+  fail('Traceability validator self-test rejected an xUnit method with an explicit timeout.')
 }
 const nestedInterpolationDecoy = 'var value = $"{@"\n[Fact]\npublic void FakeEvidence(\n"}";'
 if (isCompiledTestEvidence(
