@@ -54,7 +54,7 @@ if (!supportedCommands.has(command)) {
         baseRef,
         compatibilityResetSource: sources.compatibilityResetSource,
         compatibilityWindowSource: sources.compatibilityWindowSource,
-        headErrorCatalogSource: sources.errorCatalogSource,
+        headErrorCatalogArtifact: sources.errorCatalogArtifact,
         headOpenApi: sources.openApi,
         headOpenApiSource: sources.openApiSource,
       })

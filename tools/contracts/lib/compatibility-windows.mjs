@@ -3,10 +3,18 @@ import path from 'node:path'
 import { TextDecoder } from 'node:util'
 
 import { withReadOnlyRepositoryFile } from '../../../eng/policies/repository-file.mjs'
-import { ContractFailure, invariant, repoRoot, sha256, stableJson, YAML } from './context.mjs'
+import {
+  ContractFailure,
+  inspectFatalUtf8Artifact,
+  invariant,
+  repoRoot,
+  sha256,
+  stableJson,
+  YAML,
+} from './context.mjs'
 
 const WINDOW_REGISTRY_KEYS = ['schemaVersion', 'windows']
-const WINDOW_KEYS = [
+const WINDOW_V1_KEYS = [
   'adr',
   'allowedFailures',
   'approvalControl',
@@ -18,8 +26,27 @@ const WINDOW_KEYS = [
   'scope',
   'status',
 ]
+const WINDOW_V2_DIGEST_KEYS = [
+  ...WINDOW_V1_KEYS,
+  'baseErrorCatalogSha256',
+  'headErrorCatalogSha256',
+]
 const WINDOW_SCOPE = 'openapi-v1-compatibility-window'
 const EXACT_APPROVAL_CONTROL = 'https://github.com/Lyon1984/PoolAI/issues/44'
+const MACHINE_LINE_CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u
+const ERROR_CATALOG_SELECTOR = /^error-catalog:([a-z][a-z0-9_]{0,127})$/u
+const RESERVED_MARKER_KEYS = [
+  'status',
+  'compatibilitywindowid',
+  'basegitcommit',
+  'baseopenapisha256',
+  'targetopenapisha256',
+  'baseerrorcatalogsha256',
+  'targeterrorcatalogsha256',
+  'approvalcontrol',
+  'approvalevidence',
+  'alloweddiagnostic',
+]
 
 function sameValue(left, right) {
   return stableJson(left) === stableJson(right)
@@ -36,6 +63,68 @@ function requireExactKeys(value, keys, label) {
     sameValue(actual, expected),
     `${label} must contain exactly these keys: ${expected.join(', ')}.`,
   )
+}
+
+function hasExactKeys(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    sameValue(Object.keys(value).sort(), [...keys].sort())
+}
+
+function requireMachineLineString(value, label) {
+  invariant(typeof value === 'string', `${label} must be a string.`)
+  invariant(
+    !MACHINE_LINE_CONTROL.test(value),
+    `${label} must not contain control, line, or paragraph separator characters.`,
+  )
+}
+
+function hasUnicodeScalar(value) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)
+    if (codePoint < 0xD800 || codePoint > 0xDFFF) {
+      return true
+    }
+  }
+  return false
+}
+
+export function isDigestBoundCompatibilityWindow(window) {
+  return hasExactKeys(window, WINDOW_V2_DIGEST_KEYS)
+}
+
+function validateAllowedFailure(failure, label, digestBound) {
+  requireMachineLineString(failure, label)
+  const delimiter = failure.indexOf(': ')
+  invariant(delimiter > 0, `${label} must be one exact compatibility diagnostic.`)
+  const selector = failure.slice(0, delimiter)
+  const diagnostic = failure.slice(delimiter + 2)
+  invariant(
+    diagnostic.length > 0 && hasUnicodeScalar(diagnostic),
+    `${label} diagnostic must contain at least one Unicode scalar value.`,
+  )
+
+  if (selector.startsWith('#/')) {
+    invariant(
+      /^(?:#\/)(?:[^~]|~[01])*$/u.test(selector),
+      `${label} must use one exact local OpenAPI JSON Pointer.`,
+    )
+    invariant(
+      !selector.includes('*') && !selector.includes('?'),
+      `${label} selector must not contain wildcards.`,
+    )
+    return 'openapi'
+  }
+
+  const errorCatalogMatch = ERROR_CATALOG_SELECTOR.exec(selector)
+  invariant(
+    errorCatalogMatch !== null,
+    `${label} must use an exact OpenAPI or error-catalog diagnostic selector.`,
+  )
+  invariant(
+    digestBound,
+    `${label} error-catalog diagnostic requires a digest-bound schemaVersion 2 record.`,
+  )
+  return 'error-catalog'
 }
 
 function isExactIssueUrl(value) {
@@ -81,18 +170,34 @@ export function parseCompatibilityWindowRegistry(source) {
     'Compatibility window registry JSON and strict parser results differ.',
   )
   requireExactKeys(json, WINDOW_REGISTRY_KEYS, 'Compatibility window registry')
-  invariant(json.schemaVersion === 1, 'Compatibility window registry must use schemaVersion 1.')
+  invariant(
+    json.schemaVersion === 1 || json.schemaVersion === 2,
+    'Compatibility window registry must use schemaVersion 1 or 2.',
+  )
   invariant(Array.isArray(json.windows), 'Compatibility window registry windows must be an array.')
   invariant(
     json.windows.length > 0,
-    'Compatibility window registry schemaVersion 1 must contain at least one window.',
+    `Compatibility window registry schemaVersion ${json.schemaVersion} must contain at least one window.`,
   )
 
   const ids = new Set()
   const baseRefs = new Set()
   for (const [index, window] of json.windows.entries()) {
     const label = `Compatibility window registry windows[${index}]`
-    requireExactKeys(window, WINDOW_KEYS, label)
+    const digestBound = isDigestBoundCompatibilityWindow(window)
+    if (json.schemaVersion === 1) {
+      requireExactKeys(window, WINDOW_V1_KEYS, label)
+    } else {
+      invariant(
+        hasExactKeys(window, WINDOW_V1_KEYS) || digestBound,
+        `${label} must contain exactly the schemaVersion 2 OpenAPI-only or digest-bound keys.`,
+      )
+    }
+    for (const [key, value] of Object.entries(window)) {
+      if (typeof value === 'string') {
+        requireMachineLineString(value, `${label}.${key}`)
+      }
+    }
     invariant(
       typeof window.id === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(window.id),
       `${label}.id must be lower kebab-case.`,
@@ -120,6 +225,14 @@ export function parseCompatibilityWindowRegistry(source) {
       window.baseOpenApiSha256 !== window.headOpenApiSha256,
       `${label} must bind different base and head OpenAPI digests.`,
     )
+    if (digestBound) {
+      for (const key of ['baseErrorCatalogSha256', 'headErrorCatalogSha256']) {
+        invariant(
+          typeof window[key] === 'string' && /^[0-9a-f]{64}$/u.test(window[key]),
+          `${label}.${key} must be an exact lowercase SHA-256 digest.`,
+        )
+      }
+    }
 
     const adrName = typeof window.adr === 'string' ? path.basename(window.adr) : ''
     invariant(
@@ -159,16 +272,21 @@ export function parseCompatibilityWindowRegistry(source) {
       new Set(window.allowedFailures).size === window.allowedFailures.length,
       `${label}.allowedFailures must not contain duplicates.`,
     )
+    let errorCatalogFailures = 0
     for (const [failureIndex, failure] of window.allowedFailures.entries()) {
-      invariant(
-        typeof failure === 'string' && failure.startsWith('#/') && failure.includes(': ') &&
-          !failure.includes('\n') && !failure.includes('\r'),
-        `${label}.allowedFailures[${failureIndex}] must be one exact OpenAPI diagnostic.`,
+      const kind = validateAllowedFailure(
+        failure,
+        `${label}.allowedFailures[${failureIndex}]`,
+        digestBound,
       )
-      const pointer = failure.slice(0, failure.indexOf(': '))
+      if (kind === 'error-catalog') {
+        errorCatalogFailures += 1
+      }
+    }
+    if (errorCatalogFailures > 0) {
       invariant(
-        !pointer.includes('*') && !pointer.includes('?'),
-        `${label}.allowedFailures[${failureIndex}] must not contain wildcards.`,
+        window.baseErrorCatalogSha256 !== window.headErrorCatalogSha256,
+        `${label} with an error-catalog diagnostic must bind different base and head error-catalog digests.`,
       )
     }
   }
@@ -182,20 +300,98 @@ function approvalEvidenceLine(window) {
     : '- Approval evidence: **Pending explicit approval**'
 }
 
-export function validateCompatibilityWindowDecisionSource(window, source) {
-  invariant(typeof source === 'string', `Compatibility window ${window.id} ADR source is required.`)
+function compatibilityWindowDecisionLines(window) {
   const status = window.status === 'accepted' ? 'Accepted' : 'Proposed'
   const issueNumber = window.approvalControl.split('/').at(-1)
-  const requiredLines = [
+  return [
     `- Status: **${status}**`,
     `- Compatibility window ID: \`${window.id}\``,
     `- Base Git commit: \`${window.baseRef}\``,
     `- Base OpenAPI SHA-256: \`${window.baseOpenApiSha256}\``,
     `- Target OpenAPI SHA-256: \`${window.headOpenApiSha256}\``,
+    ...(isDigestBoundCompatibilityWindow(window)
+      ? [
+          `- Base error-catalog SHA-256: \`${window.baseErrorCatalogSha256}\``,
+          `- Target error-catalog SHA-256: \`${window.headErrorCatalogSha256}\``,
+        ]
+      : []),
     `- Approval control: [Issue #${issueNumber}](${window.approvalControl})`,
     approvalEvidenceLine(window),
     ...window.allowedFailures.map((failure) => `- Allowed diagnostic: \`${failure}\``),
   ]
+}
+
+function asciiCollisionKey(value) {
+  return value
+    .replace(/[A-Z]/gu, (character) => character.toLowerCase())
+    .replace(/[\t\v\f\r _-]/gu, '')
+}
+
+function isReservedMarkerLabel(label) {
+  const key = asciiCollisionKey(label)
+  if (RESERVED_MARKER_KEYS.some((reserved) => key.includes(reserved))) {
+    return true
+  }
+  const source = key.includes('openapi') || key.includes('errorcatalog')
+  const direction = ['base', 'target', 'head'].some((value) => key.includes(value))
+  const digest = ['digest', 'hash', 'checksum'].some((value) => key.includes(value)) ||
+    /sha[0-9]+/u.test(key)
+  return source && direction && digest
+}
+
+function validateDigestBoundDecisionSource(window, source, requiredLines) {
+  invariant(
+    !/[\r\u0085\u2028\u2029]/u.test(source),
+    `Compatibility window ${window.id} digest-bound ADR must use LF line boundaries and contain no alternate line separators.`,
+  )
+  const lines = source.split('\n')
+  invariant(
+    /^# [^\n]+$/u.test(lines[0] ?? ''),
+    `Compatibility window ${window.id} digest-bound ADR must begin with one H1 title.`,
+  )
+  const firstSection = lines.findIndex((line, index) => index > 0 && line.startsWith('## '))
+  invariant(
+    firstSection > 0,
+    `Compatibility window ${window.id} digest-bound ADR must contain an exact first ## section boundary.`,
+  )
+  invariant(
+    !lines.slice(1, firstSection).some((line) => line.startsWith('# ')),
+    `Compatibility window ${window.id} digest-bound ADR must not contain a second H1 before its first ## section.`,
+  )
+  invariant(
+    !lines.slice(1, firstSection).some((line) => /^[\t\v\f ]+#{1,6} /u.test(line)),
+    `Compatibility window ${window.id} digest-bound ADR preamble must not contain an indented pseudo-heading.`,
+  )
+
+  const preamble = lines.slice(1, firstSection)
+  const requiredSet = new Set(requiredLines)
+  for (const requiredLine of requiredLines) {
+    invariant(
+      lines.filter((line) => line === requiredLine).length === 1 &&
+        preamble.filter((line) => line === requiredLine).length === 1,
+      `Compatibility window ${window.id} ${window.status} ADR preamble must contain exactly one line: ${requiredLine}`,
+    )
+  }
+
+  for (const [index, line] of lines.entries()) {
+    const candidate = /^[\t\v\f ]*[-+*] +([^:]+):/u.exec(line)
+    if (candidate === null || !isReservedMarkerLabel(candidate[1])) {
+      continue
+    }
+    invariant(
+      requiredSet.has(line) && index > 0 && index < firstSection,
+      `Compatibility window ${window.id} digest-bound ADR contains an invalid or misplaced reserved marker: ${line}`,
+    )
+  }
+}
+
+export function validateCompatibilityWindowDecisionSource(window, source) {
+  invariant(typeof source === 'string', `Compatibility window ${window.id} ADR source is required.`)
+  const requiredLines = compatibilityWindowDecisionLines(window)
+  if (isDigestBoundCompatibilityWindow(window)) {
+    validateDigestBoundDecisionSource(window, source, requiredLines)
+    return
+  }
   const lines = source.split(/\r?\n/u)
   for (const requiredLine of requiredLines) {
     invariant(
@@ -253,17 +449,27 @@ function normalizedApprovalTransition(window) {
 export function validateCompatibilityWindowHistory({ baseRegistrySource, headRegistrySource }) {
   const headRegistry = parseCompatibilityWindowRegistry(headRegistrySource)
   if (baseRegistrySource === undefined) {
+    invariant(
+      headRegistry.schemaVersion === 1,
+      'Compatibility window schemaVersion 2 requires a readable schemaVersion 1 or 2 base registry.',
+    )
     return { baseRegistry: undefined, headRegistry }
   }
 
   const baseRegistry = parseCompatibilityWindowRegistry(baseRegistrySource)
-  const headById = new Map(headRegistry.windows.map((window) => [window.id, window]))
-  for (const baseWindow of baseRegistry.windows) {
-    const headWindow = headById.get(baseWindow.id)
-    invariant(
-      headWindow !== undefined,
-      `Compatibility window history is immutable; ${baseWindow.id} was removed.`,
-    )
+  invariant(
+    baseRegistry.schemaVersion === headRegistry.schemaVersion ||
+      (baseRegistry.schemaVersion === 1 && headRegistry.schemaVersion === 2),
+    `Compatibility window registry schemaVersion may only remain unchanged or advance from 1 to 2; base is ${baseRegistry.schemaVersion}, head is ${headRegistry.schemaVersion}.`,
+  )
+  const baseIds = baseRegistry.windows.map((window) => window.id)
+  const headPrefix = headRegistry.windows.slice(0, baseIds.length).map((window) => window.id)
+  invariant(
+    headRegistry.windows.length >= baseRegistry.windows.length && sameValue(baseIds, headPrefix),
+    'Compatibility window history is immutable; base window IDs must be the exact head prefix.',
+  )
+  for (const [index, baseWindow] of baseRegistry.windows.entries()) {
+    const headWindow = headRegistry.windows[index]
     if (baseWindow.status === 'accepted') {
       invariant(
         sameValue(baseWindow, headWindow),
@@ -337,8 +543,10 @@ export function validateCompatibilityWindowAdrHistory({
 }
 
 export function resolveCompatibilityWindow({
+  baseErrorCatalogArtifact,
   baseOpenApiSource,
   baseRef,
+  headErrorCatalogArtifact,
   headOpenApiSource,
   registrySource,
 }) {
@@ -364,6 +572,24 @@ export function resolveCompatibilityWindow({
     headDigest === window.headOpenApiSha256,
     `Compatibility window mismatch for ${window.id}: head OpenAPI SHA-256 is ${headDigest}, expected ${window.headOpenApiSha256}.`,
   )
+  if (isDigestBoundCompatibilityWindow(window)) {
+    const baseErrorCatalog = inspectFatalUtf8Artifact(
+      baseErrorCatalogArtifact,
+      `Compatibility window ${window.id} base error catalog`,
+    )
+    const headErrorCatalog = inspectFatalUtf8Artifact(
+      headErrorCatalogArtifact,
+      `Compatibility window ${window.id} head error catalog`,
+    )
+    invariant(
+      baseErrorCatalog.digest === window.baseErrorCatalogSha256,
+      `Compatibility window mismatch for ${window.id}: base error-catalog SHA-256 is ${baseErrorCatalog.digest}, expected ${window.baseErrorCatalogSha256}.`,
+    )
+    invariant(
+      headErrorCatalog.digest === window.headErrorCatalogSha256,
+      `Compatibility window mismatch for ${window.id}: head error-catalog SHA-256 is ${headErrorCatalog.digest}, expected ${window.headErrorCatalogSha256}.`,
+    )
+  }
   return window
 }
 
