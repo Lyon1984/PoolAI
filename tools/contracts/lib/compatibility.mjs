@@ -5,7 +5,16 @@ import path from 'node:path'
 import { promisify, TextDecoder } from 'node:util'
 
 import { withReadOnlyRepositoryFile } from '../../../eng/policies/repository-file.mjs'
-import { ContractFailure, invariant, repoRoot, sha256, stableJson, YAML } from './context.mjs'
+import {
+  ContractFailure,
+  createFatalUtf8Artifact,
+  invariant,
+  repoRoot,
+  requireTrustedHeadErrorCatalogArtifact,
+  sha256,
+  stableJson,
+  YAML,
+} from './context.mjs'
 import {
   requireAcceptedCompatibilityWindow,
   resolveCompatibilityWindow,
@@ -1575,6 +1584,14 @@ async function readBaseBlobBytes(baseRef, relativePath) {
   }
 }
 
+async function readBaseErrorCatalogArtifact(baseRef) {
+  const bytes = await readBaseBlobBytes(baseRef, 'docs/contracts/error-catalog.md')
+  return createFatalUtf8Artifact(
+    bytes,
+    `Base error catalog at CONTRACT_DIFF_BASE ${baseRef}`,
+  )
+}
+
 async function loadSseFixturesAgainstGitBase(baseRef) {
   const fixturePaths = await listBaseSseFixturePaths(baseRef)
   const fixtureRoot = `${path.resolve(repoRoot, 'docs/contracts/fixtures')}${path.sep}`
@@ -1612,7 +1629,7 @@ export async function validateContractsAgainstGitBase({
   baseRef,
   compatibilityResetSource,
   compatibilityWindowSource,
-  headErrorCatalogSource,
+  headErrorCatalogArtifact,
   headOpenApi,
   headOpenApiSource,
 }) {
@@ -1622,17 +1639,18 @@ export async function validateContractsAgainstGitBase({
   )
   const normalizedBaseRef = baseRef.toLowerCase()
   invariant(typeof headOpenApiSource === 'string', 'Head OpenAPI source is required.')
+  const headErrorCatalog = requireTrustedHeadErrorCatalogArtifact(headErrorCatalogArtifact)
   const resetState = validateCompatibilityResetDecisions(compatibilityResetSource)
   const windowState = validateCompatibilityWindowDecisions(compatibilityWindowSource)
   const [
     baseOpenApiSource,
-    baseErrorCatalogSource,
+    baseErrorCatalogArtifact,
     baseResetRegistrySource,
     baseWindowRegistrySource,
     sseFixtures,
   ] = await Promise.all([
     readBaseBlob(normalizedBaseRef, 'docs/contracts/openapi-v1.yaml'),
-    readBaseBlob(normalizedBaseRef, 'docs/contracts/error-catalog.md'),
+    readBaseErrorCatalogArtifact(normalizedBaseRef),
     readOptionalBaseBlob(normalizedBaseRef, COMPATIBILITY_RESET_RELATIVE_PATH),
     readOptionalBaseBlob(normalizedBaseRef, COMPATIBILITY_WINDOW_RELATIVE_PATH),
     loadSseFixturesAgainstGitBase(normalizedBaseRef),
@@ -1684,8 +1702,10 @@ export async function validateContractsAgainstGitBase({
     registrySource: compatibilityResetSource,
   })
   const window = resolveCompatibilityWindow({
+    baseErrorCatalogArtifact,
     baseOpenApiSource,
     baseRef: normalizedBaseRef,
+    headErrorCatalogArtifact,
     headOpenApiSource,
     registrySource: compatibilityWindowSource,
   })
@@ -1696,10 +1716,10 @@ export async function validateContractsAgainstGitBase({
   const failureAllowance = reset?.allowedFailures ?? window?.allowedFailures ?? []
   const result = validateContractCompatibility({
     allowedFailures: failureAllowance,
-    baseErrorCatalogSource,
+    baseErrorCatalogSource: baseErrorCatalogArtifact.source,
     baseOpenApi: parseOpenApiSource(baseOpenApiSource, 'Base'),
     baseSseFixtures: sseFixtures.baseSseFixtures,
-    headErrorCatalogSource,
+    headErrorCatalogSource: headErrorCatalog.source,
     headOpenApi: parsedHeadOpenApi,
     headSseFixtures: sseFixtures.headSseFixtures,
     failureAllowanceLabel: window === undefined
