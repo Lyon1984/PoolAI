@@ -21,8 +21,8 @@ The existing architecture simultaneously requires:
    body limit and semantic validation;
 2. independent bounded NonStream and SSE permits, with SSE never consuming a
    NonStream permit and vice versa;
-3. exactly one admission-policy lease for each routed request that proceeds
-   beyond admission, with no fallback to the other partition; and
+3. exactly one selected data-policy lease for each routed request that proceeds
+   beyond data admission, with no fallback to the other partition; and
 4. the `stream` value accepted by the protocol parser to agree with the
    partition held for the complete response lifetime.
 
@@ -51,11 +51,13 @@ The two shared POST operations use this fixed outer sequence:
 
 ```text
 correlation / observability
-  -> bounded admission-only stream discriminator and raw-body replay setup
+  -> fail-fast model-discriminator resource gate
+  -> bounded admission-only stream discriminator and complete raw-body spool
   -> exactly one selected data admission bulkhead
   -> authentication
   -> authoritative media-type and body-size enforcement
   -> strict JSON and semantic request validation
+  -> dispose replay storage and release model-discriminator gate
   -> classification consistency guard
   -> Gateway Process Manager
 ```
@@ -63,23 +65,74 @@ correlation / observability
 The discriminator is part of admission routing, not authentication, public
 request validation, normalization, or a Gateway attempt. It never calls a
 module port, PostgreSQL, Redis, the Group RPM primitive, Routing, Supply, an
-Adapter, or an upstream. It never writes a response or chooses an error code.
+Adapter, or an upstream. Its resource guard may write only the exact overload
+response frozen below; body classification never chooses a business error.
 
 Only routed `POST /v1/responses` and `POST /v1/chat/completions` requests use
 this discriminator. Static endpoint metadata continues to classify every other
 route.
+
+### Fail-fast model-discriminator resource gate
+
+Each Api process owns one separate `model_discriminator` guard with exactly
+eight permits and a queue limit of zero. These values are fixed for R1.1 and
+have no configuration override. This is a pre-admission CPU/memory/spool guard,
+not a fifth business workload partition and not a NonStream or SSE policy
+lease.
+
+A shared-POST request makes one non-blocking acquisition attempt before opening
+replay storage or reading a body byte. Saturation fails immediately. A
+successful guard lease exclusively owns that request's lexical reader, memory
+buffer, temporary file, and replay feature. It remains held until the
+authoritative parser has consumed the complete spooled body and the replay
+storage and file descriptor have been disposed. A selected data-policy lease
+may overlap it during authentication and parsing, but the guard is always
+released before the Process Manager starts and is never held for upstream or
+response streaming.
+
+The complete classification and spool operation has one fixed 30-second
+monotonic wall-clock deadline beginning when the guard is acquired. It is linked
+to `RequestAborted` and any earlier server request deadline; there is no retry,
+queue, deadline extension, or fallback. The following resource failures all
+fail closed before authentication and before any NonStream/SSE acquisition:
+
+- all eight guard permits are active;
+- the fixed classification deadline expires while reading, tokenizing, or
+  completing the spool; or
+- the private spill file cannot be opened or written, including permission,
+  file-descriptor, quota, and `ENOSPC` failures.
+
+If the client has not aborted, each of those failures returns the existing
+Gateway-shaped `429 gateway_overloaded` response with `Retry-After: 1`. It owns
+no selected data lease and performs no authentication, validation, canonical
+read, Redis call, reservation, or upstream I/O. If `RequestAborted` wins the
+race, the implementation disposes any partial spool and guard lease and writes
+nothing. A server-side classifier deadline that wins while the connection is
+still usable returns the overload response; it is not converted into malformed
+JSON or a NonStream quarantine request.
+
+Admission metrics add exactly one fifth internal kind and label,
+`model_discriminator`, for this guard's active count and bounded outcomes such
+as saturation, deadline, storage failure, cancellation, and release. Metrics
+use this kind only for the guard and contain no request byte, property value,
+client address, credential, model, or prompt. The four existing workload kinds
+and labels retain their meanings.
 
 ### Bounded classification algorithm
 
 The discriminator examines the original request bytes with one forward-only,
 incremental UTF-8 JSON token reader. It does not build a DOM, bind a DTO,
 normalize a request, inspect `model`/`input`/`messages`, or retain decoded string
-values. Work is linear in the bytes examined and stops after the first of:
+values. While syntax remains potentially executable, it spools the complete
+body before selected data admission. Lexical decision work is linear in the
+bytes examined and reaches one of:
 
 - the first top-level property whose JSON-unescaped name is the exact,
-  case-sensitive string `stream` and whose value token is `true` or `false`;
-- a lexical failure that prevents safe continued scanning;
-- end-of-body; or
+  case-sensitive string `stream` and whose value token is `true` or `false`,
+  followed by bounded raw-byte spooling through end-of-body;
+- end-of-body with a complete JSON object and no `stream` member;
+- a lexical failure that makes execution impossible, followed by bounded raw
+  spooling through end-of-body; or
 - observation of `Gateway:MaxRequestBodyBytes + 1` bytes.
 
 Nested properties named `stream` do not participate. An exact top-level
@@ -96,13 +149,15 @@ result:
 | complete valid JSON object with `stream` absent | NonStream | only after the strict parser confirms omission/default `false` |
 | unclassifiable, malformed before a decisive boolean, non-boolean, or oversized | NonStream quarantine | never |
 
-The discriminator may stop at the first decisive boolean. The authoritative
-parser still consumes the complete document and rejects duplicate property
-names, malformed tails, trailing JSON, or any other invalid shape. Therefore a
-later duplicate cannot change the execution mode: the already selected policy
-remains held, but the request becomes invalid and never reaches execution.
-Escaped spellings that JSON-decode to `stream` are the same property for both
-the discriminator and strict parser.
+After finding the first decisive boolean or a lexical failure, the discriminator
+may stop decoding tokens but must continue the bounded byte-for-byte spool to
+end-of-body or the size sentinel before attempting selected data admission. The
+authoritative parser later consumes the complete spool and rejects duplicate
+property names, malformed tails, trailing JSON, or any other invalid shape.
+Therefore a later duplicate cannot change the execution mode: the already
+selected policy remains held, but the request becomes invalid and never reaches
+execution. Escaped spellings that JSON-decode to `stream` are the same property
+for both the discriminator and strict parser.
 
 The NonStream quarantine is not a permissive default. It exists so malformed,
 unsupported, and oversized requests still pass through exactly one admission
@@ -121,15 +176,24 @@ underlying transport.
 
 The replay implementation has these fixed bounds:
 
-- at most 64 KiB of examined bytes remain in memory;
-- excess examined bytes spill to a runtime-private, non-shared temporary file;
-- total pre-admission buffering is at most
-  `Gateway:MaxRequestBodyBytes + 1`, whose validated maximum is 32 MiB + 1;
+- each active guard lease may retain at most 64 KiB in memory and may spool at
+  most `Gateway:MaxRequestBodyBytes + 1` bytes to one runtime-private,
+  non-shared temporary file;
+- across the fixed eight permits, discriminator memory is therefore at most
+  512 KiB, temporary spool bytes are at most
+  `8 * (Gateway:MaxRequestBodyBytes + 1)`, and the validated 32 MiB maximum
+  makes the latter no greater than 256 MiB + 8 bytes;
 - scanning uses a fixed-size pooled block and a bounded-depth incremental token
   reader with maximum nesting depth 64, identical to the strict parser, never
   an allocation proportional to the number of JSON values; and
 - the spill file is owner-only, delete-on-close, excluded from logs/backups,
-  and disposed on rejection, exception, timeout, or cancellation.
+  and its single file descriptor is disposed on admission rejection,
+  authentication/validation completion, exception, deadline, or cancellation.
+
+The guard stays held while its replay file exists, so no more than eight such
+files or descriptors and no more than the aggregate bounds above can exist per
+Api process. Opening a second spill file, detaching storage from its guard
+lease, or releasing the guard before the file is closed is forbidden.
 
 If `Content-Length` already exceeds the configured body limit, the
 discriminator does not read the body and records the oversized quarantine
@@ -139,23 +203,29 @@ one NonStream quarantine permit and successful authentication, the ordinary
 body-limit stage emits the existing `413 payload_too_large`. No application
 code drains an unbounded rejected body merely to keep the connection reusable.
 
-If a decisive boolean is found before end-of-body, the discriminator rewinds
-immediately and acquires the selected policy. The ordinary bounded body reader
-then enforces the complete limit while that permit is held. This keeps the
-common explicit-`stream` case from being fully spooled before admission while
-preserving arbitrary legal property order and omission semantics.
+For a body within the limit, the discriminator completes the raw spool under
+the 30-second deadline, rewinds it, and only then attempts the selected policy.
+The ordinary bounded body reader and strict parser consume only that complete
+spool while both leases are held; they cannot trigger a later temporary-file
+open or write. After parsing, the spool is disposed and the discriminator guard
+is released, while the selected NonStream/SSE lease remains held through the
+complete response lifecycle.
 
 Network ingress before policy acquisition remains bounded by the Api server and
 front-proxy connection, header, request-body data-rate, and request timeout
 controls. This ADR does not claim that the NonStream/SSE application bulkheads
 protect socket upload resources. Those transport controls must not be disabled,
-and the discriminator always observes `RequestAborted` and the server request
-deadline while reading.
+and the discriminator's fixed eight-request concurrency and 30-second deadline
+also bound application-level pre-admission upload work.
 
 ### Validation, error precedence, and consistency
 
 Classification is not a public validation result. Once the selected lease is
-held, the existing order remains observable:
+held, the existing order remains observable. Before that point, guard
+saturation, the 30-second classification deadline, or spill open/write failure
+returns the same Gateway-shaped `429 gateway_overloaded` with `Retry-After: 1`,
+unless client abort requires no response. Those guard failures own no selected
+data lease. After successful classification:
 
 1. a saturated selected partition returns `429 gateway_overloaded` before
    authentication or body validation;
@@ -184,14 +254,22 @@ a bounded security/operations diagnostic without request bytes.
 
 ### Cancellation and lease lifetime
 
-- Client abort or server request-deadline cancellation during discrimination
-  disposes the replay storage and acquires no policy lease.
+- Client abort during guard acquisition or discrimination disposes replay
+  storage and the guard lease, acquires no selected data lease, and writes no
+  response. Classifier/server deadline uses the fail-closed overload behavior
+  above when the client remains connected.
+- The guard has zero queue, is acquired at most once, owns at most one replay
+  file descriptor, and is released exactly once. It is never retried and never
+  falls back to an unguarded classifier.
 - Cancellation while waiting for the selected policy cannot retry or fall back
   to the other policy. A lease won concurrently with cancellation is disposed
   exactly once.
-- After acquisition, one `finally` owner releases that same lease on every
-  authentication, validation, Process Manager, response, disconnect, and
+- After data-policy acquisition, one `finally` owner releases that same lease on
+  every authentication, validation, Process Manager, response, disconnect, and
   exception path.
+- The guard remains held only through authentication and authoritative body
+  parsing so its spool bounds remain real; parser completion disposes the spool
+  and releases the guard before the Process Manager begins.
 - The selected lease remains held for the whole non-stream response or the
   complete SSE response/drain lifetime. It is not released after body parsing.
 - Failover attempts remain inside the same inbound lease and never perform a
@@ -201,19 +279,24 @@ a bounded security/operations diagnostic without request bytes.
 
 The implementation must make the following properties executable invariants:
 
-1. The admission controller is invoked at most once for a shared-POST request.
-   Every non-cancelled request that passes admission owns exactly one returned
-   lease.
-2. The selected kind is immutable. There is no alternate-policy probe,
+1. The separate fixed guard is attempted at most once, has no queue, and no body
+   byte or replay file is created without its lease. Guard failure owns zero
+   NonStream/SSE leases and cannot fall back to unguarded classification.
+2. After successful classification, the data admission controller is invoked
+   at most once. Every non-cancelled request that passes data admission owns
+   exactly one selected NonStream or SSE lease.
+3. The selected kind is immutable. There is no alternate-policy probe,
    release-and-reacquire, transfer, shared overflow pool, or recursive endpoint
    dispatch.
-3. Only the consistency guard can open the Process Manager boundary. It requires
+4. Only the consistency guard can open the Process Manager boundary. It requires
    a valid strict parse and an exact match between effective mode and held lease.
-4. Every invalid, quarantined, oversized, missing-feature, or mismatch path has
+5. Every invalid, quarantined, oversized, missing-feature, or mismatch path has
    zero canonical reads, Redis Group RPM calls, routes, Account leases,
    reservations, credential leases, dispatch fences, and upstream calls.
-5. The admission lease count returns to its prior value after every completion,
-   rejection, cancellation, and injected exception.
+6. Guard active count, memory, spool bytes, and file descriptors never exceed
+   8, 512 KiB, 256 MiB + 8 bytes, and 8 respectively at the validated maximum.
+   Both guard and data-policy counts return to their prior values after every
+   completion, rejection, cancellation, and injected exception.
 
 These invariants prove that a body cannot request SSE while consuming only a
 NonStream permit, cannot request non-stream execution while consuming only an
@@ -227,9 +310,14 @@ execution path without its matching policy.
 - Requests that omit `stream` may require bounded scanning through end-of-body
   before admission. This is unavoidable without changing the public protocol.
 - The Api performs a lightweight lexical pass over examined bytes and may use
-  bounded temporary storage before authentication. The fixed byte ceiling,
-  server ingress controls, owner-only delete-on-close storage, cancellation, and
-  no-DOM rule bound that cost.
+  bounded temporary storage before authentication. The fixed eight-permit/zero-
+  queue guard, 30-second deadline, byte/descriptor ceilings, owner-only delete-
+  on-close storage, cancellation, and no-DOM rule bound that cost.
+- The discriminator is intentionally a shared pre-admission choke point for the
+  two model POST routes. Saturating it makes both modes fail fast with overload,
+  which is measured and tested separately. After classification succeeds,
+  AC-043 still requires full NonStream/SSE isolation: saturating one selected
+  data partition cannot consume capacity in or reject the other.
 - The strict parser remains the sole source of normalized request data and
   public validation errors. No parsed request or prompt content is retained in
   the admission feature, metrics, logs, traces, or audit metadata.
@@ -267,6 +355,78 @@ allocation/work outside the selected bulkhead, and risks classifier/parser
 drift. The discriminator is restricted to bounded lexical mode discovery and
 exact byte replay.
 
+### Spool without a separate fixed guard
+
+Rejected. A per-request byte limit alone does not bound aggregate unauthenticated
+memory, temporary storage, or file descriptors. The fixed eight-permit,
+zero-queue, 30-second guard is required; storage failure cannot fall back to
+memory, another directory, direct streaming, or either selected data policy.
+
+## Migration and rollback impact
+
+This decision adds no PostgreSQL migration, table, column, permission, Redis
+key/script/version, release-manifest entry, durable state, or public data
+conversion. It is an Api process-local admission and body-replay change only.
+
+A rollout must drain affected Api instances, start the accepted implementation,
+and verify the discriminator and four existing admission metric kinds before
+restoring model traffic. Mixed instances preserve the same HTTP schema, but
+operational evidence must distinguish instances that do and do not implement
+the guard. Rollback requires draining the affected instance and returning to a
+contract-compatible prior Api build; there is no data rollback. A rollback must
+not route shared model POSTs through the current static SSE metadata shortcut or
+remove NonStream/SSE isolation. Partial replay files and guard/data leases are
+process-local and are discarded on process exit; they are never recovery facts.
+
+## Security impact
+
+The guard bounds unauthenticated classifier work per Api process to eight active
+requests, 512 KiB memory, eight spill descriptors, and at most 256 MiB + 8 bytes
+of temporary spool at the maximum configured body size. Its zero queue and
+30-second deadline bound slow-body and aggregate-spool pressure. Saturation,
+deadline, file open/write, descriptor exhaustion, quota failure, and `ENOSPC`
+fail closed without authentication or business dependencies; no failure may
+switch to an unguarded, in-memory-only, NonStream, or SSE fallback.
+
+Replay files contain potentially sensitive prompts and tool data. They must be
+runtime-private, owner-only, delete-on-close, never logged, traced, audited,
+backed up, or exposed through diagnostics, and closed on every success/failure/
+cancellation race. Metrics expose only the internal `model_discriminator` kind
+and bounded outcome, never body content or identities. The shared guard is an
+intentional availability tradeoff and may be targeted to overload both model
+modes; fail-fast behavior, alerting, and separate saturation tests make that
+risk explicit while selected-policy isolation remains unchanged afterward.
+
+## Coupled contract and test files
+
+Acceptance and implementation must update these coupled architecture/runtime
+descriptions atomically with the code:
+
+- `docs/architecture/design-pattern-baseline.md` for the exact pre-admission
+  exception, fixed guard, one selected policy, and AC-043 boundary;
+- `docs/开发执行规格-v1.0.md` and `docs/系统重构方案-v1.0.md` for the shared-POST
+  stage order, fixed resource limits, metrics kind, and failure behavior; and
+- `docs/architecture/adr/README.md` plus the normal project-memory navigation
+  only after exact approval and verified implementation state.
+
+The existing OpenAPI 429 response, `gateway_overloaded`, `Retry-After: 1`, 400,
+413, 415, and 422 contracts are reused without changing their public semantics.
+Therefore this proposal requires no OpenAPI compatibility window, error-catalog
+entry, fixture change, database sign-off, or Redis sign-off. Any implementation
+that needs a new public status/code/header or changes `stream` semantics must
+stop and open the corresponding independent contract governance instead.
+
+The minimum coupled test locations are:
+
+- `tests/PoolAI.UnitTests/GatewayModelDiscriminatorTests.cs` for lexical,
+  deadline, storage, aggregate-bound, and cleanup behavior;
+- `tests/PoolAI.EndToEndTests/GatewayAdmissionPipelineTests.cs` for exact error
+  precedence, one selected lease, no fallback, and zero business work;
+- `tests/PoolAI.LoadTests/AdmissionBulkheadLoadTests.cs` for separate guard
+  saturation plus post-classification AC-043 NonStream/SSE isolation; and
+- `tests/PoolAI.ArchitectureTests/GatewayBoundaryTests.cs` for immutable
+  classification, single selected-policy acquisition, and Process Manager guard.
+
 ## Verification required before acceptance can be claimed complete
 
 - Unit tests cover absent/false/true `stream` at every property position,
@@ -275,20 +435,25 @@ exact byte replay.
   known and chunked oversize bodies, and both shared routes.
 - Replay tests use a non-seekable chunked source and prove that downstream reads
   the exact original bytes; spill files are removed after success, rejection,
-  cancellation, and injected exceptions.
+  cancellation, deadline, open/write/`ENOSPC`, selected-policy rejection, and
+  injected exceptions, with no leaked file descriptor.
 - Pipeline tests prove overload-before-auth/validation precedence, auth-before-
   body-error precedence, zero business dependencies for quarantine/mismatch,
-  and one acquire/one release on every terminal path.
+  one guard attempt, one selected-policy attempt, and exact release on every
+  terminal path. Guard failure must prove zero selected-policy acquisition.
 - Isolation tests saturate SSE while valid NonStream traffic proceeds, and
   saturate NonStream while valid SSE traffic proceeds. They also prove there is
-  no alternate-policy fallback.
+  no alternate-policy fallback. A separate test saturates all eight
+  `model_discriminator` permits, proves immediate zero-queue Gateway 429 with
+  `Retry-After: 1` for both routes, then proves capacity is restored.
 - Cancellation tests cover discrimination, selected-policy wait, post-acquire
   validation, active non-stream response, active SSE, and bounded drain.
 - Architecture tests forbid a second admission-controller call, mutable
   classification features, endpoint/body-parser bypass of the consistency
   guard, and request-body content in logs/metrics/traces.
 - A bounded resource test places omitted `stream` at the maximum legal body
-  size and proves the fixed memory, total spool, linear-work, and cleanup bounds.
+  size and proves the 8/512 KiB/8/(256 MiB + 8 bytes), 30-second, linear-work,
+  and cleanup bounds.
 
 This proposed ADR is not approval to implement M4-E2/M4-E3, not an OpenAPI or
 database sign-off, not an authorization for remote systems, and not M4 or
