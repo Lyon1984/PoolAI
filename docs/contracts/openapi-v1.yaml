@@ -1756,6 +1756,7 @@ paths:
       summary: 创建 Group 及首个手动配额周期
       description: >-
         本请求只创建固定为 disabled 的 Group 与首个手动 quota 周期，不创建 Channel 或 Account 绑定。
+        `requests_per_minute` 省略时使用 6000；它是容量与安全限制，不是商业配额。
         Supply Configuration 必须另行调用独立 singleton 资源创建；配置与 quota 条件满足后才能激活 Group。
       x-required-roles: [admin]
       security:
@@ -1840,11 +1841,13 @@ paths:
     patch:
       tags: [AdminGroups]
       operationId: adminUpdateGroup
-      summary: 更新 Group 元数据或启用状态
+      summary: 更新 Group 元数据、状态或 RPM 上限
       x-required-roles: [admin]
       description: >-
         Token 总量不能在此修改，必须调用 quota adjust/reset。status 变为 active 时由 Orchestrator
         在同一时点校验 quota 与 Supply 前置条件；不满足返回 409 group_activation_not_ready。
+        提交 `requests_per_minute` 时必须同时提交 reason；实际值变化与其他 Group 修改共享一次
+        Unit of Work、审计记录与 version 递增，相同值为 no-op。
       security:
         - UserJwt: []
       parameters:
@@ -5576,6 +5579,16 @@ components:
       type: string
       enum: [active, disabled, archived]
       description: archived 是终态，只允许从 disabled 进入
+    GroupRequestsPerMinute:
+      type: integer
+      format: int32
+      minimum: 1
+      maximum: 1000000
+      default: 6000
+      description: >-
+        Group 级模型 POST 固定窗口上限；创建时省略则取 6000，PATCH 时省略则保留现值。
+        只计 `/v1/responses` 与 `/v1/chat/completions`，每个入站请求只计一次，
+        failover 不重复计数。此字段是容量与安全限制，不是商业配额。
     GroupAccountBinding:
       type: object
       additionalProperties: false
@@ -5602,7 +5615,7 @@ components:
     Group:
       type: object
       additionalProperties: false
-      required: [id, name, platform, status, version, created_at, updated_at]
+      required: [id, name, platform, status, requests_per_minute, version, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -5614,6 +5627,8 @@ components:
           description: R1 OpenAI 兼容协议族；不是上游 provider 选择器
         status:
           $ref: '#/components/schemas/GroupStatus'
+        requests_per_minute:
+          $ref: '#/components/schemas/GroupRequestsPerMinute'
         description:
           type: [string, 'null']
         version:
@@ -5634,6 +5649,8 @@ components:
         description:
           type: [string, 'null']
           maxLength: 1000
+        requests_per_minute:
+          $ref: '#/components/schemas/GroupRequestsPerMinute'
         total_tokens:
           $ref: '#/components/schemas/PositiveSafeTokenCount'
     GroupUpdateRequest:
@@ -5644,9 +5661,12 @@ components:
         - required: [name]
         - required: [description]
         - required: [status]
+        - required: [requests_per_minute]
       allOf:
         - if:
-            required: [status]
+            anyOf:
+              - required: [status]
+              - required: [requests_per_minute]
           then:
             required: [reason]
       properties:
@@ -5659,11 +5679,14 @@ components:
           maxLength: 1000
         status:
           $ref: '#/components/schemas/GroupStatus'
+        requests_per_minute:
+          $ref: '#/components/schemas/GroupRequestsPerMinute'
         reason:
           type: string
           minLength: 1
           maxLength: 500
           pattern: '.*\S.*'
+          description: status 或 requests_per_minute 出现在 PATCH 中时必填的审计理由
     GroupSupplyConfiguration:
       type: object
       additionalProperties: false

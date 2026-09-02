@@ -263,13 +263,19 @@ internal static class GroupQuotaHttp
                 ["total_tokens must be an integer between 1 and 9007199254740991."];
         }
 
+        int requestsPerMinute = ReadGroupCreateRequestsPerMinute(request, failures);
+
         errors = failures;
         if (failures.Count != 0)
         {
             return false;
         }
 
-        parsed = new ParsedGroupCreateRequest(name, description, totalTokens);
+        parsed = new ParsedGroupCreateRequest(
+            name,
+            description,
+            totalTokens,
+            requestsPerMinute);
         return true;
     }
 
@@ -340,7 +346,8 @@ internal static class GroupQuotaHttp
         Dictionary<string, IReadOnlyList<string>> errors = new(StringComparer.Ordinal);
         if (!request.Name.HasValue
             && !request.Description.HasValue
-            && !request.Status.HasValue)
+            && !request.Status.HasValue
+            && !request.RequestsPerMinute.HasValue)
         {
             errors["/"] = ["At least one mutable Group field is required."];
         }
@@ -364,19 +371,25 @@ internal static class GroupQuotaHttp
             errors["/status"] = ["The Group status is invalid."];
         }
 
-        if (request.Status.HasValue
-            && (!request.Reason.HasValue
-                || string.IsNullOrWhiteSpace(request.Reason.Value)
-                || request.Reason.Value!.Length > 500
-                || request.Reason.Value.Any(static character => character is '\r' or '\n')))
+        if (request.RequestsPerMinute.HasValue
+            && request.RequestsPerMinute.Value is < 1 or > 1_000_000)
         {
-            errors["/reason"] = ["Status changes require a non-blank reason of at most 500 characters."];
+            errors["/requests_per_minute"] =
+                ["requests_per_minute must be an integer between 1 and 1000000."];
+        }
+
+        if ((request.Status.HasValue || request.RequestsPerMinute.HasValue)
+            && (!request.Reason.HasValue
+                || request.Reason.Value is null
+                || !SatisfiesQuotaReasonContract(request.Reason.Value)))
+        {
+            errors["/reason"] =
+                ["Status or requests_per_minute changes require a non-blank reason of at most 500 characters."];
         }
 
         if (request.Reason.HasValue
-            && (string.IsNullOrWhiteSpace(request.Reason.Value)
-                || request.Reason.Value!.Length > 500
-                || request.Reason.Value.Any(static character => character is '\r' or '\n')))
+            && (request.Reason.Value is null
+                || !SatisfiesQuotaReasonContract(request.Reason.Value)))
         {
             errors["/reason"] = ["The reason must be non-blank and at most 500 characters."];
         }
@@ -406,6 +419,7 @@ internal static class GroupQuotaHttp
         Name = view.Name,
         Platform = "openai",
         Status = ToContractLifecycle(view.Status),
+        RequestsPerMinute = view.RequestsPerMinute,
         Description = new Optional<string?>(view.Description),
         Version = view.Version,
         CreatedAt = view.CreatedAt,
@@ -418,6 +432,7 @@ internal static class GroupQuotaHttp
         Name = view.Name,
         Platform = "openai",
         Status = ToContractLifecycle(view.Lifecycle),
+        RequestsPerMinute = view.RequestsPerMinute,
         Description = new Optional<string?>(view.Description),
         Version = view.Version,
         CreatedAt = view.CreatedAt,
@@ -903,6 +918,30 @@ internal static class GroupQuotaHttp
         }
     }
 
+    private static int ReadGroupCreateRequestsPerMinute(
+        JsonElement request,
+        Dictionary<string, IReadOnlyList<string>> failures)
+    {
+        if (!request.TryGetProperty(
+                "requests_per_minute",
+                out JsonElement requestsPerMinuteElement))
+        {
+            return 6000;
+        }
+
+        if (!TryReadPositiveSafeInteger(
+                requestsPerMinuteElement,
+                out long parsedRequestsPerMinute)
+            || parsedRequestsPerMinute > 1_000_000)
+        {
+            failures["/requests_per_minute"] =
+                ["requests_per_minute must be an integer between 1 and 1000000."];
+            return 6000;
+        }
+
+        return checked((int)parsedRequestsPerMinute);
+    }
+
     private static void AddGroupCreateAdditionalPropertyErrors(
         JsonElement request,
         Dictionary<string, IReadOnlyList<string>> failures)
@@ -911,6 +950,10 @@ internal static class GroupQuotaHttp
         {
             if (!string.Equals(property.Name, "name", StringComparison.Ordinal)
                 && !string.Equals(property.Name, "description", StringComparison.Ordinal)
+                && !string.Equals(
+                    property.Name,
+                    "requests_per_minute",
+                    StringComparison.Ordinal)
                 && !string.Equals(property.Name, "total_tokens", StringComparison.Ordinal))
             {
                 failures[JsonPointer(property.Name)] =
@@ -1018,7 +1061,8 @@ internal static class GroupQuotaHttp
     internal sealed record ParsedGroupCreateRequest(
         string Name,
         string? Description,
-        long TotalTokens);
+        long TotalTokens,
+        int RequestsPerMinute);
 
     internal sealed record ParsedQuotaMutationRequest(
         long TotalTokens,

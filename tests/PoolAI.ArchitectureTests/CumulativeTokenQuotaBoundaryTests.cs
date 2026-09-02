@@ -273,6 +273,31 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
     }
 
     [Fact]
+    public void DatabaseCatalogParserPreservesShapeForKnownColumnDefaultChanges()
+    {
+        Dictionary<string, HashSet<string>> tables = new(StringComparer.Ordinal)
+        {
+            ["groups"] = new HashSet<string>(["id", "runtime_policy"], StringComparer.Ordinal),
+        };
+        const string sql = """
+            ALTER TABLE public.groups
+                ALTER COLUMN runtime_policy
+                SET DEFAULT '{"schema_version":1,"requests_per_minute":6000}'::jsonb;
+            ALTER TABLE public.groups
+                VALIDATE CONSTRAINT ck_groups_runtime_policy_m4_e1;
+            """;
+
+        AddAlterTableColumns(MaskSqlCommentsAndLiterals(sql), tables);
+
+        Assert.Equal(
+            ["id", "runtime_policy"],
+            tables["groups"].Order(StringComparer.Ordinal));
+        Assert.ThrowsAny<Exception>(() => AddAlterTableColumns(
+            "ALTER TABLE public.groups ALTER COLUMN unknown_policy SET DEFAULT 1;",
+            tables));
+    }
+
+    [Fact]
     public void DatabaseCatalogParserPreservesSchemaStatementOrderAndQuotedNames()
     {
         Dictionary<string, HashSet<string>> tables = new(StringComparer.Ordinal)
@@ -2848,6 +2873,20 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
             return;
         }
 
+        Match setDefault = AlterSetColumnDefault().Match(action);
+        if (setDefault.Success)
+        {
+            Assert.Contains(
+                setDefault.Groups["column"].Value.ToLowerInvariant(),
+                columns);
+            return;
+        }
+
+        if (AlterValidateConstraint().IsMatch(action))
+        {
+            return;
+        }
+
         Assert.Fail($"Unsupported ALTER TABLE action: {action.Trim()}");
     }
 
@@ -4636,6 +4675,18 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
         RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase,
         matchTimeoutMilliseconds: 1_000)]
     private static partial Regex AlterRenameTable();
+
+    [GeneratedRegex(
+        @"^\s*ALTER\s+(?:COLUMN\s+)?(?<column>[a-z_][a-z0-9_$]*)\s+SET\s+DEFAULT\b[\s\S]*$",
+        RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase,
+        matchTimeoutMilliseconds: 1_000)]
+    private static partial Regex AlterSetColumnDefault();
+
+    [GeneratedRegex(
+        @"^\s*VALIDATE\s+CONSTRAINT\s+[a-z_][a-z0-9_$]*\s*$",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+        matchTimeoutMilliseconds: 1_000)]
+    private static partial Regex AlterValidateConstraint();
 
     [GeneratedRegex(
         @"^\s*(?<identifier>[a-z_][a-z0-9_$]*)\b",

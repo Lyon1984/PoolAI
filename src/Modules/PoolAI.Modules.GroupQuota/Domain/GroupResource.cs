@@ -11,7 +11,8 @@ internal sealed record GroupResource(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     bool HasCurrentQuotaPeriod,
-    DateTimeOffset ObservedAt)
+    DateTimeOffset ObservedAt,
+    int RequestsPerMinute)
 {
     internal GroupResourceSnapshot ToSnapshot() => new(
         Id,
@@ -20,5 +21,6 @@ internal sealed record GroupResource(
         Lifecycle,
         Version,
         CreatedAt,
-        UpdatedAt);
+        UpdatedAt,
+        RequestsPerMinute);
 }

@@ -1,5 +1,7 @@
 #pragma warning disable MA0051 // Each test keeps one complete command protocol visible.
 using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.GroupQuota.Abstractions;
@@ -34,6 +36,12 @@ public sealed class GroupControlPlaneServiceTests
         Assert.Null(GroupInput.Description(null));
         Assert.Equal("visible-key", GroupInput.IdempotencyKey("visible-key"));
         Assert.Equal("archive", GroupInput.Reason("  archive  "));
+        Assert.Equal(
+            string.Concat(Enumerable.Repeat("🚀", 300)),
+            GroupInput.Reason(string.Concat(Enumerable.Repeat("🚀", 300))));
+        Assert.Equal("line 1\r\nline 2", GroupInput.Reason("line 1\r\nline 2"));
+        Assert.Equal(1, GroupInput.RequestsPerMinute(1));
+        Assert.Equal(1_000_000, GroupInput.RequestsPerMinute(1_000_000));
 
         Assert.Throws<ArgumentNullException>(() => GroupInput.Name(null!));
         Assert.Throws<ArgumentException>(() => GroupInput.Name("\n"));
@@ -45,7 +53,11 @@ public sealed class GroupControlPlaneServiceTests
         Assert.Throws<ArgumentException>(() => GroupInput.IdempotencyKey(new string('k', 129)));
         Assert.Throws<ArgumentNullException>(() => GroupInput.Reason(null!));
         Assert.Throws<ArgumentException>(() => GroupInput.Reason("\r\n"));
+        Assert.Throws<ArgumentException>(() => GroupInput.Reason("\uD800"));
         Assert.Throws<ArgumentException>(() => GroupInput.Reason(new string('r', 501)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GroupInput.RequestsPerMinute(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            GroupInput.RequestsPerMinute(1_000_001));
         Assert.Throws<ArgumentNullException>(() => new GroupQuotaPolicy(null!));
         Assert.Throws<ArgumentException>(() => new GroupQuotaPolicy(new byte[31]));
 
@@ -157,6 +169,111 @@ public sealed class GroupControlPlaneServiceTests
     }
 
     [Fact]
+    public async Task Schema18IdempotencyHashBytesRemainStableUntilRpmIsExplicit()
+    {
+        CreateGroupCommand create = CreateCommand();
+        TestEnvironment legacyCreate = new();
+        _ = await legacyCreate.Service.ExecuteAsync(
+            create,
+            TestContext.Current.CancellationToken);
+        ReadOnlyMemory<byte> legacyCreateHash = Assert.Single(
+            legacyCreate.Idempotency.Requests).RequestHash;
+        Assert.Equal(
+            LegacyRequestHash(
+                """{"name":"Research","description":"Shared research","total_tokens":10000}"""),
+            legacyCreateHash.ToArray());
+
+        TestEnvironment explicitCreate = new();
+        _ = await explicitCreate.Service.ExecuteAsync(
+            create with { RequestsPerMinute = 9_001 },
+            TestContext.Current.CancellationToken);
+        Assert.False(legacyCreateHash.Span.SequenceEqual(
+            Assert.Single(explicitCreate.Idempotency.Requests).RequestHash.Span));
+
+        EntityId groupId = EntityId.New();
+        UpdateGroupCommand update = UpdateCommand(groupId);
+        TestEnvironment legacyUpdate = new();
+        _ = await legacyUpdate.Service.ExecuteAsync(
+            update,
+            TestContext.Current.CancellationToken);
+        ReadOnlyMemory<byte> legacyUpdateHash = Assert.Single(
+            legacyUpdate.Idempotency.Requests).RequestHash;
+        Assert.Equal(
+            LegacyRequestHash($$"""
+                {"group_id":"{{groupId.Value:D}}","expected_version":4,"has_name":true,"name":"Updated","has_description":false,"description":null,"has_status":false,"status":null,"reason":null}
+                """),
+            legacyUpdateHash.ToArray());
+
+        TestEnvironment explicitUpdate = new();
+        _ = await explicitUpdate.Service.ExecuteAsync(
+            update with
+            {
+                HasRequestsPerMinute = true,
+                RequestsPerMinute = 7_200,
+                Reason = "raise Group admission rate",
+            },
+            TestContext.Current.CancellationToken);
+        ReadOnlyMemory<byte> explicitUpdateHash = Assert.Single(
+            explicitUpdate.Idempotency.Requests).RequestHash;
+        Assert.False(legacyUpdateHash.Span.SequenceEqual(explicitUpdateHash.Span));
+
+        TestEnvironment explicitUpdateWithStatus = new();
+        _ = await explicitUpdateWithStatus.Service.ExecuteAsync(
+            update with
+            {
+                HasStatus = true,
+                Status = GroupLifecycle.Disabled,
+                HasRequestsPerMinute = true,
+                RequestsPerMinute = 7_200,
+                Reason = "keep disabled while raising Group admission rate",
+            },
+            TestContext.Current.CancellationToken);
+        ReadOnlyMemory<byte> explicitUpdateWithStatusHash = Assert.Single(
+            explicitUpdateWithStatus.Idempotency.Requests).RequestHash;
+        Assert.False(explicitUpdateHash.Span.SequenceEqual(explicitUpdateWithStatusHash.Span));
+        Assert.Equal(
+            LegacyRequestHash($$"""
+                {"group_id":"{{groupId.Value:D}}","expected_version":4,"has_name":true,"name":"Updated","has_description":false,"description":null,"has_status":true,"status":"disabled","has_requests_per_minute":true,"requests_per_minute":7200,"reason":"keep disabled while raising Group admission rate"}
+                """),
+            explicitUpdateWithStatusHash.ToArray());
+
+        SupplyReadinessEvidence evidence = new("supply.HashProof", Now);
+        ActivateGroupCommand activation = ActivateCommand(groupId, evidence) with
+        {
+            MetadataPatch = new GroupMetadataPatch(
+                HasName: true,
+                Name: " Activated ",
+                HasDescription: true,
+                Description: "ready"),
+        };
+        TestEnvironment legacyActivation = new();
+        _ = await legacyActivation.Service.ActivateAsync(
+            activation,
+            TestContext.Current.CancellationToken);
+        ReadOnlyMemory<byte> legacyActivationHash = Assert.Single(
+            legacyActivation.Idempotency.Requests).RequestHash;
+        Assert.Equal(
+            LegacyRequestHash($$"""
+                {"group_id":"{{groupId.Value:D}}","expected_version":4,"has_name":true,"name":"Activated","has_description":true,"description":"ready","reason":"activate"}
+                """),
+            legacyActivationHash.ToArray());
+
+        TestEnvironment explicitActivation = new();
+        _ = await explicitActivation.Service.ActivateAsync(
+            activation with
+            {
+                MetadataPatch = activation.MetadataPatch! with
+                {
+                    HasRequestsPerMinute = true,
+                    RequestsPerMinute = 8_400,
+                },
+            },
+            TestContext.Current.CancellationToken);
+        Assert.False(legacyActivationHash.Span.SequenceEqual(
+            Assert.Single(explicitActivation.Idempotency.Requests).RequestHash.Span));
+    }
+
+    [Fact]
     public async Task CreateCoversValidationConflictSuccessAndBothReplayKinds()
     {
         CreateGroupCommand valid = CreateCommand();
@@ -177,6 +294,8 @@ public sealed class GroupControlPlaneServiceTests
                      valid with { Description = new string('d', 1001) },
                      valid with { TotalTokens = 0 },
                      valid with { TotalTokens = 9_007_199_254_740_992 },
+                     valid with { RequestsPerMinute = 0 },
+                     valid with { RequestsPerMinute = 1_000_001 },
                  })
         {
             TestEnvironment environment = new();
@@ -214,7 +333,8 @@ public sealed class GroupControlPlaneServiceTests
                 write.GroupId,
                 version: 1,
                 name: write.Name,
-                description: write.Description));
+                description: write.Description,
+                requestsPerMinute: write.RequestsPerMinute));
         Result<GroupCommandOutcome> created = await success.Service.ExecuteAsync(
             valid,
             TestContext.Current.CancellationToken);
@@ -230,6 +350,26 @@ public sealed class GroupControlPlaneServiceTests
             "group-create:",
             success.Repository.LastCreate!.QuotaIdempotencyKey,
             StringComparison.Ordinal);
+        Assert.Equal(6000, success.Repository.LastCreate.RequestsPerMinute);
+        Assert.Equal(6000, created.Value.Value.RequestsPerMinute);
+
+        TestEnvironment customRate = new();
+        customRate.Repository.CreateFactory = write => new GroupWriteResult(
+            GroupWriteDisposition.Written,
+            Group(
+                write.GroupId,
+                version: 1,
+                name: write.Name,
+                description: write.Description,
+                requestsPerMinute: write.RequestsPerMinute));
+        Result<GroupCommandOutcome> customCreated = await customRate.Service.ExecuteAsync(
+            valid with { RequestsPerMinute = 9_001 },
+            TestContext.Current.CancellationToken);
+        Assert.True(customCreated.IsSuccess);
+        Assert.Equal(9_001, customRate.Repository.LastCreate!.RequestsPerMinute);
+        Assert.Equal(9_001, customCreated.Value.Value.RequestsPerMinute);
+        Assert.False(Assert.Single(success.Idempotency.Requests).RequestHash.Span.SequenceEqual(
+            Assert.Single(customRate.Idempotency.Requests).RequestHash.Span));
 
         success.Idempotency.ReplayCompletedRequests = true;
         Result<GroupCommandOutcome> replay = await success.Service.ExecuteAsync(
@@ -306,6 +446,43 @@ public sealed class GroupControlPlaneServiceTests
                      valid with { Name = null },
                      valid with { Name = "\n" },
                      valid with { Reason = "\n" },
+                     valid with
+                     {
+                         HasName = false,
+                         Name = null,
+                         HasRequestsPerMinute = true,
+                         RequestsPerMinute = null,
+                         Reason = "change rate",
+                     },
+                     valid with
+                     {
+                         HasRequestsPerMinute = false,
+                         RequestsPerMinute = 7_200,
+                     },
+                     valid with
+                     {
+                         HasName = false,
+                         Name = null,
+                         HasRequestsPerMinute = true,
+                         RequestsPerMinute = 0,
+                         Reason = "change rate",
+                     },
+                     valid with
+                     {
+                         HasName = false,
+                         Name = null,
+                         HasRequestsPerMinute = true,
+                         RequestsPerMinute = 1_000_001,
+                         Reason = "change rate",
+                     },
+                     valid with
+                     {
+                         HasName = false,
+                         Name = null,
+                         HasRequestsPerMinute = true,
+                         RequestsPerMinute = 7_200,
+                         Reason = null,
+                     },
                  })
         {
             TestEnvironment environment = new();
@@ -406,6 +583,64 @@ public sealed class GroupControlPlaneServiceTests
     }
 
     [Fact]
+    public async Task RequestsPerMinuteOnlyUpdateRequiresReasonAndWritesOneAuditedChange()
+    {
+        EntityId groupId = EntityId.New();
+        GroupResource before = Group(
+            groupId,
+            version: 4,
+            requestsPerMinute: 6_000);
+        GroupResource after = before with
+        {
+            Version = 5,
+            UpdatedAt = Now.AddMinutes(1),
+            RequestsPerMinute = 7_200,
+        };
+        TestEnvironment environment = new();
+        environment.Repository.UpdateResults.Enqueue(new GroupWriteResult(
+            GroupWriteDisposition.Written,
+            after,
+            before,
+            WasChanged: true,
+            CurrentVersion: 5));
+
+        Result<GroupCommandOutcome> result = await environment.Service.ExecuteAsync(
+            UpdateCommand(groupId) with
+            {
+                HasName = false,
+                Name = null,
+                HasRequestsPerMinute = true,
+                RequestsPerMinute = 7_200,
+                Reason = "raise Group admission rate",
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(7_200, result.Value.Value.RequestsPerMinute);
+        Assert.Equal(1, environment.Repository.UpdateCalls);
+        UpdateGroupWrite write = Assert.IsType<UpdateGroupWrite>(environment.Repository.LastUpdate);
+        Assert.False(write.HasName);
+        Assert.False(write.HasDescription);
+        Assert.Null(write.Lifecycle);
+        Assert.True(write.HasRequestsPerMinute);
+        Assert.Equal(7_200, write.RequestsPerMinute);
+        Assert.Equal("raise Group admission rate", write.Reason);
+        AuditEntry audit = Assert.Single(environment.Audit.Entries);
+        Assert.Equal("raise Group admission rate", audit.Reason);
+        Assert.Equal(
+            6_000,
+            audit.BeforeState!.Value.GetProperty("requests_per_minute").GetInt32());
+        Assert.Equal(
+            7_200,
+            audit.AfterState!.Value.GetProperty("requests_per_minute").GetInt32());
+        IntegrationEvent integrationEvent = Assert.Single(environment.Outbox.Events);
+        Assert.Collection(
+            integrationEvent.Payload.GetProperty("changed_fields").EnumerateArray(),
+            static field => Assert.Equal("requests_per_minute", field.GetString()));
+        Assert.Equal(1, environment.UnitOfWork.CommitCalls);
+    }
+
+    [Fact]
     public async Task ActivationCoversValidationPreconditionsMutationFailuresSuccessAndReplay()
     {
         EntityId groupId = EntityId.New();
@@ -428,6 +663,26 @@ public sealed class GroupControlPlaneServiceTests
                      {
                          MetadataPatch = new GroupMetadataPatch(true, "\n", false, null),
                      },
+                     valid with
+                     {
+                         MetadataPatch = new GroupMetadataPatch(
+                             false,
+                             null,
+                             false,
+                             null,
+                             HasRequestsPerMinute: false,
+                             RequestsPerMinute: 7_200),
+                     },
+                     valid with
+                     {
+                         MetadataPatch = new GroupMetadataPatch(
+                             false,
+                             null,
+                             false,
+                             null,
+                             HasRequestsPerMinute: true,
+                             RequestsPerMinute: null),
+                     },
                  })
         {
             TestEnvironment environment = new();
@@ -436,6 +691,7 @@ public sealed class GroupControlPlaneServiceTests
                     invalid,
                     TestContext.Current.CancellationToken),
                 GroupErrorCodes.ValidationFailed);
+            Assert.Equal(0, environment.UnitOfWork.BeginCalls);
         }
 
         GroupResource current = Group(
@@ -488,6 +744,7 @@ public sealed class GroupControlPlaneServiceTests
             Lifecycle = GroupLifecycle.Active,
             Version = 5,
             UpdatedAt = Now.AddMinutes(2),
+            RequestsPerMinute = 8_400,
         };
         TestEnvironment success = new();
         success.Repository.ActivationResult = current;
@@ -503,7 +760,9 @@ public sealed class GroupControlPlaneServiceTests
                 HasName: true,
                 Name: " Activated ",
                 HasDescription: true,
-                Description: "ready"),
+                Description: "ready",
+                HasRequestsPerMinute: true,
+                RequestsPerMinute: 8_400),
         };
         Result<GroupActivationResult> result = await success.Service.ActivateAsync(
             activate,
@@ -521,6 +780,8 @@ public sealed class GroupControlPlaneServiceTests
         Assert.True(success.Repository.LastUpdate.HasDescription);
         Assert.Equal("ready", success.Repository.LastUpdate.Description);
         Assert.Equal(GroupLifecycle.Active, success.Repository.LastUpdate.Lifecycle);
+        Assert.True(success.Repository.LastUpdate.HasRequestsPerMinute);
+        Assert.Equal(8_400, success.Repository.LastUpdate.RequestsPerMinute);
         Assert.Equal("activate", success.Repository.LastUpdate.Reason);
         Assert.Equal(1, success.UnitOfWork.CommitCalls);
 
@@ -699,12 +960,42 @@ public sealed class GroupControlPlaneServiceTests
             .ActivateAsync(activation, TestContext.Current.CancellationToken)
             .AsTask()).ConfigureAwait(true);
 
+        TestEnvironment schema18Replay = new();
+        schema18Replay.Idempotency.NextAcquire = CommandIdempotencyAcquireResult.Replay(
+            validCreated with
+            {
+                Body = JsonSerializer.SerializeToElement(new
+                {
+                    Id = replayGroup.Id.Value,
+                    replayGroup.Name,
+                    replayGroup.Description,
+                    Status = replayGroup.Lifecycle,
+                    replayGroup.Version,
+                    replayGroup.CreatedAt,
+                    replayGroup.UpdatedAt,
+                }),
+            });
+        Result<GroupCommandOutcome> legacyReplayResult = await schema18Replay.Service
+            .ExecuteAsync(CreateCommand(), TestContext.Current.CancellationToken)
+            .ConfigureAwait(true);
+        Assert.True(legacyReplayResult.IsSuccess);
+        Assert.True(legacyReplayResult.Value.IsReplay);
+        Assert.Equal(6000, legacyReplayResult.Value.Value.RequestsPerMinute);
+
         CommandIdempotencyResponse[] invalidSuccessResponses =
         [
             validCreated with { Status = 202 },
             validCreated with
             {
                 Body = ReplayBody(replayGroup, id: Guid.Empty),
+            },
+            validCreated with
+            {
+                Body = ReplayBody(replayGroup with { RequestsPerMinute = 0 }),
+            },
+            validCreated with
+            {
+                Body = ReplayBody(replayGroup with { RequestsPerMinute = 1_000_001 }),
             },
         ];
         foreach (CommandIdempotencyResponse response in invalidSuccessResponses)
@@ -843,6 +1134,7 @@ public sealed class GroupControlPlaneServiceTests
             group.Version,
             group.CreatedAt,
             group.UpdatedAt,
+            group.RequestsPerMinute,
         });
 
     private static CommandIdempotencyResponse FailureReplay(
@@ -884,13 +1176,30 @@ public sealed class GroupControlPlaneServiceTests
             .Replace('/', '_');
     }
 
+    private static byte[] LegacyRequestHash(string schema18Json)
+    {
+        byte[] input = Encoding.UTF8.GetBytes(
+            "poolai|idempotency-request-hash|groupquota|v1\0" + schema18Json);
+        try
+        {
+            return HMACSHA256.HashData(
+                Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray(),
+                input);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(input);
+        }
+    }
+
     private static GroupResource Group(
         EntityId? id = null,
         long version = 1,
         string name = "Research",
         string? description = "Shared research",
         GroupLifecycle lifecycle = GroupLifecycle.Disabled,
-        bool hasQuota = true) => new(
+        bool hasQuota = true,
+        int requestsPerMinute = 6000) => new(
             id ?? EntityId.New(),
             name,
             description,
@@ -899,7 +1208,8 @@ public sealed class GroupControlPlaneServiceTests
             Now.AddDays(-1),
             Now,
             hasQuota,
-            Now);
+            Now,
+            requestsPerMinute);
 
     private static void AssertFailure<T>(Result<T> result, string code)
     {

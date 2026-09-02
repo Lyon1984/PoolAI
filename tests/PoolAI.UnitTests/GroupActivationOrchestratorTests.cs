@@ -132,6 +132,73 @@ public sealed class GroupActivationOrchestratorTests
     }
 
     [Theory]
+    [InlineData(true, null)]
+    [InlineData(true, 0)]
+    [InlineData(true, 1000001)]
+    [InlineData(false, 6000)]
+    public async Task InvalidRuntimePolicyPatchStopsBeforeReadingAuthoritativeState(
+        bool hasRequestsPerMinute,
+        int? requestsPerMinute)
+    {
+        List<string> calls = [];
+        EntityId actorId = EntityId.New();
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            EntityId.New());
+
+        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
+            new GroupActivationRequest(
+                new ActorContext(actorId, 7),
+                EntityId.New(),
+                11,
+                "018f-idempotency",
+                "Supply configuration verified",
+                new GroupMetadataPatch(
+                    false,
+                    null,
+                    false,
+                    null,
+                    hasRequestsPerMinute,
+                    requestsPerMinute)),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("validation_failed", result.Error.Code);
+        Assert.Empty(calls);
+    }
+
+    [Fact]
+    public async Task ValidRuntimePolicyPatchIsForwardedToTheTransactionalCommand()
+    {
+        List<string> calls = [];
+        EntityId actorId = EntityId.New();
+        EntityId groupId = EntityId.New();
+        FakeActivationCommand activation = new(calls, Result.Success(
+            new GroupActivationResult(groupId, GroupLifecycle.Active, 12)));
+        GroupActivationOrchestrator orchestrator = CreateOrchestrator(
+            calls,
+            actorId,
+            groupId,
+            activation: activation);
+        GroupMetadataPatch patch = new(false, null, false, null, true, 9000);
+
+        Result<GroupActivationResult> result = await orchestrator.ActivateAsync(
+            new GroupActivationRequest(
+                new ActorContext(actorId, 7),
+                groupId,
+                11,
+                "018f-idempotency",
+                "Change Group RPM while activating",
+                patch),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsSuccess);
+        Assert.Same(patch, Assert.IsType<ActivateGroupCommand>(activation.LastCommand).MetadataPatch);
+        Assert.Equal(["identity", "idempotency", "supply", "activate"], calls);
+    }
+
+    [Theory]
     [InlineData(UserLifecycle.Disabled, SystemRole.Admin)]
     [InlineData(UserLifecycle.Active, SystemRole.Operator)]
     public async Task ActivationRequiresCurrentActiveAdministrator(
@@ -250,7 +317,8 @@ public sealed class GroupActivationOrchestratorTests
                 GroupLifecycle.Active,
                 12,
                 ObservedAt,
-                ObservedAt));
+                ObservedAt,
+                RequestsPerMinute: 6000));
         GroupActivationOrchestrator orchestrator = new(
             ActiveAdmin(calls, actorId),
             UnexpectedSupply(calls),

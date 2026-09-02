@@ -132,7 +132,8 @@ public sealed class GroupQuotaAbstractionsContractTests
             GroupLifecycle.Active,
             17,
             ObservedAt.AddDays(-1),
-            ObservedAt);
+            ObservedAt,
+            RequestsPerMinute: 6000);
         GroupActivationResult result = new(
             GroupId,
             GroupLifecycle.Active,
@@ -159,13 +160,15 @@ public sealed class GroupQuotaAbstractionsContractTests
             GroupLifecycle.Disabled,
             21,
             HasCurrentQuotaPeriod: true,
-            ObservedAt);
+            ObservedAt,
+            RequestsPerMinute: 6000);
 
         Assert.Equal(GroupId, snapshot.GroupId);
         Assert.Equal(GroupLifecycle.Disabled, snapshot.Lifecycle);
         Assert.Equal(21, snapshot.Version);
         Assert.True(snapshot.HasCurrentQuotaPeriod);
         Assert.Equal(ObservedAt, snapshot.ObservedAt);
+        Assert.Equal(6000, snapshot.RequestsPerMinute);
     }
 
     [Fact]

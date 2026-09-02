@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Text;
+
 namespace PoolAI.Modules.GroupQuota.Domain;
 
 internal static class GroupInput
@@ -47,14 +50,51 @@ internal static class GroupInput
     {
         ArgumentNullException.ThrowIfNull(value);
         string normalized = value.Trim();
-        if (normalized.Length is < 1 or > 500
-            || normalized.Any(static character => character is '\r' or '\n'))
+        if (!HasAtMostUnicodeScalars(normalized, 500))
         {
             throw new ArgumentException(
-                "A reason must contain between 1 and 500 characters.",
+                "A reason must contain between 1 and 500 valid Unicode scalar values.",
                 nameof(value));
         }
 
         return normalized;
+    }
+
+    internal static int RequestsPerMinute(int value)
+    {
+        if (value is < 1 or > 1_000_000)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                "A Group requests-per-minute limit must be between 1 and 1000000.");
+        }
+
+        return value;
+    }
+
+    private static bool HasAtMostUnicodeScalars(string value, int maximum)
+    {
+        if (value.Length == 0)
+        {
+            return false;
+        }
+
+        int count = 0;
+        ReadOnlySpan<char> remaining = value.AsSpan();
+        while (!remaining.IsEmpty)
+        {
+            if (Rune.DecodeFromUtf16(
+                    remaining,
+                    out _,
+                    out int consumed) != OperationStatus.Done
+                || ++count > maximum)
+            {
+                return false;
+            }
+
+            remaining = remaining[consumed..];
+        }
+
+        return true;
     }
 }

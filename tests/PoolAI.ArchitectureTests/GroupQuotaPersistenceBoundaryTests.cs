@@ -68,6 +68,53 @@ public sealed class GroupQuotaPersistenceBoundaryTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void M4E1RuntimePolicyMigrationKeepsTheExistingGroupStorageBoundary()
+    {
+        // Governing contract: docs/database/README.md section 2 and ADR 0015.
+        // M4-E1 canonicalizes the existing Group-owned jsonb value and adds
+        // narrow v2 functions; it must not grow a parallel policy store.
+        string migration = File.ReadAllText(Path.Combine(
+            RepositoryRoot.Find(),
+            "docs",
+            "database",
+            "0019_group_runtime_policy_m4_e1.sql"));
+
+        Assert.Contains(
+            "'{\"schema_version\":1,\"requests_per_minute\":6000}'::jsonb",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CREATE OR REPLACE FUNCTION public.poolai_group_create_v2(",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CREATE OR REPLACE FUNCTION public.poolai_group_update_v2(",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "'requests_per_minute', v_requests_per_minute",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "version = target.version + 1",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "LOCK TABLE public.groups IN ACCESS EXCLUSIVE MODE;",
+            migration,
+            StringComparison.Ordinal);
+        Assert.True(
+            migration.IndexOf(
+                "LOCK TABLE public.groups IN ACCESS EXCLUSIVE MODE;",
+                StringComparison.Ordinal)
+            < migration.IndexOf("DO $runtime_policy_preflight$", StringComparison.Ordinal),
+            "The schema-18 policy preflight must run under the migration's table lock.");
+        Assert.DoesNotContain("ADD COLUMN", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CREATE TABLE", migration, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CREATE INDEX", migration, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string Slice(string source, string startMarker, string endMarker)
     {
         int start = source.IndexOf(startMarker, StringComparison.Ordinal);

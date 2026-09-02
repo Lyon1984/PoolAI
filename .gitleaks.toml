@@ -97,3 +97,13 @@ paths = [
   '''^docs/contracts/compatibility-windows-v1\.json$''',
 ]
 regexes = ['''^(e0a72d2827318ce6f53e520292f3aea5bbaa9b9979ae0bc5b27d7b74a5d640d4|9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf)$''']
+
+[[allowlists]]
+description = "ADR 0015 public OpenAPI digests are not API credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0015-freeze-m4-e1-gateway-admission-and-upstream-handoff\.md$''',
+  '''^docs/contracts/compatibility-windows-v1\.json$''',
+]
+regexes = ['''^(9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf|9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9)$''']

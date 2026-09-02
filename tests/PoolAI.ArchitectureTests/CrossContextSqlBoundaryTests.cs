@@ -116,6 +116,8 @@ public sealed class CrossContextSqlBoundaryTests
         ["poolai_quota_adjust_usage"] = GroupQuota,
         ["poolai_group_create"] = GroupQuota,
         ["poolai_group_update"] = GroupQuota,
+        ["poolai_group_create_v2"] = GroupQuota,
+        ["poolai_group_update_v2"] = GroupQuota,
         ["poolai_group_quota_adjust_total"] = GroupQuota,
         ["poolai_group_quota_reset"] = GroupQuota,
         ["poolai_bump_current_quota_representation_version"] = GroupQuota,
@@ -158,6 +160,8 @@ public sealed class CrossContextSqlBoundaryTests
             ["poolai_validate_group_activation->channels"] =
                 new("c", ["deleted_at", "id", "model_rules", "provider", "status"]),
             ["poolai_group_update->subscriptions"] =
+                new("subscription", ["expires_at", "group_id", "status"]),
+            ["poolai_group_update_v2->subscriptions"] =
                 new("subscription", ["expires_at", "group_id", "status"]),
             ["poolai_subscription_template_create->groups"] =
                 new("current_group", ["id", "status"]),
@@ -210,6 +214,7 @@ public sealed class CrossContextSqlBoundaryTests
         "poolai_supply_rewrap_account_credential->poolai_secret_envelope_v1_is_structurally_valid",
         "poolai_emit_quota_event->poolai_business_error",
         "poolai_group_create->poolai_quota_initialize",
+        "poolai_group_create_v2->poolai_quota_initialize",
         "poolai_group_quota_adjust_total->poolai_business_error",
         "poolai_group_quota_adjust_total->poolai_quota_adjust_total",
         "poolai_group_quota_adjust_total->poolai_quota_remaining",
@@ -266,6 +271,8 @@ public sealed class CrossContextSqlBoundaryTests
         "0014_group_quota_representation_version_m3_e1.sql:$permission_audit$:fe04cbea6ca21aec3edd7fa746b9e2b1abe8e7fcf0baadcd02fc275d3956177a",
         "0015_operations_outbox_replay_m3_e4.sql:$permission_audit$:c2a51164cd9b1e1093c248635e7e5a9ebd0e71fc70c1f8636773f958157ee355",
         "0016_operations_delivery_and_fact_audit_m3_e4.sql:$permission_audit$:54c53fae56cfd3fee996d2fe50722f8b9ebd7f590e9f69378a9b0ebdb8e49d6d",
+        "0019_group_runtime_policy_m4_e1.sql:$runtime_policy_preflight$:c619b563c107ece73f7ae920b4e3e54b95c66431245a235096d9e8e57c3b5bff",
+        "0019_group_runtime_policy_m4_e1.sql:$permission_audit$:b89e134615b510e1a8f3b210922c68fb7d4c877928c6bc74e69293a55304ea84",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
@@ -317,6 +324,7 @@ public sealed class CrossContextSqlBoundaryTests
             ["poolai_quota_adjust_usage"] = ["share", "update", "update", "update"],
             ["poolai_validate_group_activation"] = [],
             ["poolai_group_update"] = ["update", "update"],
+            ["poolai_group_update_v2"] = ["update", "update"],
             ["poolai_subscription_template_create"] = ["share"],
             ["poolai_subscription_template_update"] = ["update", "update"],
             ["poolai_subscription_template_retire"] = ["share", "update"],
@@ -486,6 +494,20 @@ public sealed class CrossContextSqlBoundaryTests
                 "subscriptions",
                 "if v_status = 'archived' then"),
             "Family C must retain the exact archived literal branch.");
+
+        string groupUpdateV2 = adrBodies["poolai_group_update_v2"];
+        Assert.True(
+            ReferencesTableOnlyInsideIfBlock(
+                groupUpdateV2,
+                "subscriptions",
+                "if v_status = '' then"),
+            "M4-E1 Family C may read subscriptions only in the archive-decision branch.");
+        Assert.True(
+            ReferencesTableOnlyInsideLiteralIfBlock(
+                groupUpdateV2,
+                "subscriptions",
+                "if v_status = 'archived' then"),
+            "M4-E1 Family C must retain the exact archived literal branch.");
     }
 
     [Fact]

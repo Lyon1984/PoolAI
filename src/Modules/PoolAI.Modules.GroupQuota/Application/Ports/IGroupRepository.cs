@@ -20,7 +20,8 @@ internal sealed record CreateGroupWrite(
     long TotalTokens,
     EntityId ActorUserId,
     string QuotaIdempotencyKey,
-    string Reason);
+    string Reason,
+    int RequestsPerMinute);
 
 internal sealed record UpdateGroupWrite(
     EntityId GroupId,
@@ -31,7 +32,9 @@ internal sealed record UpdateGroupWrite(
     string? Description,
     GroupLifecycle? Lifecycle,
     string? Reason,
-    SupplyReadinessEvidence? SupplyEvidence);
+    SupplyReadinessEvidence? SupplyEvidence,
+    bool HasRequestsPerMinute = false,
+    int? RequestsPerMinute = null);
 
 internal enum GroupWriteDisposition
 {

@@ -19,6 +19,7 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         g.name,
         g.description,
         g.status,
+        (g.runtime_policy ->> 'requests_per_minute')::integer AS requests_per_minute,
         g.version,
         g.created_at,
         g.updated_at,
@@ -68,15 +69,15 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
 
     private const string CreateSql = """
         SELECT disposition, was_changed, before_state::text, current_version
-        FROM public.poolai_group_create(
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+        FROM public.poolai_group_create_v2(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
         );
         """;
 
     private const string UpdateSql = """
         SELECT disposition, was_changed, before_state::text, current_version
-        FROM public.poolai_group_update(
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+        FROM public.poolai_group_update_v2(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
         );
         """;
 
@@ -99,6 +100,7 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
                 command.Parameters.AddWithValue(write.GroupId.Value);
                 command.Parameters.AddWithValue(write.Name);
                 AddNullableText(command.Parameters, write.Description);
+                command.Parameters.AddWithValue(write.RequestsPerMinute);
                 command.Parameters.AddWithValue(write.PeriodId.Value);
                 command.Parameters.Add(new NpgsqlParameter
                 {
@@ -168,12 +170,20 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
                 AddNullableText(command.Parameters, write.HasName ? write.Name : null);
                 command.Parameters.AddWithValue(write.HasDescription);
                 AddNullableText(command.Parameters, write.HasDescription ? write.Description : null);
+                command.Parameters.AddWithValue(write.HasRequestsPerMinute);
+                AddNullableInteger(
+                    command.Parameters,
+                    write.HasRequestsPerMinute ? write.RequestsPerMinute : null);
                 AddNullableText(
                     command.Parameters,
                     write.Lifecycle is null
                         ? null
                         : PostgresGroupAbiContract.LifecycleCode(write.Lifecycle.Value));
-                AddNullableText(command.Parameters, write.Lifecycle is null ? null : write.Reason);
+                AddNullableText(
+                    command.Parameters,
+                    write.Lifecycle is not null || write.HasRequestsPerMinute
+                        ? write.Reason
+                        : null);
                 AddNullableText(command.Parameters, write.SupplyEvidence?.OpaqueToken);
                 AddNullableTimestamp(
                     command.Parameters,
@@ -283,11 +293,12 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         reader.GetString(1),
         reader.IsDBNull(2) ? null : reader.GetString(2),
         PostgresGroupAbiContract.ParseLifecycle(reader.GetString(3)),
-        reader.GetInt64(4),
-        reader.GetFieldValue<DateTimeOffset>(5),
+        reader.GetInt64(5),
         reader.GetFieldValue<DateTimeOffset>(6),
-        reader.GetBoolean(7),
-        reader.GetFieldValue<DateTimeOffset>(8));
+        reader.GetFieldValue<DateTimeOffset>(7),
+        reader.GetBoolean(8),
+        reader.GetFieldValue<DateTimeOffset>(9),
+        reader.GetInt32(4));
 
     private static GroupResource? ParseBeforeState(
         string? json,
@@ -313,7 +324,8 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
             root.GetProperty("created_at").GetDateTimeOffset(),
             root.GetProperty("updated_at").GetDateTimeOffset(),
             hasCurrentQuotaPeriod,
-            root.GetProperty("updated_at").GetDateTimeOffset());
+            root.GetProperty("updated_at").GetDateTimeOffset(),
+            root.GetProperty("requests_per_minute").GetInt32());
     }
 
     internal static GroupWriteDisposition MapCreateDisposition(string disposition) =>
@@ -345,6 +357,14 @@ internal sealed partial class PostgresGroupRepository(NpgsqlDataSource dataSourc
         DateTimeOffset? value) => parameters.Add(new NpgsqlParameter
         {
             NpgsqlDbType = NpgsqlDbType.TimestampTz,
+            Value = value ?? (object)DBNull.Value,
+        });
+
+    private static void AddNullableInteger(
+        NpgsqlParameterCollection parameters,
+        int? value) => parameters.Add(new NpgsqlParameter
+        {
+            NpgsqlDbType = NpgsqlDbType.Integer,
             Value = value ?? (object)DBNull.Value,
         });
 
