@@ -8,8 +8,8 @@
   },
   "postgres": {
     "required_server_major": 18,
-    "minimum_compatible_version": 19,
-    "maximum_compatible_version": 19,
+    "minimum_compatible_version": 20,
+    "maximum_compatible_version": 20,
     "migrations": [
       {
         "version": 1,
@@ -124,6 +124,12 @@
         "name": "0019_group_runtime_policy_m4_e1.sql",
         "source": "docs/database/0019_group_runtime_policy_m4_e1.sql",
         "sha256": "7bfa4412c899037ac6b0531ade60fa75f6a2afa721fef1ce7511a245f9e63f43"
+      },
+      {
+        "version": 20,
+        "name": "0020_gateway_credential_revision_permission_m4_e1.sql",
+        "source": "docs/database/0020_gateway_credential_revision_permission_m4_e1.sql",
+        "sha256": "cb2249c7c3a62e8f43ce9dd1a6cfd56461cce7f452a71167e8cf9d9f873c06b0"
       }
     ]
   },

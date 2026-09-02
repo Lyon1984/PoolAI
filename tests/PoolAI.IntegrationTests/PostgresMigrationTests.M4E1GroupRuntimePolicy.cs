@@ -36,7 +36,7 @@ public sealed partial class PostgresMigrationTests
         MigrationCatalog catalog = await MigrationCatalog
             .LoadAsync(cancellationToken)
             .ConfigureAwait(true);
-        Assert.Equal(19, catalog.Assets.Count);
+        Assert.Equal(20, catalog.Assets.Count);
         await ApplyM4E1MigrationPrefixAsync(catalog, connectionString, cancellationToken)
             .ConfigureAwait(true);
 
@@ -246,7 +246,7 @@ public sealed partial class PostgresMigrationTests
             connectionString,
             "PoolAI.IntegrationTests.m4-e1-success",
             cancellationToken).ConfigureAwait(true);
-        Assert.Equal(19, await ReadM4E1TopMigrationAsync(connection, cancellationToken)
+        Assert.Equal(20, await ReadM4E1TopMigrationAsync(connection, cancellationToken)
             .ConfigureAwait(true));
         Assert.True(await ReadM4E1ConstraintValidatedAsync(connection, cancellationToken)
             .ConfigureAwait(true));

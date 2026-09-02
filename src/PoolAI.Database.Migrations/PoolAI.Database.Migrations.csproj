@@ -24,5 +24,6 @@
     <EmbeddedResource Include="../../docs/database/0017_operations_outbox_query_scaling_m3_e4.sql" Link="Migrations/0017_operations_outbox_query_scaling_m3_e4.sql" />
     <EmbeddedResource Include="../../docs/database/0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql" Link="Migrations/0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql" />
     <EmbeddedResource Include="../../docs/database/0019_group_runtime_policy_m4_e1.sql" Link="Migrations/0019_group_runtime_policy_m4_e1.sql" />
+    <EmbeddedResource Include="../../docs/database/0020_gateway_credential_revision_permission_m4_e1.sql" Link="Migrations/0020_gateway_credential_revision_permission_m4_e1.sql" />
   </ItemGroup>
 </Project>

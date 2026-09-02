@@ -273,6 +273,7 @@ public sealed class CrossContextSqlBoundaryTests
         "0016_operations_delivery_and_fact_audit_m3_e4.sql:$permission_audit$:54c53fae56cfd3fee996d2fe50722f8b9ebd7f590e9f69378a9b0ebdb8e49d6d",
         "0019_group_runtime_policy_m4_e1.sql:$runtime_policy_preflight$:c619b563c107ece73f7ae920b4e3e54b95c66431245a235096d9e8e57c3b5bff",
         "0019_group_runtime_policy_m4_e1.sql:$permission_audit$:b89e134615b510e1a8f3b210922c68fb7d4c877928c6bc74e69293a55304ea84",
+        "0020_gateway_credential_revision_permission_m4_e1.sql:$permission_audit$:9e4e2c5f8ab96f77a8bb1c93c6049c190eab4c580033e93c2cc43cbab2fb1842",
     ];
 
     private static readonly string[] RegisteredSetConfigStatements =
