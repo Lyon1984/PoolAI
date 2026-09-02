@@ -11,6 +11,7 @@ using PoolAI.Infrastructure.Postgres;
 using PoolAI.Infrastructure.Secrets;
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Supply;
+using PoolAI.Modules.Supply.Abstractions;
 using PoolAI.Modules.Supply.Application.Ports;
 using PoolAI.Modules.Supply.Infrastructure.Persistence;
 using PoolAI.Modules.Supply.Infrastructure.Security;
@@ -72,6 +73,8 @@ public sealed class SupplyAccountCredentialPostgresRuntimeTests
 
         Assert.IsType<PostgresAccountCredentialStore>(
             provider.GetRequiredService<IAccountCredentialStore>());
+        Assert.IsType<PostgresRouteCredentialLeaseSource>(
+            provider.GetRequiredService<IRouteCredentialLeaseSource>());
     }
 
     [Fact]

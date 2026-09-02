@@ -6,6 +6,7 @@ public enum ReservationLifetimeStopReason
     UpstreamCompletedWithoutUsage,
     UpstreamFaulted,
     ClientDisconnected,
+    AttemptDeadlineReached,
     RenewalFailed,
     HardDeadlineReached,
 }

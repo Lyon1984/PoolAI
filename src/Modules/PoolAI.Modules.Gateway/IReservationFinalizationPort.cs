@@ -7,6 +7,7 @@ public interface IReservationFinalizationPort
     ValueTask SettleKnownUsageAsync(
         DispatchedReservationHandle reservation,
         ReservationSettlementEvidence.KnownUsage usage,
+        ReservationLifetimeStopReason stopReason,
         CancellationToken cancellationToken);
 
     ValueTask SettleConservativelyAsync(

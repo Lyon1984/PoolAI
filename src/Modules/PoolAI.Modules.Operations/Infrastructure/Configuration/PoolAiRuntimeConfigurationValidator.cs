@@ -22,6 +22,9 @@ public static class PoolAiRuntimeConfigurationValidator
     private const string PrivateEgressRulesKey =
         "Supply:Health:PrivateEgressRules";
     private const int MaximumPrivateEgressRules = 64;
+    private const string TrustedProxyCidrsKey =
+        "Gateway:Ingress:TrustedProxyCidrs";
+    private const int MaximumTrustedProxyCidrs = 64;
 
     private static readonly string[] ForbiddenSections =
     [
@@ -73,35 +76,47 @@ public static class PoolAiRuntimeConfigurationValidator
                 envelopeRingKeyPaths.Length);
         }
 
-        if (hostProfile is HostProfile.Api)
-        {
-            validation.RequireDistinctBase64Secrets(
-            [
-                "Auth:Jwt:SigningKey",
-                "Auth:RefreshToken:CurrentPepper",
-                "Auth:RefreshToken:PreviousPepper",
-                "Auth:PasswordReset:RateLimitScopePepper",
-                "Auth:TokenHash:CurrentPepper",
-                "Auth:TokenHash:PreviousPepper",
-                "Auth:TOTP:RecoveryCodePepper",
-                "Auth:Login:RateLimitScopePepper",
-                "Idempotency:RequestHashPepper",
-                "ApiKeys:CurrentPepper",
-                "ApiKeys:PreviousPepper",
-                .. envelopeRingKeyPaths,
-            ]);
-        }
-        else
-        {
-            validation.RequireDistinctBase64Secrets(envelopeRingKeyPaths);
-        }
+        ValidateSecretIsolation(validation, hostProfile, envelopeRingKeyPaths);
 
         ValidateOutbox(validation);
         ValidateQuotaAndGateway(validation);
+        if (hostProfile is HostProfile.Api)
+        {
+            ValidateGatewayIngress(validation);
+        }
+
         ValidateAdmissionAndRouting(validation);
         ValidateUsageAndOperations(validation);
         ValidateForbiddenConfiguration(validation, configuration);
         validation.ThrowIfInvalid();
+    }
+
+    private static void ValidateSecretIsolation(
+        Validation validation,
+        HostProfile hostProfile,
+        string[] envelopeRingKeyPaths)
+    {
+        if (hostProfile is not HostProfile.Api)
+        {
+            validation.RequireDistinctBase64Secrets(envelopeRingKeyPaths);
+            return;
+        }
+
+        validation.RequireDistinctBase64Secrets(
+        [
+            "Auth:Jwt:SigningKey",
+            "Auth:RefreshToken:CurrentPepper",
+            "Auth:RefreshToken:PreviousPepper",
+            "Auth:PasswordReset:RateLimitScopePepper",
+            "Auth:TokenHash:CurrentPepper",
+            "Auth:TokenHash:PreviousPepper",
+            "Auth:TOTP:RecoveryCodePepper",
+            "Auth:Login:RateLimitScopePepper",
+            "Idempotency:RequestHashPepper",
+            "ApiKeys:CurrentPepper",
+            "ApiKeys:PreviousPepper",
+            .. envelopeRingKeyPaths,
+        ]);
     }
 
     private static void ValidateApplication(Validation validation, bool isProduction)
@@ -476,12 +491,22 @@ public static class PoolAiRuntimeConfigurationValidator
         validation.Range("Quota:DisconnectDrainSeconds", 15, 5, 15);
         validation.Range("Quota:DeniedMutationAttemptsPerMinute", 5, 1, 20);
 
-        validation.Range("Gateway:DefaultMaxOutputTokens", 4_096, 1, int.MaxValue);
-        validation.RangeLong(
+        int defaultMaxOutputTokens = validation.Range(
+            "Gateway:DefaultMaxOutputTokens",
+            4_096,
+            1,
+            int.MaxValue);
+        long maximumEstimatedTokensPerAttempt = validation.RangeLong(
             "Gateway:MaxEstimatedTokensPerAttempt",
             2_000_000,
             1,
             JavaScriptSafeIntegerMax);
+        if (defaultMaxOutputTokens > maximumEstimatedTokensPerAttempt)
+        {
+            validation.Invalid("Gateway:DefaultMaxOutputTokens");
+            validation.Invalid("Gateway:MaxEstimatedTokensPerAttempt");
+        }
+
         validation.Range("Gateway:MaxAttempts", 3, 1, 5);
         validation.Range("Gateway:ConnectTimeoutSeconds", 10, 1, 60);
         validation.Range("Gateway:FirstByteTimeoutSeconds", 60, 5, 300);
@@ -500,6 +525,52 @@ public static class PoolAiRuntimeConfigurationValidator
             16_777_216,
             1_048_576,
             33_554_432);
+    }
+
+    private static void ValidateGatewayIngress(Validation validation)
+    {
+        validation.Range(
+            "Gateway:Ingress:ForwardedForLimit",
+            1,
+            1,
+            8);
+
+        IConfigurationSection section = validation.Configuration.GetSection(
+            TrustedProxyCidrsKey);
+        IConfigurationSection[] entries = [.. section.GetChildren()];
+        if (section.Value is not null
+            || entries.Length > MaximumTrustedProxyCidrs)
+        {
+            validation.Invalid(TrustedProxyCidrsKey);
+            return;
+        }
+
+        HashSet<int> indexes = [];
+        HashSet<string> canonicalCidrs = new(StringComparer.Ordinal);
+        foreach (IConfigurationSection entry in entries)
+        {
+            if (!TryParseCanonicalArrayIndex(
+                    entry.Key,
+                    MaximumTrustedProxyCidrs,
+                    out int index)
+                || entry.Value is null
+                || entry.GetChildren().Any()
+                || !TryParseCanonicalTrustedProxyCidr(
+                    entry.Value,
+                    out string canonicalCidr)
+                || !indexes.Add(index)
+                || !canonicalCidrs.Add(canonicalCidr))
+            {
+                validation.Invalid(TrustedProxyCidrsKey);
+            }
+        }
+
+        if (indexes.Count != entries.Length
+            || !indexes.Order().SequenceEqual(
+                Enumerable.Range(0, indexes.Count)))
+        {
+            validation.Invalid(TrustedProxyCidrsKey);
+        }
     }
 
     private static void ValidateAdmissionAndRouting(Validation validation)
@@ -652,6 +723,15 @@ public static class PoolAiRuntimeConfigurationValidator
 
     private static bool TryParseCanonicalRuleIndex(
         string value,
+        out int index) =>
+        TryParseCanonicalArrayIndex(
+            value,
+            MaximumPrivateEgressRules,
+            out index);
+
+    private static bool TryParseCanonicalArrayIndex(
+        string value,
+        int maximumExclusive,
         out int index)
     {
         index = -1;
@@ -663,7 +743,131 @@ public static class PoolAiRuntimeConfigurationValidator
                 NumberStyles.None,
                 CultureInfo.InvariantCulture,
                 out index)
-            && index is >= 0 and < MaximumPrivateEgressRules;
+            && index >= 0
+            && index < maximumExclusive;
+    }
+
+    private static bool TryParseCanonicalTrustedProxyCidr(
+        string value,
+        out string canonicalCidr)
+    {
+        canonicalCidr = string.Empty;
+        if (value.Length is < 3 or > 64
+            || !string.Equals(value, value.Trim(), StringComparison.Ordinal)
+            || value.Contains('%', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int separator = value.LastIndexOf('/');
+        if (separator <= 0
+            || separator == value.Length - 1
+            || value.AsSpan(0, separator).Contains('/')
+            || !TryParseCanonicalDecimal(
+                value[(separator + 1)..],
+                out int prefixLength)
+            || prefixLength == 0
+            || !TryParseCanonicalTrustedProxyAddress(
+                value[..separator],
+                out IPAddress? address))
+        {
+            return false;
+        }
+
+        IPAddress parsedAddress = address!;
+        int maximumPrefix = parsedAddress.AddressFamily switch
+        {
+            AddressFamily.InterNetwork => 32,
+            AddressFamily.InterNetworkV6 => 128,
+            _ => -1,
+        };
+        if (prefixLength > maximumPrefix)
+        {
+            return false;
+        }
+
+        byte[] networkBytes = parsedAddress.GetAddressBytes();
+        ClearHostBits(networkBytes, prefixLength);
+        IPAddress network = new(networkBytes);
+        canonicalCidr = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{network.ToString().ToLowerInvariant()}/{prefixLength}");
+        return string.Equals(
+            value,
+            canonicalCidr,
+            StringComparison.Ordinal);
+    }
+
+    private static bool TryParseCanonicalTrustedProxyAddress(
+        string value,
+        out IPAddress? address)
+    {
+        address = null;
+        if (!value.Contains(':', StringComparison.Ordinal))
+        {
+            return TryParseCanonicalIpv4(value.AsSpan(), out address);
+        }
+
+        int dottedTailSeparator = value.LastIndexOf(':');
+        if (value.Contains('.', StringComparison.Ordinal)
+            && (dottedTailSeparator < 0
+                || !TryParseCanonicalIpv4(
+                    value.AsSpan(dottedTailSeparator + 1),
+                    out _)))
+        {
+            return false;
+        }
+
+        if (!IPAddress.TryParse(value, out IPAddress? parsed)
+            || parsed.AddressFamily != AddressFamily.InterNetworkV6
+            || parsed.IsIPv4MappedToIPv6
+            || !string.Equals(
+                value,
+                parsed.ToString().ToLowerInvariant(),
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        address = parsed;
+        return true;
+    }
+
+    private static bool TryParseCanonicalIpv4(
+        ReadOnlySpan<char> value,
+        out IPAddress? address)
+    {
+        address = null;
+        Span<byte> bytes = stackalloc byte[4];
+        int segmentIndex = 0;
+        int segmentStart = 0;
+        for (int index = 0; index <= value.Length; index++)
+        {
+            if (index != value.Length && value[index] != '.')
+            {
+                continue;
+            }
+
+            if (segmentIndex >= bytes.Length
+                || !TryParseCanonicalDecimal(
+                    value[segmentStart..index].ToString(),
+                    out int segment)
+                || segment > byte.MaxValue)
+            {
+                return false;
+            }
+
+            bytes[segmentIndex++] = checked((byte)segment);
+            segmentStart = index + 1;
+        }
+
+        if (segmentIndex != bytes.Length)
+        {
+            return false;
+        }
+
+        address = new IPAddress(bytes);
+        return true;
     }
 
     private static bool TryParsePrivateEgressRule(

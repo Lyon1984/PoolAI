@@ -56,4 +56,26 @@ public sealed class OpenAiCapabilityContractTests
         Assert.All(modelPostCapabilities, capability =>
             Assert.False(capability.SupportsVerifiedIdempotentReplay));
     }
+
+    [Fact]
+    public void RejectedStatusNoExecutionEvidenceIsProviderSpecific()
+    {
+        AdapterRejectedStatusEvidence expected =
+            AdapterRejectedStatusEvidence.Unauthorized
+            | AdapterRejectedStatusEvidence.Forbidden
+            | AdapterRejectedStatusEvidence.TooManyRequests;
+
+        Assert.All(
+            OpenAiCapabilityDescriptor.R1Capabilities.Where(capability =>
+                capability.Upstream == UpstreamType.OpenAi),
+            capability => Assert.Equal(
+                expected,
+                capability.ConfirmedNoExecutionStatuses));
+        Assert.All(
+            OpenAiCapabilityDescriptor.R1Capabilities.Where(capability =>
+                capability.Upstream == UpstreamType.OpenAiCompatible),
+            capability => Assert.Equal(
+                AdapterRejectedStatusEvidence.None,
+                capability.ConfirmedNoExecutionStatuses));
+    }
 }

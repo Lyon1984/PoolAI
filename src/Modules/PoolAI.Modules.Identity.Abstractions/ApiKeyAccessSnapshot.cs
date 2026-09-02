@@ -5,5 +5,6 @@ public sealed record ApiKeyAccessSnapshot(
     EntityId UserId,
     EntityId GroupId,
     bool IsEffective,
+    IReadOnlyList<string> AllowedCidrs,
     long Version,
     DateTimeOffset ObservedAt);

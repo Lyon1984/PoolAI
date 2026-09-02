@@ -1,7 +1,9 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using PoolAI.Adapters.OpenAI;
+using PoolAI.Api;
 using PoolAI.Application.Orchestration;
+using PoolAI.Infrastructure.Postgres;
 using PoolAI.Modules.Gateway;
 using PoolAI.Modules.GroupQuota;
 using PoolAI.Modules.GroupQuota.Endpoints;
@@ -17,8 +19,6 @@ using PoolAI.Modules.Supply;
 using PoolAI.Modules.Supply.Endpoints;
 using PoolAI.Modules.Usage;
 using PoolAI.Modules.Usage.Endpoints;
-using PoolAI.Api;
-using PoolAI.Infrastructure.Postgres;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
@@ -51,6 +51,8 @@ builder.Services
     .AddOperationsModule(builder.Configuration, builder.Environment.EnvironmentName)
     .AddOperationsAdminControlPlane(builder.Configuration)
     .AddGatewayModule(
+        builder.Configuration,
+        builder.Environment.EnvironmentName,
         builder.Configuration.GetValue("Quota:DisconnectDrainSeconds", 15))
     .AddOpenAiAdapterCapabilities();
 
@@ -69,6 +71,8 @@ builder.Services
 WebApplication app = builder.Build();
 app.UseMiddleware<RequestIdMiddleware>();
 app.UseExceptionHandler();
+app.UseRouting();
+app.UseMiddleware<GatewayAdmissionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapIdentityEndpoints();

@@ -27,7 +27,8 @@ internal sealed class PostgresAccountCandidateReader(
                COALESCE(binding.weight_override, account.weight),
                configuration.version,
                channel.version,
-               account.version
+               account.version,
+               account.credential_revision
         FROM public.group_supply_configurations AS configuration
         JOIN public.channels AS channel
           ON channel.id = configuration.channel_id
@@ -119,7 +120,8 @@ internal sealed class PostgresAccountCandidateReader(
         reader.GetInt32(14),
         reader.GetInt64(15),
         reader.GetInt64(16),
-        reader.GetInt64(17));
+        reader.GetInt64(17),
+        reader.GetInt64(18));
 
     private static UpstreamProvider ParseProvider(string value) => value switch
     {

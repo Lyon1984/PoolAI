@@ -710,12 +710,12 @@ public sealed class M2ExitPublicApiEndToEndTests
             supply.AccountVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Result<AccountRoute> renewed = await firstLease.RenewAsync(cancellationToken)
+        AccountLeaseRenewResult renewed = await firstLease.RenewAsync(cancellationToken)
             .ConfigureAwait(false);
-        Assert.True(
-            renewed.IsSuccess,
-            renewed.IsFailure ? renewed.Error.Code : string.Empty);
-        Assert.Equal(supply.AccountId, renewed.Value.AccountId.Value);
+        Assert.Equal(AccountLeaseRenewDisposition.Renewed, renewed.Disposition);
+        Assert.Equal(
+            supply.AccountId,
+            Assert.IsType<AccountRoute>(renewed.Route).AccountId.Value);
         Result<bool> firstReleased = await firstLease.ReleaseAsync(cancellationToken)
             .ConfigureAwait(false);
         Assert.True(firstReleased.IsSuccess);

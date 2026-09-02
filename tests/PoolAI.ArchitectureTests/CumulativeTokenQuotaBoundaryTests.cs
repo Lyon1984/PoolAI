@@ -785,6 +785,53 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
     }
 
     [Fact]
+    public void GatewayPerAttemptEstimatesAreExactRequestSafetyExceptions()
+    {
+        const string gatewayNamespace =
+            "PoolAI.Modules.Gateway.Application";
+        CSharpTypeShape options = new(
+            "src/Modules/PoolAI.Modules.Gateway/GatewayEstimationOptions.cs",
+            "GatewayEstimationOptions",
+            false,
+            new HashSet<string>(StringComparer.Ordinal))
+        {
+            Namespace = gatewayNamespace,
+        };
+        CSharpTypeShape estimator = new(
+            "src/Modules/PoolAI.Modules.Gateway/ConservativeTokenEstimator.cs",
+            "ConservativeTokenEstimator",
+            false,
+            new HashSet<string>(StringComparer.Ordinal))
+        {
+            Namespace = gatewayNamespace,
+        };
+        CSharpTypeShape estimate = new(
+            "src/Modules/PoolAI.Modules.Gateway/GatewayTokenEstimate.cs",
+            "GatewayTokenEstimate",
+            true,
+            new HashSet<string>(StringComparer.Ordinal))
+        {
+            Namespace = gatewayNamespace,
+        };
+
+        Assert.True(IsApprovedProductionRequestSafetyLimit(
+            options,
+            "MaximumEstimatedTokensPerAttempt"));
+        Assert.True(IsApprovedProductionRequestSafetyLimit(
+            estimator,
+            "_options:DefaultMaxOutputTokens"));
+        Assert.True(IsApprovedProductionRequestSafetyLimit(
+            estimate,
+            "TotalTokens"));
+        Assert.False(IsApprovedProductionRequestSafetyLimit(
+            options with { RelativePath = "src/Modules/Other/Options.cs" },
+            "MaximumEstimatedTokensPerAttempt"));
+        Assert.False(IsApprovedProductionRequestSafetyLimit(
+            estimate,
+            "UserTotalTokens"));
+    }
+
+    [Fact]
     public void OpenApiParserIncludesRequiredOnlyPersonalAuthorityMembers()
     {
         const string source = """
@@ -1826,8 +1873,9 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
 
     private static bool IsApprovedProductionRequestSafetyLimit(
         CSharpTypeShape shape,
-        string memberPath) =>
-        string.Equals(
+        string memberPath)
+    {
+        bool generatedRequestLimit = string.Equals(
             shape.RelativePath,
             "src/PoolAI.Contracts/Generated/OpenApiV1.g.cs",
             StringComparison.Ordinal)
@@ -1845,6 +1893,61 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
                     memberPath,
                     "MaxCompletionTokens",
                     StringComparison.Ordinal)));
+        if (generatedRequestLimit)
+        {
+            return true;
+        }
+
+        return IsApprovedGatewayRequestSafetyLimit(shape, memberPath);
+    }
+
+    private static bool IsApprovedGatewayRequestSafetyLimit(
+        CSharpTypeShape shape,
+        string memberPath)
+    {
+        if (!string.Equals(
+            shape.Namespace,
+            "PoolAI.Modules.Gateway.Application",
+            StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return (string.Equals(
+                    shape.RelativePath,
+                    "src/Modules/PoolAI.Modules.Gateway/GatewayEstimationOptions.cs",
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    shape.Name,
+                    "GatewayEstimationOptions",
+                    StringComparison.Ordinal)
+                && memberPath is "DefaultMaxOutputTokens"
+                    or "DefaultMaximumEstimatedTokens"
+                    or "MaximumEstimatedTokensPerAttempt")
+            || (string.Equals(
+                    shape.RelativePath,
+                    "src/Modules/PoolAI.Modules.Gateway/ConservativeTokenEstimator.cs",
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    shape.Name,
+                    "ConservativeTokenEstimator",
+                    StringComparison.Ordinal)
+                && memberPath is "_options:DefaultMaxOutputTokens"
+                    or "_options:DefaultMaximumEstimatedTokens"
+                    or "_options:MaximumEstimatedTokensPerAttempt")
+            || (string.Equals(
+                    shape.RelativePath,
+                    "src/Modules/PoolAI.Modules.Gateway/GatewayTokenEstimate.cs",
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    shape.Name,
+                    "GatewayTokenEstimate",
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    memberPath,
+                    "TotalTokens",
+                    StringComparison.Ordinal));
+    }
 
     private static bool HasDirectOrNestedGroupIdentity(CSharpTypeShape shape) =>
         !IsPersonalQuotaSubject(shape.Name)

@@ -134,6 +134,8 @@ public sealed class SupplyControlPlanePostgresRuntimeTests(
         Assert.Equal(250, candidate.Weight);
         Assert.Equal(configuration.Version, candidate.ConfigurationVersion);
         Assert.Equal(2, candidate.ChannelVersion);
+        Assert.Equal(1, candidate.AccountVersion);
+        Assert.Equal(1, candidate.CredentialRevision);
 
         Result<IReadOnlyList<string>> modelResult = await models.GetModelsAsync(
             groupId,

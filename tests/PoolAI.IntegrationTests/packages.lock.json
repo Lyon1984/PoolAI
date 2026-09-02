@@ -346,6 +346,7 @@
       "poolai.modules.gateway": {
         "type": "Project",
         "dependencies": {
+          "OpenTelemetry": "[1.16.0, )",
           "PoolAI.BuildingBlocks": "[1.0.0, )",
           "PoolAI.Contracts": "[1.0.0, )",
           "PoolAI.Modules.Gateway.Abstractions": "[1.0.0, )",

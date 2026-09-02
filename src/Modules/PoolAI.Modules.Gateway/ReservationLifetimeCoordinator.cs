@@ -6,8 +6,8 @@ namespace PoolAI.Modules.Gateway.Application;
 /// <summary>
 /// Coordinates the in-process lifetime of one dispatched quota reservation.
 /// The database-owned <see cref="ReservationHandle.MaxExpiresAt"/> remains the
-/// only hard deadline; <see cref="TimeProvider"/> is used only to schedule work
-/// against that persisted cutoff.
+/// only persistence hard deadline. A separate request-attempt deadline may end
+/// upstream execution sooner without being misclassified as client disconnect.
 /// </summary>
 public sealed class ReservationLifetimeCoordinator
 {
@@ -40,10 +40,36 @@ public sealed class ReservationLifetimeCoordinator
         _drainDuration = drainDuration;
     }
 
+    public TimeSpan DrainDuration => _drainDuration;
+
     public ValueTask<ReservationLifetimeResult> ExecuteAsync(
         DispatchedReservationHandle reservation,
         IReservationLifetimeOperation operation,
         IReservationFinalizationPort finalization,
+        CancellationToken clientCancellationToken) => ExecuteAsync(
+        reservation,
+        operation,
+        finalization,
+        attemptDeadline: null,
+        clientCancellationToken);
+
+    public ValueTask<ReservationLifetimeResult> ExecuteAsync(
+        DispatchedReservationHandle reservation,
+        IReservationLifetimeOperation operation,
+        IReservationFinalizationPort finalization,
+        DateTimeOffset attemptDeadline,
+        CancellationToken clientCancellationToken) => ExecuteAsync(
+        reservation,
+        operation,
+        finalization,
+        (DateTimeOffset?)attemptDeadline,
+        clientCancellationToken);
+
+    private ValueTask<ReservationLifetimeResult> ExecuteAsync(
+        DispatchedReservationHandle reservation,
+        IReservationLifetimeOperation operation,
+        IReservationFinalizationPort finalization,
+        DateTimeOffset? attemptDeadline,
         CancellationToken clientCancellationToken)
     {
         ArgumentNullException.ThrowIfNull(reservation);
@@ -57,6 +83,7 @@ public sealed class ReservationLifetimeCoordinator
             operation,
             finalization,
             _drainDuration,
+            attemptDeadline,
             clientCancellationToken);
         return execution.RunAsync();
     }
@@ -76,6 +103,7 @@ public sealed class ReservationLifetimeCoordinator
         private readonly CancellationSignal _clientSignal;
         private readonly Task<ReservationSettlementEvidence> _operationTask;
         private readonly Task _hardDeadlineTask;
+        private readonly Task? _attemptDeadlineTask;
 
         private DispatchedReservationHandle _currentReservation;
         private DateTimeOffset _nextRenewAt;
@@ -91,6 +119,7 @@ public sealed class ReservationLifetimeCoordinator
         private long _successfulRenewals;
         private bool _drainTimedOut;
         private bool _deadlineObserved;
+        private bool _attemptDeadlineObserved;
         private bool _clientObserved;
         private bool _renewalEnabled = true;
         private bool _draining;
@@ -102,6 +131,7 @@ public sealed class ReservationLifetimeCoordinator
             IReservationLifetimeOperation operation,
             IReservationFinalizationPort finalization,
             TimeSpan drainDuration,
+            DateTimeOffset? attemptDeadline,
             CancellationToken clientCancellationToken)
         {
             _quotaLedger = quotaLedger;
@@ -119,32 +149,15 @@ public sealed class ReservationLifetimeCoordinator
                 clientCancellationToken);
             DateTimeOffset now = _timeProvider.GetUtcNow();
             _hardDeadlineTask = DelayUntilAsync(_hardDeadline);
-            if (now >= _hardDeadline)
+            _attemptDeadlineTask = attemptDeadline is null
+                ? null
+                : DelayUntilAsync(attemptDeadline.Value);
+            if (TryResolveInitialCompletion(
+                    now,
+                    attemptDeadline,
+                    out Task<ReservationSettlementEvidence> initialCompletion))
             {
-                _deadlineObserved = true;
-                _renewalEnabled = false;
-                _draining = true;
-                _stopReason = ReservationLifetimeStopReason.HardDeadlineReached;
-                _operationTask = CompletedWithoutExecution();
-                return;
-            }
-
-            if (now >= _initialHandle.LeaseExpiresAt)
-            {
-                _renewalEnabled = false;
-                _draining = true;
-                _stopReason = ReservationLifetimeStopReason.RenewalFailed;
-                _operationTask = CompletedWithoutExecution();
-                return;
-            }
-
-            if (_clientSignal.Task.IsCompleted)
-            {
-                _clientObserved = true;
-                _renewalEnabled = false;
-                _draining = true;
-                _stopReason = ReservationLifetimeStopReason.ClientDisconnected;
-                _operationTask = CompletedWithoutExecution();
+                _operationTask = initialCompletion;
                 return;
             }
 
@@ -156,6 +169,55 @@ public sealed class ReservationLifetimeCoordinator
             ScheduleNextRenewal(
                 now + _renewInterval,
                 _initialHandle.LeaseExpiresAt);
+        }
+
+        private bool TryResolveInitialCompletion(
+            DateTimeOffset now,
+            DateTimeOffset? attemptDeadline,
+            out Task<ReservationSettlementEvidence> completion)
+        {
+            if (now >= _hardDeadline)
+            {
+                _deadlineObserved = true;
+                completion = StopBeforeExecution(
+                    ReservationLifetimeStopReason.HardDeadlineReached);
+                return true;
+            }
+
+            if (attemptDeadline is not null && now >= attemptDeadline.Value)
+            {
+                _attemptDeadlineObserved = true;
+                completion = StopBeforeExecution(
+                    ReservationLifetimeStopReason.AttemptDeadlineReached);
+                return true;
+            }
+
+            if (now >= _initialHandle.LeaseExpiresAt)
+            {
+                completion = StopBeforeExecution(
+                    ReservationLifetimeStopReason.RenewalFailed);
+                return true;
+            }
+
+            if (_clientSignal.Task.IsCompleted)
+            {
+                _clientObserved = true;
+                completion = StopBeforeExecution(
+                    ReservationLifetimeStopReason.ClientDisconnected);
+                return true;
+            }
+
+            completion = null!;
+            return false;
+        }
+
+        private Task<ReservationSettlementEvidence> StopBeforeExecution(
+            ReservationLifetimeStopReason reason)
+        {
+            _renewalEnabled = false;
+            _draining = true;
+            _stopReason = reason;
+            return CompletedWithoutExecution();
         }
 
         internal async ValueTask<ReservationLifetimeResult> RunAsync()
@@ -207,6 +269,13 @@ public sealed class ReservationLifetimeCoordinator
                 return;
             }
 
+            if (!_attemptDeadlineObserved
+                && _attemptDeadlineTask?.IsCompleted == true)
+            {
+                HandleAttemptDeadline();
+                return;
+            }
+
             if (!_clientObserved && _clientSignal.Task.IsCompleted)
             {
                 HandleClientDisconnect();
@@ -243,6 +312,9 @@ public sealed class ReservationLifetimeCoordinator
         {
             List<Task> pending = [_operationTask];
             AddIfNotNull(pending, _deadlineObserved ? null : _hardDeadlineTask);
+            AddIfNotNull(
+                pending,
+                _attemptDeadlineObserved ? null : _attemptDeadlineTask);
             AddIfNotNull(pending, _clientObserved ? null : _clientSignal.Task);
             AddIfNotNull(pending, _renewalEnabled ? _renewDelayTask : null);
             AddIfNotNull(pending, _renewalEnabled ? _renewalTask : null);
@@ -282,6 +354,15 @@ public sealed class ReservationLifetimeCoordinator
             BeginDrain(
                 abortUpstream: false,
                 _clientSignal.SignaledAt + _drainDuration);
+        }
+
+        private void HandleAttemptDeadline()
+        {
+            _attemptDeadlineObserved = true;
+            _renewalEnabled = false;
+            CancelRenewal();
+            _stopReason = ReservationLifetimeStopReason.AttemptDeadlineReached;
+            BeginDrain(abortUpstream: true);
         }
 
         private async Task HandleDrainTimeoutAsync()
@@ -445,6 +526,7 @@ public sealed class ReservationLifetimeCoordinator
                 await _finalization.SettleKnownUsageAsync(
                         _currentReservation,
                         knownUsage,
+                        _stopReason,
                         CancellationToken.None)
                     .ConfigureAwait(false);
                 return;

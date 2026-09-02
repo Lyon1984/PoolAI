@@ -158,10 +158,20 @@ internal sealed class AccountRouter(
             candidate.GroupId,
             candidate.ChannelId,
             candidate.AccountId,
+            MapProvider(candidate.Provider),
+            candidate.ClientModel,
+            candidate.UpstreamModel,
+            new Uri(candidate.UpstreamBaseUrl, UriKind.Absolute),
+            new AccountRouteCapabilities(
+                candidate.Capabilities.Responses,
+                candidate.Capabilities.ChatCompletions,
+                candidate.Capabilities.FunctionTools,
+                candidate.Capabilities.Streaming),
             expiresAt,
             candidate.ConfigurationVersion,
             candidate.ChannelVersion,
-            candidate.AccountVersion);
+            candidate.AccountVersion,
+            candidate.CredentialRevision);
         AccountLease lease = new(_leases, route, owner);
         try
         {
@@ -179,11 +189,30 @@ internal sealed class AccountRouter(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _ = await lease.ReleaseAsync(CancellationToken.None).ConfigureAwait(false);
+            await ReleaseLeaseQuietlyAsync(lease).ConfigureAwait(false);
             throw;
+        }
+        catch (Exception)
+        {
+            await ReleaseLeaseQuietlyAsync(lease).ConfigureAwait(false);
+            return CoordinationUnavailable<IAccountLease>();
         }
 
         return Result.Success<IAccountLease>(lease);
+    }
+
+    private static async ValueTask ReleaseLeaseQuietlyAsync(AccountLease lease)
+    {
+        try
+        {
+            _ = await lease.ReleaseAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The Redis lease remains bounded by its TTL. The original
+            // affinity-write failure or caller cancellation stays authoritative.
+        }
     }
 
     private async ValueTask<Result<IReadOnlyList<AccountCandidate>>> LoadCandidatesAsync(
@@ -246,7 +275,14 @@ internal sealed class AccountRouter(
         HashSet<EntityId> accountIds = [];
         return candidates.All(candidate =>
             candidate.GroupId == groupId
+            && candidate.ChannelId.Value != Guid.Empty
+            && candidate.AccountId.Value != Guid.Empty
+            && candidate.Provider is UpstreamProvider.OpenAi
+                or UpstreamProvider.OpenAiCompatible
             && string.Equals(candidate.ClientModel, model, StringComparison.Ordinal)
+            && IsValidModel(candidate.UpstreamModel)
+            && IsValidCanonicalBaseUri(candidate.UpstreamBaseUrl)
+            && candidate.Capabilities is not null
             && candidate.Health is AccountHealth.Healthy or AccountHealth.Degraded
             && candidate.ConcurrencyLimit is >= 1 and <= 10_000
             && candidate.Priority is >= -100_000 and <= 100_000
@@ -254,8 +290,47 @@ internal sealed class AccountRouter(
             && candidate.ConfigurationVersion > 0
             && candidate.ChannelVersion > 0
             && candidate.AccountVersion > 0
+            && candidate.CredentialRevision > 0
             && accountIds.Add(candidate.AccountId));
     }
+
+    private static bool IsValidModel(string value) =>
+        value is { Length: >= 1 and <= 200 }
+        && !value.Any(char.IsControl)
+        && string.Equals(value, value.Trim(), StringComparison.Ordinal);
+
+    private static bool IsValidCanonicalBaseUri(string value)
+    {
+        if (string.IsNullOrEmpty(value)
+            || !Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
+            || uri.HostNameType is UriHostNameType.Unknown or UriHostNameType.Basic
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment)
+            || uri.Port is < 1 or > 65_535)
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.Ordinal)
+            && (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+                || uri.IsLoopback);
+    }
+
+    private static AccountRouteProvider MapProvider(UpstreamProvider provider) =>
+        provider switch
+        {
+            UpstreamProvider.OpenAi => AccountRouteProvider.OpenAi,
+            UpstreamProvider.OpenAiCompatible =>
+                AccountRouteProvider.OpenAiCompatible,
+            _ => throw new InvalidOperationException(
+                "The candidate Account provider is invalid."),
+        };
 
     private static string? Validate(
         RouteAccountCommand command,

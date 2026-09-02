@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "capturedAt": "2026-09-02",
+  "capturedAt": "2026-09-03",
   "areas": {
     "quota": {
       "pathIncludes": [
@@ -19,12 +19,12 @@
         "PoolAI.Modules.Identity"
       ],
       "pathEndsWith": [],
-      "linesCovered": 12768,
-      "linesValid": 13437,
-      "lineRate": 95.0212100915383,
-      "branchesCovered": 4038,
+      "linesCovered": 12771,
+      "linesValid": 13438,
+      "lineRate": 95.03646375948802,
+      "branchesCovered": 4039,
       "branchesValid": 4747,
-      "branchRate": 85.06425110596166
+      "branchRate": 85.08531704234254
     },
     "secret": {
       "pathIncludes": [
@@ -37,12 +37,12 @@
         "/AccountCredentialEnvelopeOptions.cs",
         "/AccountCredentialProtector.cs"
       ],
-      "linesCovered": 1778,
-      "linesValid": 1933,
-      "lineRate": 91.98137609932748,
-      "branchesCovered": 648,
-      "branchesValid": 790,
-      "branchRate": 82.02531645569621
+      "linesCovered": 1926,
+      "linesValid": 2084,
+      "lineRate": 92.41842610364684,
+      "branchesCovered": 732,
+      "branchesValid": 876,
+      "branchRate": 83.56164383561644
     }
   }
 }
