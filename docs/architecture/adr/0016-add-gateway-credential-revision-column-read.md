@@ -1,13 +1,13 @@
 # ADR 0016: Add the Gateway credential-revision column read
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-09-02
-- Decider: PoolAI architecture, Gateway, Supply, database, and security owner (`@Lyon1984`); this proposal does not take effect without explicit approval evidence
+- Decider: PoolAI architecture, Gateway, Supply, database, and security owner (`@Lyon1984`)
 - Relates to: [M4-E1 Issue #24](https://github.com/Lyon1984/PoolAI/issues/24), ADR 0009, ADR 0010, ADR 0011, ADR 0015, migration 0010, migration 0019, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Amends: only ADR 0015's statement that the revision-fenced handoff requires no database-permission change
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: pending
-- Independent database approval evidence: pending
+- Approval evidence: [Issue #44 permanent ADR approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5508959500), binding candidate `bf1ef153cf0ade650fb47815d76ad4f88e07a525`, tree `f7b3bccc36d127077fcbeaa6c93e2310c242843c`, and pre-evidence-backwrite ADR SHA-256 `b06ee15291e7282596b4083cc281004306e40908f3199b6440c0ee3c2e3ba978`
+- Independent database approval evidence: [Issue #44 permanent migration 0020 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5508962022), binding candidate `bf1ef153cf0ade650fb47815d76ad4f88e07a525`, tree `f7b3bccc36d127077fcbeaa6c93e2310c242843c`, SQL SHA-256 `cb2249c7c3a62e8f43ce9dd1a6cfd56461cce7f452a71167e8cf9d9f873c06b0`, release manifest SHA-256 `6643f0bcbc2682a3011ba8c82639e9232ec74b4bc3ea5a070488623bd42db9e5`, PostgreSQL major `18`, and compatibility `20..20`
 
 ## Context
 
@@ -78,11 +78,10 @@ credential decryption rules, authority/SSRF fence, Adapter boundary, Group quota
 Group RPM, Account lease, OpenAPI, error catalog, Redis key/script ABI, or any
 public response.
 
-The proposal becomes effective only after the exact ADR candidate and the exact
-migration/checksum/manifest candidate receive their own explicit permanent
-approvals. Until then, `Proposed` means the artifacts are review candidates, not
-authorization to execute a database migration, use a real credential, merge a
-release, deploy, or close M4-E1.
+The exact ADR and migration/checksum/manifest candidates have independent
+permanent approvals linked above. Those approvals make the accepted decision and
+SQL bytes immutable, but do not authorize applying a database migration, using a
+real credential, merging a release, deploying, or closing M4-E1.
 
 ## Alternatives considered
 
@@ -127,7 +126,7 @@ runtime dependency or privilege bridge.
 ## Migration and rollback impact
 
 Migration 0020 is additive and forward-only. Before execution, rollback is to
-withdraw the unsigned candidate. After execution, its bytes/checksum are
+withhold the accepted migration. After execution, its bytes/checksum are
 immutable and rollback uses a later governed forward migration; migration 0010
 or 0019 is never edited. A post-migration schema-19 binary cannot be restored to
 service because its manifest rejects the future version.

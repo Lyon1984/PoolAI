@@ -9,7 +9,7 @@ public sealed class DatabasePermissionCorrectionBoundaryTests
     [Fact]
     public void M4E1CredentialRevisionCorrectionContainsOneColumnReadGrantOnly()
     {
-        // Governing contract: Proposed ADR 0016. The correction may add only
+        // Governing contract: Accepted ADR 0016. The correction may add only
         // accounts.credential_revision SELECT to poolai_api; signed SQL stays
         // immutable and no table, function, role, membership, or write surface
         // may be smuggled into this forward migration.
@@ -96,7 +96,7 @@ public sealed class DatabasePermissionCorrectionBoundaryTests
     }
 
     [Fact]
-    public void M4E1CredentialRevisionDecisionRemainsProposedAndNarrow()
+    public void M4E1CredentialRevisionDecisionRemainsAcceptedAndNarrow()
     {
         string root = RepositoryRoot.Find();
         string decision = File.ReadAllText(Path.Combine(
@@ -110,7 +110,15 @@ public sealed class DatabasePermissionCorrectionBoundaryTests
             "docs",
             "release-manifest-v1.json"));
 
-        Assert.Contains("- Status: **Proposed**", decision, StringComparison.Ordinal);
+        Assert.Contains("- Status: **Accepted**", decision, StringComparison.Ordinal);
+        Assert.Contains(
+            "issuecomment-5508959500",
+            decision,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "issuecomment-5508962022",
+            decision,
+            StringComparison.Ordinal);
         Assert.Contains(
             "Amends: only ADR 0015's statement",
             decision,
