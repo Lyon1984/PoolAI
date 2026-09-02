@@ -4,7 +4,7 @@ public interface IUpstreamAdapter
 {
     AdapterCapability Capability { get; }
 
-    ValueTask<Result<NormalizedUpstreamResult>> SendAsync(
+    ValueTask<Result<IPreparedUpstreamAttempt>> PrepareAsync(
         AdapterAttemptContext attempt,
         NormalizedGatewayRequest request,
         CancellationToken cancellationToken);

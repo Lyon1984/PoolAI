@@ -35,6 +35,10 @@ internal static class SupplyInfrastructureRegistration
         services.AddSingleton<IAccountCandidateReader>(static serviceProvider =>
             new PostgresAccountCandidateReader(
                 serviceProvider.GetRequiredService<NpgsqlDataSource>()));
+        services.AddSingleton<IRouteCredentialLeaseSource>(static serviceProvider =>
+            new PostgresRouteCredentialLeaseSource(
+                serviceProvider.GetRequiredService<NpgsqlDataSource>(),
+                serviceProvider.GetRequiredService<IAccountCredentialProtector>()));
         services.AddSingleton<IAccountHealthWriter>(static serviceProvider =>
             new PostgresAccountHealthWriter(
                 serviceProvider.GetRequiredService<IUnitOfWorkFactory>(),

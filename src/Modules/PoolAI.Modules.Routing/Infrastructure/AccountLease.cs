@@ -20,7 +20,7 @@ internal sealed class AccountLease(
 
     public AccountRoute Route => _route;
 
-    public async ValueTask<Result<AccountRoute>> RenewAsync(
+    public async ValueTask<AccountLeaseRenewResult> RenewAsync(
         CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -28,7 +28,7 @@ internal sealed class AccountLease(
         {
             if (_released)
             {
-                return LeaseLost();
+                return AccountLeaseRenewResult.Lost;
             }
 
             CoordinationLeaseRenewResult renewed = await _leases
@@ -40,22 +40,22 @@ internal sealed class AccountLease(
                 .ConfigureAwait(false);
             if (renewed.Disposition == CoordinationLeaseRenewDisposition.Unavailable)
             {
-                return CoordinationUnavailable<AccountRoute>();
+                return AccountLeaseRenewResult.Unavailable;
             }
 
             if (renewed.Disposition == CoordinationLeaseRenewDisposition.Lost)
             {
                 _released = true;
-                return LeaseLost();
+                return AccountLeaseRenewResult.Lost;
             }
 
             if (renewed.Disposition != CoordinationLeaseRenewDisposition.Renewed)
             {
-                return CoordinationUnavailable<AccountRoute>();
+                return AccountLeaseRenewResult.Unavailable;
             }
 
             _route = _route with { LeaseExpiresAt = renewed.ExpiresAt };
-            return Result.Success(_route);
+            return AccountLeaseRenewResult.Renewed(_route);
         }
         finally
         {
@@ -106,12 +106,6 @@ internal sealed class AccountLease(
             // Disposal is idempotent and a lease naturally expires in Redis.
         }
     }
-
-    private static Result<AccountRoute> LeaseLost() =>
-        Result.Failure<AccountRoute>(
-            "account_capacity_unavailable",
-            "The Account lease is no longer owned.",
-            retryAfterSeconds: 1);
 
     private static Result<T> CoordinationUnavailable<T>() =>
         Result.Failure<T>(

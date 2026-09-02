@@ -60,6 +60,7 @@ internal sealed class ApiKeyAuthenticationService(
                 matched.UserId,
                 matched.GroupId,
                 IsEffective: true,
+                matched.AllowedCidrs.ToArray(),
                 matched.Version,
                 matched.ObservedAt));
         }

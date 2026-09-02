@@ -4,4 +4,7 @@ public sealed record NormalizedGatewayRequest(
     EntityId RequestId,
     string Model,
     bool Stream,
-    JsonElement Payload);
+    JsonElement Payload)
+{
+    public override string ToString() => nameof(NormalizedGatewayRequest);
+}

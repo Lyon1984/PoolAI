@@ -641,6 +641,7 @@ public sealed class M3E3ReservationLifetimeCoordinatorTests
         public ValueTask SettleKnownUsageAsync(
             DispatchedReservationHandle reservation,
             ReservationSettlementEvidence.KnownUsage usage,
+            ReservationLifetimeStopReason stopReason,
             CancellationToken cancellationToken)
         {
             Assert.Equal(ReservationStatus.Pending, reservation.Status);
@@ -775,6 +776,7 @@ public sealed class M3E3ReservationLifetimeCoordinatorTests
             ReleaseReservationCommand command,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+
     }
 
     private static DispatchedReservationHandle CreateReservation(bool isStreaming)

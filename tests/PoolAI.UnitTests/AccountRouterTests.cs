@@ -48,6 +48,38 @@ public sealed class AccountRouterTests
     }
 
     [Fact]
+    public async Task InvalidRouteFactsFailIntegrityCheckBeforeLeaseCoordination()
+    {
+        AccountCandidate valid = Candidate(AccountAId);
+        AccountCandidate[] invalidCandidates =
+        [
+            valid with { Provider = (UpstreamProvider)int.MaxValue },
+            valid with { UpstreamModel = " upstream-model" },
+            valid with { UpstreamBaseUrl = "https://upstream.invalid/v1?secret=no" },
+            valid with { UpstreamBaseUrl = "http://upstream.invalid/v1" },
+            valid with { Capabilities = null! },
+            valid with { CredentialRevision = 0 },
+        ];
+
+        foreach (AccountCandidate invalid in invalidCandidates)
+        {
+            QueueLeaseSet leaseSet = new();
+            AccountRouter router = Router(
+                new StubCandidateReader(SuccessCandidates(invalid)),
+                leaseSet,
+                new RecordingAffinityStore());
+
+            Result<IAccountLease> result = await router.RouteAsync(
+                Command(),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.IsFailure);
+            Assert.Equal("dependency_unavailable", result.Error.Code);
+            Assert.Empty(leaseSet.AcquireRequests);
+        }
+    }
+
+    [Fact]
     public async Task EmptyCandidateSetReturnsNoAvailableAccountBeforeCoordination()
     {
         StubCandidateReader reader = new(SuccessCandidates());
@@ -664,6 +696,19 @@ public sealed class AccountRouterTests
             typeof(IAccountLease).GetProperties(),
             property => property.Name.Contains("Owner", StringComparison.OrdinalIgnoreCase)
                 || property.Name.Contains("Token", StringComparison.OrdinalIgnoreCase));
+
+        AccountRoute route = result.Value.Route;
+        Assert.Equal(AccountRouteProvider.OpenAi, route.Provider);
+        Assert.Equal(Model, route.ClientModel);
+        Assert.Equal("gpt-4.1-mini", route.UpstreamModel);
+        Assert.Equal(
+            new Uri("https://api.openai.example.test/v1"),
+            route.UpstreamBaseUri);
+        Assert.True(route.Capabilities.Responses);
+        Assert.True(route.Capabilities.ChatCompletions);
+        Assert.True(route.Capabilities.FunctionTools);
+        Assert.True(route.Capabilities.Streaming);
+        Assert.Equal(13, route.CredentialRevision);
     }
 
     [Fact]
@@ -680,11 +725,11 @@ public sealed class AccountRouterTests
             Command(),
             TestContext.Current.CancellationToken);
 
-        Result<AccountRoute> renewed = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult renewed = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
 
-        Assert.True(renewed.IsSuccess);
-        Assert.Equal(RenewedExpiry, renewed.Value.LeaseExpiresAt);
+        Assert.Equal(AccountLeaseRenewDisposition.Renewed, renewed.Disposition);
+        Assert.Equal(RenewedExpiry, Assert.IsType<AccountRoute>(renewed.Route).LeaseExpiresAt);
         Assert.Equal(RenewedExpiry, routed.Value.Route.LeaseExpiresAt);
         CoordinationLeaseOwner renewRequest =
             Assert.Single(leaseSet.RenewRequests);
@@ -695,7 +740,7 @@ public sealed class AccountRouterTests
     }
 
     [Fact]
-    public async Task LostRenewalMarksLeaseReleasedAndFailsWithCapacityError()
+    public async Task LostRenewalMarksLeaseReleasedWithTypedDisposition()
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
         leaseSet.RenewResults.Enqueue(CoordinationLeaseRenewResult.Lost);
@@ -707,14 +752,13 @@ public sealed class AccountRouterTests
             Command(),
             TestContext.Current.CancellationToken);
 
-        Result<AccountRoute> renewed = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult renewed = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
         Result<bool> released = await routed.Value.ReleaseAsync(
             TestContext.Current.CancellationToken);
 
-        Assert.True(renewed.IsFailure);
-        Assert.Equal("account_capacity_unavailable", renewed.Error.Code);
-        Assert.Equal(1, renewed.Error.RetryAfterSeconds);
+        Assert.Equal(AccountLeaseRenewDisposition.Lost, renewed.Disposition);
+        Assert.Null(renewed.Route);
         Assert.True(released.IsSuccess);
         Assert.False(released.Value);
         Assert.Single(leaseSet.RenewRequests);
@@ -736,16 +780,19 @@ public sealed class AccountRouterTests
             Command(),
             TestContext.Current.CancellationToken);
 
-        Result<AccountRoute> unavailable = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult unavailable = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
-        Result<AccountRoute> recovered = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult recovered = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
 
-        Assert.True(unavailable.IsFailure);
-        Assert.Equal("coordination_unavailable", unavailable.Error.Code);
-        Assert.Equal(1, unavailable.Error.RetryAfterSeconds);
-        Assert.True(recovered.IsSuccess);
-        Assert.Equal(RenewedExpiry, recovered.Value.LeaseExpiresAt);
+        Assert.Equal(
+            AccountLeaseRenewDisposition.CoordinationUnavailable,
+            unavailable.Disposition);
+        Assert.Null(unavailable.Route);
+        Assert.Equal(AccountLeaseRenewDisposition.Renewed, recovered.Disposition);
+        Assert.Equal(
+            RenewedExpiry,
+            Assert.IsType<AccountRoute>(recovered.Route).LeaseExpiresAt);
         Assert.Equal(2, leaseSet.RenewRequests.Count);
     }
 
@@ -765,12 +812,13 @@ public sealed class AccountRouterTests
             Command(),
             TestContext.Current.CancellationToken);
 
-        Result<AccountRoute> renewed = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult renewed = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
 
-        Assert.True(renewed.IsFailure);
-        Assert.Equal("coordination_unavailable", renewed.Error.Code);
-        Assert.Equal(1, renewed.Error.RetryAfterSeconds);
+        Assert.Equal(
+            AccountLeaseRenewDisposition.CoordinationUnavailable,
+            renewed.Disposition);
+        Assert.Null(renewed.Route);
         Assert.Single(leaseSet.RenewRequests);
     }
 
@@ -876,6 +924,27 @@ public sealed class AccountRouterTests
     }
 
     [Fact]
+    public async Task AffinityWriteExceptionReleasesAcquiredLeaseAndFailsClosed()
+    {
+        QueueLeaseSet leaseSet = AcquiringLeaseSet();
+        leaseSet.ReleaseResults.Enqueue(CoordinationLeaseReleaseResult.Released);
+        AccountRouter router = Router(
+            new StubCandidateReader(SuccessCandidates(Candidate(AccountAId))),
+            leaseSet,
+            new ThrowingAffinityStore());
+
+        Result<IAccountLease> result = await router.RouteAsync(
+            Command(SessionHash),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal("coordination_unavailable", result.Error.Code);
+        Assert.Equal(1, result.Error.RetryAfterSeconds);
+        Assert.Single(leaseSet.AcquireRequests);
+        Assert.Single(leaseSet.ReleaseRequests);
+    }
+
+    [Fact]
     public async Task RenewAfterReleaseFailsWithoutCallingRedisAgain()
     {
         QueueLeaseSet leaseSet = AcquiringLeaseSet();
@@ -889,12 +958,11 @@ public sealed class AccountRouterTests
             TestContext.Current.CancellationToken);
         _ = await routed.Value.ReleaseAsync(TestContext.Current.CancellationToken);
 
-        Result<AccountRoute> renewed = await routed.Value.RenewAsync(
+        AccountLeaseRenewResult renewed = await routed.Value.RenewAsync(
             TestContext.Current.CancellationToken);
 
-        Assert.True(renewed.IsFailure);
-        Assert.Equal("account_capacity_unavailable", renewed.Error.Code);
-        Assert.Equal(1, renewed.Error.RetryAfterSeconds);
+        Assert.Equal(AccountLeaseRenewDisposition.Lost, renewed.Disposition);
+        Assert.Null(renewed.Route);
         Assert.Empty(leaseSet.RenewRequests);
     }
 
@@ -950,7 +1018,8 @@ public sealed class AccountRouterTests
         int concurrencyLimit = 2,
         int priority = 10,
         int weight = 10,
-        long configurationVersion = 7) =>
+        long configurationVersion = 7,
+        long credentialRevision = 13) =>
         new(
             groupId ?? GroupId,
             channelId ?? ChannelAId,
@@ -970,7 +1039,8 @@ public sealed class AccountRouterTests
             weight,
             configurationVersion,
             ChannelVersion: 5,
-            AccountVersion: 6);
+            AccountVersion: 6,
+            CredentialRevision: credentialRevision);
 
     private static EntityId Id(string value) => new(Guid.Parse(value));
 
@@ -1144,6 +1214,26 @@ public sealed class AccountRouterTests
             cancellation.Cancel();
             throw new OperationCanceledException(cancellation.Token);
         }
+    }
+
+    private sealed class ThrowingAffinityStore : IRouteAffinityStore
+    {
+        public ValueTask<RouteAffinity?> GetAsync(
+            EntityId groupId,
+            string sessionHash,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<RouteAffinity?>(null);
+        }
+
+        public ValueTask SetAsync(
+            EntityId groupId,
+            string sessionHash,
+            RouteAffinity affinity,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromException(
+                new InvalidOperationException("injected affinity failure"));
     }
 
     private sealed class RecordingCoordinationValueStore : ICoordinationValueStore

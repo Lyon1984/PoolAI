@@ -3,6 +3,7 @@ using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using PoolAI.Modules.Gateway.Application;
 
 namespace PoolAI.Api;
 
@@ -20,9 +21,9 @@ internal static class Observability
             .ConfigureResource(resource => resource.AddService(
                 configuration["Observability:ServiceName"] ?? "poolai-api"))
             .WithMetrics(metrics => metrics
+                .AddMeter(GatewayAdmissionMetrics.MeterName)
                 .AddMeter("PoolAI.Routing")
                 .AddAspNetCoreInstrumentation()
-                .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation())
             .WithTracing(tracing => tracing
                 .AddAspNetCoreInstrumentation()

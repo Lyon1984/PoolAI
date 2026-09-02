@@ -813,7 +813,8 @@ public sealed class AccountLeaseRedisRuntimeTests(PostgresRuntimeFixture fixture
             Weight: 100,
             ConfigurationVersion: 11,
             ChannelVersion: 13,
-            AccountVersion: 17);
+            AccountVersion: 17,
+            CredentialRevision: 19);
 
     private static RouteAccountCommand Command(EntityId groupId, int index) =>
         new(

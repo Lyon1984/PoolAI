@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/PoolAI.Database.Migrations/PoolAI.Database.Migrations.csproj" />
     <ProjectReference Include="../../src/PoolAI.Infrastructure.Postgres/PoolAI.Infrastructure.Postgres.csproj" />
+    <ProjectReference Include="../../src/Modules/PoolAI.Modules.Gateway/PoolAI.Modules.Gateway.csproj" />
     <ProjectReference Include="../../src/Modules/PoolAI.Modules.GroupQuota/PoolAI.Modules.GroupQuota.csproj" />
     <ProjectReference Include="../../src/Modules/PoolAI.Modules.Operations/PoolAI.Modules.Operations.csproj" />
   </ItemGroup>

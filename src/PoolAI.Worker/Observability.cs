@@ -1,9 +1,9 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace PoolAI.Worker;
 
@@ -25,7 +25,6 @@ internal static class Observability
                 .AddMeter("PoolAI.Operations.Outbox")
                 .AddMeter("PoolAI.Usage.QuotaReconciliation")
                 .AddMeter("PoolAI.Routing")
-                .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation())
             .WithTracing(tracing => tracing.AddHttpClientInstrumentation());
 

@@ -1,4 +1,3 @@
-using System.Globalization;
 using PoolAI.Modules.Operations.Abstractions;
 using StackExchange.Redis;
 
@@ -115,7 +114,7 @@ internal sealed class RedisCoordinationLeaseSet(
 
     private RedisKey FullKey(string keyBase) => $"{_options.RedisKeyPrefix}{keyBase}";
 
-    private static CoordinationLeaseAcquireResult ParseAcquire(
+    internal static CoordinationLeaseAcquireResult ParseAcquire(
         RedisResult result,
         int expectedLimit)
     {
@@ -158,7 +157,7 @@ internal sealed class RedisCoordinationLeaseSet(
         return CoordinationLeaseAcquireResult.Unavailable;
     }
 
-    private static CoordinationLeaseRenewResult ParseRenew(RedisResult result)
+    internal static CoordinationLeaseRenewResult ParseRenew(RedisResult result)
     {
         if (!TryArray(result, 2, out RedisResult[] parts)
             || !TryLong(parts[0], out long code)
@@ -179,7 +178,7 @@ internal sealed class RedisCoordinationLeaseSet(
             : CoordinationLeaseRenewResult.Unavailable;
     }
 
-    private static CoordinationLeaseReleaseResult ParseRelease(RedisResult result)
+    internal static CoordinationLeaseReleaseResult ParseRelease(RedisResult result)
     {
         if (!TryArray(result, 1, out RedisResult[] parts)
             || !TryLong(parts[0], out long removed))
@@ -215,12 +214,28 @@ internal sealed class RedisCoordinationLeaseSet(
             && parts.Length == length;
     }
 
-    private static bool TryLong(RedisResult value, out long parsed) =>
-        long.TryParse(
-            value.ToString(),
-            NumberStyles.Integer,
-            CultureInfo.InvariantCulture,
-            out parsed);
+    private static bool TryLong(RedisResult value, out long parsed)
+    {
+        parsed = default;
+        if (value is null || value.Resp2Type != ResultType.Integer)
+        {
+            return false;
+        }
+
+        try
+        {
+            parsed = (long)value;
+            return true;
+        }
+        catch (InvalidCastException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
 
     private static bool TryTimestamp(long milliseconds, out DateTimeOffset timestamp)
     {

@@ -1,6 +1,7 @@
 using PoolAI.Modules.Operations.Abstractions;
 using PoolAI.Modules.Operations.Infrastructure;
 using PoolAI.Modules.Operations.Infrastructure.Redis;
+using StackExchange.Redis;
 
 namespace PoolAI.UnitTests;
 
@@ -110,6 +111,65 @@ public sealed class RedisCoordinationBoundaryTests
     }
 
     [Fact]
+    public void LeaseResultParsersAcceptTheSignedIntegerAbi()
+    {
+        const long expiresAtMilliseconds = 1_900_000_000_000;
+
+        CoordinationLeaseAcquireResult acquired =
+            RedisCoordinationLeaseSet.ParseAcquire(
+                Integers(1, 1, expiresAtMilliseconds, 0),
+                expectedLimit: 1);
+        CoordinationLeaseRenewResult renewed =
+            RedisCoordinationLeaseSet.ParseRenew(
+                Integers(1, expiresAtMilliseconds));
+        CoordinationLeaseReleaseResult released =
+            RedisCoordinationLeaseSet.ParseRelease(Integers(1));
+
+        Assert.Equal(
+            CoordinationLeaseAcquireDisposition.Acquired,
+            acquired.Disposition);
+        Assert.Equal(
+            DateTimeOffset.FromUnixTimeMilliseconds(expiresAtMilliseconds),
+            acquired.ExpiresAt);
+        Assert.Equal(
+            CoordinationLeaseRenewDisposition.Renewed,
+            renewed.Disposition);
+        Assert.Equal(
+            DateTimeOffset.FromUnixTimeMilliseconds(expiresAtMilliseconds),
+            renewed.ExpiresAt);
+        Assert.Equal(CoordinationLeaseReleaseResult.Released, released);
+    }
+
+    [Theory]
+    [InlineData(ResultType.BulkString)]
+    [InlineData(ResultType.SimpleString)]
+    [InlineData(ResultType.Double)]
+    public void LeaseResultParsersRejectNumericTextWithNonIntegerRespTypes(
+        ResultType scalarType)
+    {
+        const long expiresAtMilliseconds = 1_900_000_000_000;
+
+        CoordinationLeaseAcquireResult acquired =
+            RedisCoordinationLeaseSet.ParseAcquire(
+                TypedNumbers(scalarType, 1, 1, expiresAtMilliseconds, 0),
+                expectedLimit: 1);
+        CoordinationLeaseRenewResult renewed =
+            RedisCoordinationLeaseSet.ParseRenew(
+                TypedNumbers(scalarType, 1, expiresAtMilliseconds));
+        CoordinationLeaseReleaseResult released =
+            RedisCoordinationLeaseSet.ParseRelease(
+                TypedNumbers(scalarType, 1));
+
+        Assert.Equal(
+            CoordinationLeaseAcquireDisposition.Unavailable,
+            acquired.Disposition);
+        Assert.Equal(
+            CoordinationLeaseRenewDisposition.Unavailable,
+            renewed.Disposition);
+        Assert.Equal(CoordinationLeaseReleaseResult.Unavailable, released);
+    }
+
+    [Fact]
     public async Task StickyStoreRejectsWrongTtlAndOversizedValueBeforeRedisIo()
     {
         RuntimeDependencyOptions options = new(
@@ -131,4 +191,25 @@ public sealed class RedisCoordinationBoundaryTests
                 TimeSpan.FromMinutes(60),
                 TestContext.Current.CancellationToken).AsTask());
     }
+
+    private static RedisResult Integers(params long[] values) =>
+        RedisResult.Create(
+            values
+                .Select(static value => RedisResult.Create(
+                    (RedisValue)value,
+                    ResultType.Integer))
+                .ToArray(),
+            ResultType.Array);
+
+    private static RedisResult TypedNumbers(
+        ResultType scalarType,
+        params long[] values) =>
+        RedisResult.Create(
+            values
+                .Select(value => RedisResult.Create(
+                    (RedisValue)value.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture),
+                    scalarType))
+                .ToArray(),
+            ResultType.Array);
 }

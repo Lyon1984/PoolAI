@@ -377,6 +377,200 @@ public sealed class ConfigurationValidationTests
     }
 
     [Fact]
+    public void CanonicalTrustedProxyIngressConfigurationIsAccepted()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs:0"] = "10.0.0.0/8";
+        values["Gateway:Ingress:TrustedProxyCidrs:1"] = "2001:db8::/64";
+        values["Gateway:Ingress:TrustedProxyCidrs:2"] = "192.0.2.7/32";
+        values["Gateway:Ingress:TrustedProxyCidrs:3"] = "2001:db8:1::7/128";
+        values["Gateway:Ingress:ForwardedForLimit"] = "8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("0.0.0.0/0")]
+    [InlineData("::/0")]
+    [InlineData("10.0.0.1/8")]
+    [InlineData("2001:db8::1/64")]
+    [InlineData("192.168.001.0/24")]
+    [InlineData("192.168.0.0/024")]
+    [InlineData("2001:DB8::/64")]
+    [InlineData("2001:0db8::/64")]
+    [InlineData("fe80::1%1/128")]
+    [InlineData("::ffff:192.0.2.1/128")]
+    [InlineData("192.0.2.1")]
+    [InlineData("192.0.2.0/33")]
+    [InlineData("2001:db8::/129")]
+    public void NonCanonicalTrustedProxyCidrFailsStartupValidation(string cidr)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs:0"] = cidr;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:Ingress:TrustedProxyCidrs",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void DuplicateTrustedProxyCidrFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs:0"] = "10.0.0.0/8";
+        values["Gateway:Ingress:TrustedProxyCidrs:1"] = "10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:Ingress:TrustedProxyCidrs",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void MoreThanSixtyFourTrustedProxyCidrsFailsStartupValidation()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        for (int index = 0; index <= 64; index++)
+        {
+            values[$"Gateway:Ingress:TrustedProxyCidrs:{index}"] =
+                $"198.51.100.{index}/32";
+        }
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:Ingress:TrustedProxyCidrs",
+            exception.InvalidKeys);
+    }
+
+    [Theory]
+    [InlineData("Gateway:Ingress:ForwardedForLimit", "0")]
+    [InlineData("Gateway:Ingress:ForwardedForLimit", "9")]
+    [InlineData("Gateway:Ingress:ForwardedForLimit", "not-an-integer")]
+    public void InvalidGatewayIngressScalarFailsStartupValidation(
+        string key,
+        string value)
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values[key] = value;
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(key, exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void TrustedProxyCidrsMustUseAContiguousArrayShape()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs:1"] = "10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:Ingress:TrustedProxyCidrs",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void TrustedProxyCidrsRejectAScalarInsteadOfAnArray()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs"] = "10.0.0.0/8";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:Ingress:TrustedProxyCidrs",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void EstimatorDefaultsCannotExceedMaximumPerAttempt()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:DefaultMaxOutputTokens"] = "4097";
+        values["Gateway:MaxEstimatedTokensPerAttempt"] = "4096";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiConfigurationException exception = Assert.Throws<PoolAiConfigurationException>(() =>
+            PoolAiRuntimeConfigurationValidator.Validate(
+                configuration,
+                "Production"));
+
+        Assert.Contains(
+            "Gateway:DefaultMaxOutputTokens",
+            exception.InvalidKeys);
+        Assert.Contains(
+            "Gateway:MaxEstimatedTokensPerAttempt",
+            exception.InvalidKeys);
+    }
+
+    [Fact]
+    public void WorkerProfileDoesNotConsumeApiIngressConfiguration()
+    {
+        Dictionary<string, string?> values = ValidConfiguration();
+        values["Gateway:Ingress:TrustedProxyCidrs:0"] = "not-a-cidr";
+        values["Gateway:Ingress:ForwardedForLimit"] = "9";
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+
+        PoolAiRuntimeConfigurationValidator.Validate(
+            configuration,
+            "Production",
+            PoolAiRuntimeConfigurationValidator.HostProfile.Worker);
+    }
+
+    [Fact]
     public void CanonicalPrivateEgressRulesPassStartupValidation()
     {
         Dictionary<string, string?> values = ValidConfiguration();

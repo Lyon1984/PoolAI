@@ -15,4 +15,8 @@ public sealed record AccountCandidate(
     int Weight,
     long ConfigurationVersion,
     long ChannelVersion,
-    long AccountVersion);
+    long AccountVersion,
+    long CredentialRevision)
+{
+    public override string ToString() => nameof(AccountCandidate);
+}
