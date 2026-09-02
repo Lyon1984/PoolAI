@@ -6,6 +6,7 @@
 - Relates to: [M4-E2 Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), [M4-E3 Issue #26](https://github.com/Lyon1984/PoolAI/issues/26), ADR 0015, D-029, AC-028, AC-043, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval evidence: **Pending an exact permanent approval by `@Lyon1984`**
+- Required public-contract window: `m4-e2-e3-model-discriminator-overload` (**Pending independent exact OpenAPI/error-catalog approval**)
 
 ## Context
 
@@ -90,33 +91,49 @@ may overlap it during authentication and parsing, but the guard is always
 released before the Process Manager starts and is never held for upstream or
 response streaming.
 
-The complete classification and spool operation has one fixed 30-second
-monotonic wall-clock deadline beginning when the guard is acquired. It is linked
-to `RequestAborted` and any earlier server request deadline; there is no retry,
-queue, deadline extension, or fallback. The following resource failures all
-fail closed before authentication and before any NonStream/SSE acquisition:
+One fixed 30-second monotonic wall-clock deadline begins when the guard is
+acquired and remains active through classification, complete spooling, selected
+data admission, authentication, authoritative parsing, replay-file close, and
+guard release. It is linked to `RequestAborted` and any earlier server request
+deadline; there is no retry, queue, deadline extension, or fallback. The
+following resource failures happen before authentication and before any
+NonStream/SSE acquisition:
 
 - all eight guard permits are active;
-- the fixed classification deadline expires while reading, tokenizing, or
-  completing the spool; or
 - the private spill file cannot be opened or written, including permission,
   file-descriptor, quota, and `ENOSPC` failures.
 
-If the client has not aborted, each of those failures returns the existing
-Gateway-shaped `429 gateway_overloaded` response with `Retry-After: 1`. It owns
-no selected data lease and performs no authentication, validation, canonical
-read, Redis call, reservation, or upstream I/O. If `RequestAborted` wins the
-race, the implementation disposes any partial spool and guard lease and writes
-nothing. A server-side classifier deadline that wins while the connection is
-still usable returns the overload response; it is not converted into malformed
-JSON or a NonStream quarantine request.
+If the client has not aborted, guard saturation or spill open/write failure
+returns the independently governed Gateway-shaped `429 gateway_overloaded`
+response with `Retry-After: 1`. It owns no selected data lease and performs no
+authentication, validation, canonical read, Redis call, reservation, or
+upstream I/O. If `RequestAborted` wins the race, the implementation disposes any
+partial spool and guard lease and writes nothing.
+
+Deadline expiry has the same independently governed 429 behavior whether it
+occurs during body upload, selected data admission, database-backed
+authentication, or authoritative parsing. These stages must observe the linked
+deadline token and may not commit response headers while deadline-governed work
+is still in flight. Authentication/validation terminal results and selected-
+policy overload are projected only after replay storage and the guard are
+released. On expiry, the timeout owner cancels and fences late
+continuations, then disposes the spool/file descriptor and releases the guard,
+then releases any selected NonStream/SSE lease, and only then writes the 429 if
+the client remains connected. A late authentication/parser completion cannot
+use the disposed body, write a response, enter the Process Manager, or retain
+the guard. If headers have nevertheless started, that is an invariant breach:
+the connection is aborted and a content-free operations diagnostic is emitted
+rather than appending a false 429 body. Client abort always writes nothing.
 
 Admission metrics add exactly one fifth internal kind and label,
-`model_discriminator`, for this guard's active count and bounded outcomes such
-as saturation, deadline, storage failure, cancellation, and release. Metrics
-use this kind only for the guard and contain no request byte, property value,
-client address, credential, model, or prompt. The four existing workload kinds
-and labels retain their meanings.
+`model_discriminator`, used only by this guard. The existing active gauge may
+emit `bulkhead=model_discriminator`. The existing rejected counter may emit
+only the three fixed outcomes `saturation`, `deadline`, and `storage_failure`
+for that kind. Cancellation and normal release only decrement the active gauge;
+they do not increment rejected, create an outcome, or add a new instrument.
+Metrics contain no request byte, property value, client address, credential,
+model, or prompt. The four existing workload kinds and labels retain their
+meanings.
 
 ### Bounded classification algorithm
 
@@ -200,32 +217,34 @@ discriminator does not read the body and records the oversized quarantine
 result. For an unknown-length body, observing the sentinel byte records the
 same result and stops reading. The discriminator itself does not emit 413; after
 one NonStream quarantine permit and successful authentication, the ordinary
-body-limit stage emits the existing `413 payload_too_large`. No application
-code drains an unbounded rejected body merely to keep the connection reusable.
+body-limit stage performs the single payload-too-large projection. No
+application code drains an unbounded rejected body merely to keep the
+connection reusable.
 
 For a body within the limit, the discriminator completes the raw spool under
-the 30-second deadline, rewinds it, and only then attempts the selected policy.
+the lifecycle deadline, rewinds it, and only then attempts the selected policy.
 The ordinary bounded body reader and strict parser consume only that complete
 spool while both leases are held; they cannot trigger a later temporary-file
 open or write. After parsing, the spool is disposed and the discriminator guard
 is released, while the selected NonStream/SSE lease remains held through the
-complete response lifecycle.
+complete response lifecycle. The 30-second timer is stopped only after spool
+close and guard release have completed.
 
 Network ingress before policy acquisition remains bounded by the Api server and
 front-proxy connection, header, request-body data-rate, and request timeout
 controls. This ADR does not claim that the NonStream/SSE application bulkheads
 protect socket upload resources. Those transport controls must not be disabled,
-and the discriminator's fixed eight-request concurrency and 30-second deadline
-also bound application-level pre-admission upload work.
+and the discriminator's fixed eight-request concurrency and full-lifecycle
+30-second deadline also bound application-level pre-admission and parser work.
 
 ### Validation, error precedence, and consistency
 
 Classification is not a public validation result. Once the selected lease is
-held, the existing order remains observable. Before that point, guard
-saturation, the 30-second classification deadline, or spill open/write failure
-returns the same Gateway-shaped `429 gateway_overloaded` with `Retry-After: 1`,
-unless client abort requires no response. Those guard failures own no selected
-data lease. After successful classification:
+held, the existing order remains observable. Guard saturation or spill
+open/write failure occurs before that point and owns no selected data lease.
+The full-lifecycle deadline can also expire after data admission during
+authentication or parsing; its ordered cleanup and connected-client 429
+behavior remain exactly as frozen above. After successful classification:
 
 1. a saturated selected partition returns `429 gateway_overloaded` before
    authentication or body validation;
@@ -234,8 +253,9 @@ data lease. After successful classification:
 3. authenticated unsupported media, oversized body, malformed JSON, and valid
    JSON with invalid fields use the existing 415, 413, 400, and 422 contracts;
    and
-4. no new public error code, status, header, OpenAPI field, database state, or
-   Redis state is introduced by this decision.
+4. the discriminator adds no new status, code, header, response schema,
+   database state, or Redis state, but its new 429 causes require the independent
+   OpenAPI/error-catalog compatibility-window approval defined below.
 
 The strict parser publishes an immutable effective mode only after it has
 enforced the full body limit, duplicate-name rejection, JSON syntax, and request
@@ -256,14 +276,20 @@ a bounded security/operations diagnostic without request bytes.
 
 - Client abort during guard acquisition or discrimination disposes replay
   storage and the guard lease, acquires no selected data lease, and writes no
-  response. Classifier/server deadline uses the fail-closed overload behavior
-  above when the client remains connected.
+  response. Client abort during authentication or parsing uses the same
+  no-output cleanup rule.
 - The guard has zero queue, is acquired at most once, owns at most one replay
   file descriptor, and is released exactly once. It is never retried and never
   falls back to an unguarded classifier.
 - Cancellation while waiting for the selected policy cannot retry or fall back
   to the other policy. A lease won concurrently with cancellation is disposed
   exactly once.
+- The lifecycle deadline is enforced around cancellation-aware data-admission,
+  database authentication, and parser operations. They cannot ignore expiry and
+  keep a guard or file descriptor. Late results are fenced and discarded.
+- On deadline, cleanup order is invariant: dispose replay storage/file
+  descriptor and release the discriminator guard first, then release any
+  selected data lease, then project the connected-client 429.
 - After data-policy acquisition, one `finally` owner releases that same lease on
   every authentication, validation, Process Manager, response, disconnect, and
   exception path.
@@ -297,6 +323,10 @@ The implementation must make the following properties executable invariants:
    8, 512 KiB, 256 MiB + 8 bytes, and 8 respectively at the validated maximum.
    Both guard and data-policy counts return to their prior values after every
    completion, rejection, cancellation, and injected exception.
+7. One monotonic deadline covers guard acquisition through parser completion,
+   spool/file-descriptor disposal, and guard release. Expiry cannot leave a
+   database authentication call, parser, replay storage, guard, or selected
+   data lease alive, and cleanup follows the frozen guard-before-data order.
 
 These invariants prove that a body cannot request SSE while consuming only a
 NonStream permit, cannot request non-stream execution while consuming only an
@@ -311,8 +341,9 @@ execution path without its matching policy.
   before admission. This is unavoidable without changing the public protocol.
 - The Api performs a lightweight lexical pass over examined bytes and may use
   bounded temporary storage before authentication. The fixed eight-permit/zero-
-  queue guard, 30-second deadline, byte/descriptor ceilings, owner-only delete-
-  on-close storage, cancellation, and no-DOM rule bound that cost.
+  queue guard, full-lifecycle 30-second deadline, byte/descriptor ceilings,
+  owner-only delete-on-close storage, cancellation, and no-DOM rule bound that
+  cost.
 - The discriminator is intentionally a shared pre-admission choke point for the
   two model POST routes. Saturating it makes both modes fail fast with overload,
   which is measured and tested separately. After classification succeeds,
@@ -383,10 +414,12 @@ process-local and are discarded on process exit; they are never recovery facts.
 The guard bounds unauthenticated classifier work per Api process to eight active
 requests, 512 KiB memory, eight spill descriptors, and at most 256 MiB + 8 bytes
 of temporary spool at the maximum configured body size. Its zero queue and
-30-second deadline bound slow-body and aggregate-spool pressure. Saturation,
-deadline, file open/write, descriptor exhaustion, quota failure, and `ENOSPC`
-fail closed without authentication or business dependencies; no failure may
-switch to an unguarded, in-memory-only, NonStream, or SSE fallback.
+full-lifecycle 30-second deadline bound slow-body, database-authentication,
+parser, and aggregate-spool pressure. Saturation, deadline, file open/write,
+descriptor exhaustion, quota failure, and `ENOSPC` fail closed; no failure may
+switch to an unguarded, in-memory-only, NonStream, or SSE fallback. Deadline
+cleanup fences any late database/parser continuation and frees the guard before
+the selected data lease.
 
 Replay files contain potentially sensitive prompts and tool data. They must be
 runtime-private, owner-only, delete-on-close, never logged, traced, audited,
@@ -409,12 +442,29 @@ descriptions atomically with the code:
 - `docs/architecture/adr/README.md` plus the normal project-memory navigation
   only after exact approval and verified implementation state.
 
-The existing OpenAPI 429 response, `gateway_overloaded`, `Retry-After: 1`, 400,
-413, 415, and 422 contracts are reused without changing their public semantics.
-Therefore this proposal requires no OpenAPI compatibility window, error-catalog
-entry, fixture change, database sign-off, or Redis sign-off. Any implementation
-that needs a new public status/code/header or changes `stream` semantics must
-stop and open the corresponding independent contract governance instead.
+This ADR does not claim that the current public contract already covers
+discriminator deadline or storage failure. Before implementation, one separate
+exact compatibility window named
+`m4-e2-e3-model-discriminator-overload` must update and bind:
+
+- `docs/contracts/openapi-v1.yaml`, extending only the existing 429 description
+  on both shared POST operations to enumerate guard saturation, full-lifecycle
+  deadline, and replay-storage failure;
+- `docs/contracts/error-catalog.md`, extending only `gateway_overloaded` to
+  freeze those three causes and `Retry-After: 1`; and
+- `docs/contracts/compatibility-windows-v1.json`, binding the exact base commit,
+  base/target OpenAPI and error-catalog digests, and the complete compatibility
+  diagnostic set.
+
+That window introduces no new status, code, header, or response schema and does
+not alter the single ordinary payload-too-large behavior. Nevertheless its
+semantic expansion requires an independent permanent `@Lyon1984` approval in
+Issue #44. ADR approval and public-contract-window approval do not substitute
+for one another; both must exist before implementation. A fixture change,
+database sign-off, and Redis sign-off remain unnecessary unless the exact
+candidate introduces a further coupled change. Any implementation that needs a
+new public status/code/header or changes `stream` semantics must stop and open
+new governance rather than widening this window.
 
 The minimum coupled test locations are:
 
@@ -446,8 +496,16 @@ The minimum coupled test locations are:
   no alternate-policy fallback. A separate test saturates all eight
   `model_discriminator` permits, proves immediate zero-queue Gateway 429 with
   `Retry-After: 1` for both routes, then proves capacity is restored.
+- One combined slow-upload test holds all eight guards with eight incomplete
+  request bodies, proves a ninth request immediately receives the Gateway 429,
+  advances the monotonic clock to 30 seconds, then proves every partial spool,
+  file descriptor, guard lease, and any selected data lease is released before
+  both guard and data capacity are reusable.
 - Cancellation tests cover discrimination, selected-policy wait, post-acquire
-  validation, active non-stream response, active SSE, and bounded drain.
+  authentication/parsing, active non-stream response, active SSE, and bounded
+  drain. Deadline injection separately covers data admission, blocked database
+  authentication, and parser stages plus the spool/guard-before-data cleanup
+  order.
 - Architecture tests forbid a second admission-controller call, mutable
   classification features, endpoint/body-parser bypass of the consistency
   guard, and request-body content in logs/metrics/traces.
@@ -458,4 +516,5 @@ The minimum coupled test locations are:
 This proposed ADR is not approval to implement M4-E2/M4-E3, not an OpenAPI or
 database sign-off, not an authorization for remote systems, and not M4 or
 release acceptance. `@Lyon1984` must approve the exact candidate before its
-status or any dependent contract is backwritten as accepted.
+status is backwritten as accepted, and must independently approve the exact
+OpenAPI/error-catalog compatibility window before implementation begins.
