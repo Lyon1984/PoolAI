@@ -63,7 +63,7 @@ public sealed partial class PostgresMigrationTests
         MigrationCatalog catalog = await MigrationCatalog
             .LoadAsync(cancellationToken)
             .ConfigureAwait(true);
-        Assert.Equal(18, catalog.Assets.Count);
+        Assert.Equal(19, catalog.Assets.Count);
         await ApplyM3ExitMigrationPrefixAsync(
             catalog,
             migratorConnectionString,
@@ -126,7 +126,7 @@ public sealed partial class PostgresMigrationTests
             await ReadM3ExitDispatchFunctionOidAsync(connection, cancellationToken)
                 .ConfigureAwait(true));
         Assert.Equal(
-            18L,
+            19L,
             await ReadM3ExitTopMigrationAsync(connection, cancellationToken)
                 .ConfigureAwait(true));
 

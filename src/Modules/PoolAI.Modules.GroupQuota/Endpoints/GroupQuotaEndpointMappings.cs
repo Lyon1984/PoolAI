@@ -192,7 +192,8 @@ public static class GroupQuotaEndpointMappings
                 parsed.Description,
                 parsed.TotalTokens,
                 GroupQuotaHttp.RemoteIp(context),
-                GroupQuotaHttp.UserAgent(context)),
+                GroupQuotaHttp.UserAgent(context),
+                parsed.RequestsPerMinute),
             context.RequestAborted).ConfigureAwait(false);
         if (result.IsFailure)
         {
@@ -294,7 +295,11 @@ public static class GroupQuotaEndpointMappings
                     request.Name.HasValue,
                     request.Name.HasValue ? request.Name.Value : null,
                     request.Description.HasValue,
-                    request.Description.HasValue ? request.Description.Value : null),
+                    request.Description.HasValue ? request.Description.Value : null,
+                    request.RequestsPerMinute.HasValue,
+                    request.RequestsPerMinute.HasValue
+                        ? request.RequestsPerMinute.Value
+                        : null),
                 GroupQuotaHttp.RequestId(context),
                 GroupQuotaHttp.RemoteIp(context),
                 GroupQuotaHttp.UserAgent(context)),
@@ -337,7 +342,11 @@ public static class GroupQuotaEndpointMappings
                     : null,
                 request.Reason.HasValue ? request.Reason.Value : null,
                 GroupQuotaHttp.RemoteIp(context),
-                GroupQuotaHttp.UserAgent(context)),
+                GroupQuotaHttp.UserAgent(context),
+                request.RequestsPerMinute.HasValue,
+                request.RequestsPerMinute.HasValue
+                    ? request.RequestsPerMinute.Value
+                    : null),
             context.RequestAborted).ConfigureAwait(false);
         if (result.IsFailure)
         {

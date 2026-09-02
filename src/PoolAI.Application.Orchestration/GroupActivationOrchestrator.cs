@@ -124,7 +124,11 @@ public sealed class GroupActivationOrchestrator(
                 && (string.IsNullOrWhiteSpace(metadata.Name)
                     || metadata.Name.Length > 100)
                 || metadata.HasDescription
-                && metadata.Description is { Length: > 1000 }))
+                && metadata.Description is { Length: > 1000 }
+                || metadata.HasRequestsPerMinute
+                && metadata.RequestsPerMinute is not (>= 1 and <= 1_000_000)
+                || !metadata.HasRequestsPerMinute
+                && metadata.RequestsPerMinute is not null))
         {
             return Result.Failure<Unit>(
                 "validation_failed",

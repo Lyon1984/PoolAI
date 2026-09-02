@@ -226,6 +226,109 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
     }
 
     [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task RuntimePolicyV2CreateAndRpmOnlyUpdateRoundTripThroughTheRepository()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        EntityId actorId = await SeedAdminActorAsync("group-runtime-policy", cancellationToken)
+            .ConfigureAwait(true);
+        await using ServiceProvider services = BuildGroupServices();
+        NpgsqlDataSource dataSource = services.GetRequiredService<NpgsqlDataSource>();
+        PostgresGroupRepository repository = new(dataSource);
+        IUnitOfWorkFactory unitOfWorkFactory = services
+            .GetRequiredService<IUnitOfWorkFactory>();
+        EntityId groupId = EntityId.New();
+        string suffix = Guid.NewGuid().ToString("N")[..12];
+
+        IUnitOfWork unitOfWork = await unitOfWorkFactory
+            .BeginAsync(cancellationToken).ConfigureAwait(true);
+        await using ConfiguredAsyncDisposable unitOfWorkLease =
+            unitOfWork.ConfigureAwait(false);
+        GroupWriteResult created = await repository.CreateAsync(
+            new CreateGroupWrite(
+                groupId,
+                EntityId.New(),
+                EntityId.New(),
+                EntityId.New(),
+                $"Runtime policy {suffix}",
+                "repository v2 RPM coverage",
+                TotalTokens: 10_000,
+                actorId,
+                Key("runtime-policy-create"),
+                "initialize the Group quota",
+                RequestsPerMinute: 7_200),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+
+        Assert.Equal(GroupWriteDisposition.Written, created.Disposition);
+        Assert.True(created.WasChanged);
+        Assert.Equal(7_200, Assert.IsType<GroupResource>(created.Group).RequestsPerMinute);
+
+        GroupWriteResult missingReason = await repository.UpdateAsync(
+            new UpdateGroupWrite(
+                groupId,
+                ExpectedVersion: 1,
+                HasName: false,
+                Name: null,
+                HasDescription: false,
+                Description: null,
+                Lifecycle: null,
+                Reason: null,
+                SupplyEvidence: null,
+                HasRequestsPerMinute: true,
+                RequestsPerMinute: 8_400),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+        Assert.Equal(GroupWriteDisposition.ValidationFailed, missingReason.Disposition);
+        Assert.False(missingReason.WasChanged);
+
+        GroupWriteResult updated = await repository.UpdateAsync(
+            new UpdateGroupWrite(
+                groupId,
+                ExpectedVersion: 1,
+                HasName: false,
+                Name: null,
+                HasDescription: false,
+                Description: null,
+                Lifecycle: null,
+                Reason: "raise Group admission rate",
+                SupplyEvidence: null,
+                HasRequestsPerMinute: true,
+                RequestsPerMinute: 8_400),
+            unitOfWork.Context,
+            cancellationToken).ConfigureAwait(true);
+
+        Assert.Equal(GroupWriteDisposition.Written, updated.Disposition);
+        Assert.True(updated.WasChanged);
+        Assert.Equal(2, updated.CurrentVersion);
+        Assert.Equal(7_200, Assert.IsType<GroupResource>(updated.Before).RequestsPerMinute);
+        GroupResource updatedGroup = Assert.IsType<GroupResource>(updated.Group);
+        Assert.Equal(8_400, updatedGroup.RequestsPerMinute);
+        Assert.Equal(2, updatedGroup.Version);
+        await unitOfWork.CommitAsync(cancellationToken).ConfigureAwait(true);
+
+        GroupResource? persisted = await repository.GetAsync(groupId, cancellationToken)
+            .ConfigureAwait(true);
+        Assert.Equal(8_400, Assert.IsType<GroupResource>(persisted).RequestsPerMinute);
+        using NpgsqlCommand policyCommand = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT runtime_policy::text
+            FROM public.groups
+            WHERE id = $1;
+            """);
+        policyCommand.Parameters.AddWithValue(groupId.Value);
+        string policyJson = Assert.IsType<string>(await policyCommand
+            .ExecuteScalarAsync(cancellationToken).ConfigureAwait(true));
+        using JsonDocument policy = JsonDocument.Parse(policyJson);
+        Assert.Equal(2, policy.RootElement.EnumerateObject().Count());
+        Assert.Equal(
+            1,
+            policy.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.Equal(
+            8_400,
+            policy.RootElement.GetProperty("requests_per_minute").GetInt32());
+    }
+
+    [Fact]
     public async Task ActivationArchiveAndPoolSummaryUseCanonicalQuotaAndLifecycleState()
     {
         CancellationToken cancellationToken = TestContext.Current.CancellationToken;
@@ -1372,7 +1475,8 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
                 totalTokens,
                 actorId,
                 Key("direct-create"),
-                "exercise the Group create database contract");
+                "exercise the Group create database contract",
+                RequestsPerMinute: 6000);
 
         IUnitOfWork unitOfWork = await unitOfWorkFactory
             .BeginAsync(cancellationToken).ConfigureAwait(true);
@@ -1554,6 +1658,7 @@ public sealed class PostgresGroupRepositoryCoverageTests(PostgresRuntimeFixture 
         Assert.Equal(201, result.Value.StatusCode);
         Assert.Equal(GroupLifecycle.Disabled, result.Value.Value.Status);
         Assert.Equal(1, result.Value.Value.Version);
+        Assert.Equal(6000, result.Value.Value.RequestsPerMinute);
         return result.Value;
     }
 

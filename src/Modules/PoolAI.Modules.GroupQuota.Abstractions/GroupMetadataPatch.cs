@@ -4,4 +4,6 @@ public sealed record GroupMetadataPatch(
     bool HasName,
     string? Name,
     bool HasDescription,
-    string? Description);
+    string? Description,
+    bool HasRequestsPerMinute = false,
+    int? RequestsPerMinute = null);

@@ -33,7 +33,8 @@ public sealed record CreateGroupCommand(
     string? Description,
     long TotalTokens,
     string? IpAddress,
-    string? UserAgent);
+    string? UserAgent,
+    int RequestsPerMinute = 6000);
 
 public sealed record UpdateGroupCommand(
     EntityId RequestId,
@@ -49,7 +50,9 @@ public sealed record UpdateGroupCommand(
     GroupLifecycle? Status,
     string? Reason,
     string? IpAddress,
-    string? UserAgent);
+    string? UserAgent,
+    bool HasRequestsPerMinute = false,
+    int? RequestsPerMinute = null);
 
 public sealed record GroupView(
     EntityId Id,
@@ -58,7 +61,8 @@ public sealed record GroupView(
     GroupLifecycle Status,
     long Version,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    int RequestsPerMinute);
 
 public sealed record GroupPage(
     IReadOnlyList<GroupView> Data,

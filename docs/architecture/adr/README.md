@@ -12,6 +12,10 @@ Each ADR must contain status, date, context, decision, alternatives, consequence
 
 Project memory links to ADRs but does not duplicate their decision text.
 
+Proposed decisions:
+
+- [`0015-freeze-m4-e1-gateway-admission-and-upstream-handoff.md`](0015-freeze-m4-e1-gateway-admission-and-upstream-handoff.md) — propose the complete per-Group RPM authority, trusted-proxy client-IP algorithm, deterministic conservative estimate, lossless usage abstraction, and revision-fenced route/credential handoff for M4-E1. The exact OpenAPI window and migration 0019 remain independently governed.
+
 Accepted decisions:
 
 - [`0001-separate-group-quota-from-supply-configuration.md`](0001-separate-group-quota-from-supply-configuration.md) — separate GroupQuota lifecycle/quota writes from Supply configuration writes.

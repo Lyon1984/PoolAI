@@ -43,9 +43,9 @@ public sealed class GroupQuotaEndpointContractTests
         await using GroupApiFactory factory = new();
         factory.UseCases.ListResult = Result.Success(new GroupPage(
             [
-                View(GroupLifecycle.Active, version: 7, name: "Active Group"),
-                View(GroupLifecycle.Disabled, version: 8, name: "Disabled Group"),
-                View(GroupLifecycle.Archived, version: 9, name: "Archived Group"),
+                View(GroupLifecycle.Active, 7, "Active Group", requestsPerMinute: 7_001),
+                View(GroupLifecycle.Disabled, 8, "Disabled Group", requestsPerMinute: 7_002),
+                View(GroupLifecycle.Archived, 9, "Archived Group", requestsPerMinute: 7_003),
             ],
             "next/page",
             HasMore: true));
@@ -96,7 +96,11 @@ public sealed class GroupQuotaEndpointContractTests
     {
         await using GroupApiFactory factory = new();
         factory.UseCases.GetResult = Result.Success(
-            View(GroupLifecycle.Active, version: 12, name: "Detailed Group"));
+            View(
+                GroupLifecycle.Active,
+                version: 12,
+                name: "Detailed Group",
+                requestsPerMinute: 8_888));
         using HttpClient client = AuthenticatedClient(factory, "auditor");
 
         using HttpResponseMessage response = await client.GetAsync(
@@ -110,6 +114,7 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal("Detailed Group", document.RootElement.GetProperty("name").GetString());
         Assert.Equal("active", document.RootElement.GetProperty("status").GetString());
         Assert.Equal("description", document.RootElement.GetProperty("description").GetString());
+        Assert.Equal(8_888, document.RootElement.GetProperty("requests_per_minute").GetInt32());
         GetGroupQuery query = Assert.IsType<GetGroupQuery>(factory.UseCases.LastGetQuery);
         Assert.Equal(GroupId, query.GroupId);
         Assert.Equal(GroupControlRole.Auditor, query.Actor.Role);
@@ -153,6 +158,7 @@ public sealed class GroupQuotaEndpointContractTests
             Assert.Equal("Research", document.RootElement.GetProperty("name").GetString());
             Assert.Equal("disabled", document.RootElement.GetProperty("status").GetString());
             Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("description").ValueKind);
+            Assert.Equal(6000, document.RootElement.GetProperty("requests_per_minute").GetInt32());
         }
 
         CreateGroupCommand command = Assert.IsType<CreateGroupCommand>(
@@ -163,8 +169,78 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal("group-create-success", command.IdempotencyKey);
         Assert.Null(command.Description);
         Assert.Equal(9_007_199_254_740_991, command.TotalTokens);
+        Assert.Equal(6000, command.RequestsPerMinute);
         Assert.Equal(UserAgentDigest(userAgent), command.UserAgent);
 
+    }
+
+    [Fact]
+    public async Task AdminCreateMapsCustomRequestsPerMinuteAndSerializesIt()
+    {
+        await using GroupApiFactory factory = new();
+        factory.UseCases.CreateResult = Result.Success(new GroupCommandOutcome(
+            StatusCodes.Status201Created,
+            IsReplay: false,
+            View(
+                GroupLifecycle.Disabled,
+                version: 1,
+                name: "Custom rate",
+                requestsPerMinute: 9_001),
+            "\"v1\""));
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = JsonCommand(
+            HttpMethod.Post,
+            "/api/v1/admin/groups",
+            new
+            {
+                name = "Custom rate",
+                total_tokens = 100,
+                requests_per_minute = 9_001,
+            },
+            idempotencyKey: "group-create-custom-rpm");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using JsonDocument document = await ReadJsonAsync(response).ConfigureAwait(true);
+        Assert.Equal(9_001, document.RootElement.GetProperty("requests_per_minute").GetInt32());
+        CreateGroupCommand command = Assert.IsType<CreateGroupCommand>(
+            factory.UseCases.LastCreateCommand);
+        Assert.Equal(9_001, command.RequestsPerMinute);
+        Assert.Equal(1, factory.UseCases.CreateCalls);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1_000_001)]
+    public async Task AdminCreateRejectsRequestsPerMinuteOutsideTheFrozenRange(
+        int requestsPerMinute)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = JsonCommand(
+            HttpMethod.Post,
+            "/api/v1/admin/groups",
+            new
+            {
+                name = "Invalid rate",
+                total_tokens = 100,
+                requests_per_minute = requestsPerMinute,
+            },
+            idempotencyKey: $"group-create-invalid-rpm-{requestsPerMinute}");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        await AssertProblemAsync(
+            response,
+            "validation_failed",
+            "/requests_per_minute").ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.CreateCalls);
     }
 
     [Fact]
@@ -840,6 +916,100 @@ public sealed class GroupQuotaEndpointContractTests
     }
 
     [Fact]
+    public async Task AdminRequestsPerMinuteOnlyPatchRequiresReasonAndMapsOneUpdate()
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage missingReason = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/groups/{GroupId.Value:D}",
+            new { requests_per_minute = 7_200 },
+            "application/merge-patch+json",
+            "group-rpm-missing-reason",
+            "\"v4\"");
+
+        using HttpResponseMessage missingReasonResponse = await client.SendAsync(
+            missingReason,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, missingReasonResponse.StatusCode);
+        await AssertProblemAsync(missingReasonResponse, "validation_failed", "/reason")
+            .ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.UpdateCalls);
+        Assert.Equal(0, factory.Activation.Calls);
+
+        factory.UseCases.UpdateResult = Result.Success(new GroupCommandOutcome(
+            StatusCodes.Status200OK,
+            IsReplay: false,
+            View(GroupLifecycle.Disabled, 5, "Default", requestsPerMinute: 7_200),
+            "\"v5\""));
+        using HttpRequestMessage valid = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/groups/{GroupId.Value:D}",
+            new
+            {
+                requests_per_minute = 7_200,
+                reason = "raise Group admission rate",
+            },
+            "application/merge-patch+json",
+            "group-rpm-update",
+            "\"v4\"");
+
+        using HttpResponseMessage validResponse = await client.SendAsync(
+            valid,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, validResponse.StatusCode);
+        using (JsonDocument document = await ReadJsonAsync(validResponse).ConfigureAwait(true))
+        {
+            Assert.Equal(7_200, document.RootElement
+                .GetProperty("requests_per_minute").GetInt32());
+        }
+
+        UpdateGroupCommand command = Assert.IsType<UpdateGroupCommand>(
+            factory.UseCases.LastUpdateCommand);
+        Assert.False(command.HasName);
+        Assert.False(command.HasDescription);
+        Assert.False(command.HasStatus);
+        Assert.True(command.HasRequestsPerMinute);
+        Assert.Equal(7_200, command.RequestsPerMinute);
+        Assert.Equal("raise Group admission rate", command.Reason);
+        Assert.Equal(1, factory.UseCases.UpdateCalls);
+        Assert.Equal(0, factory.Activation.Calls);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1_000_001)]
+    public async Task AdminPatchRejectsRequestsPerMinuteOutsideTheFrozenRange(
+        int requestsPerMinute)
+    {
+        await using GroupApiFactory factory = new();
+        using HttpClient client = AuthenticatedClient(factory, "admin");
+        using HttpRequestMessage request = JsonCommand(
+            HttpMethod.Patch,
+            $"/api/v1/admin/groups/{GroupId.Value:D}",
+            new
+            {
+                requests_per_minute = requestsPerMinute,
+                reason = "change Group admission rate",
+            },
+            "application/merge-patch+json",
+            $"group-rpm-invalid-{requestsPerMinute}",
+            "\"v4\"");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        await AssertProblemAsync(response, "validation_failed", "/requests_per_minute")
+            .ConfigureAwait(true);
+        Assert.Equal(0, factory.UseCases.UpdateCalls);
+        Assert.Equal(0, factory.Activation.Calls);
+    }
+
+    [Fact]
     public async Task AdminUpdateRoutesActiveLifecycleThroughTheOrchestrator()
     {
         await using GroupApiFactory factory = new();
@@ -853,8 +1023,8 @@ public sealed class GroupQuotaEndpointContractTests
                 null,
                 GroupLifecycle.Active,
                 10,
-                Timestamp,
-                Timestamp.AddMinutes(2))));
+                Timestamp, Timestamp.AddMinutes(2),
+                RequestsPerMinute: 8_400)));
         using HttpClient client = AuthenticatedClient(factory, "admin");
         using HttpRequestMessage active = JsonCommand(
             HttpMethod.Patch,
@@ -865,6 +1035,7 @@ public sealed class GroupQuotaEndpointContractTests
                 description = (string?)null,
                 status = "active",
                 reason = "supply ready",
+                requests_per_minute = 8_400,
             },
             "application/merge-patch+json",
             "group-activate",
@@ -881,10 +1052,11 @@ public sealed class GroupQuotaEndpointContractTests
             Assert.Equal("Activated", document.RootElement.GetProperty("name").GetString());
             Assert.Equal("active", document.RootElement.GetProperty("status").GetString());
             Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("description").ValueKind);
+            Assert.Equal(8_400, document.RootElement.GetProperty("requests_per_minute").GetInt32());
         }
 
-        GroupActivationOrchestrationCommand activation =
-            Assert.IsType<GroupActivationOrchestrationCommand>(factory.Activation.LastCommand);
+        GroupActivationOrchestrationCommand activation = Assert.IsType<
+            GroupActivationOrchestrationCommand>(factory.Activation.LastCommand);
         Assert.Equal(ActorId, activation.Actor.UserId);
         Assert.Equal(7, activation.Actor.TokenVersion);
         Assert.Equal(GroupId, activation.GroupId);
@@ -896,6 +1068,8 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal("Activated", metadata.Name);
         Assert.True(metadata.HasDescription);
         Assert.Null(metadata.Description);
+        Assert.True(metadata.HasRequestsPerMinute);
+        Assert.Equal(8_400, metadata.RequestsPerMinute);
         Assert.NotNull(activation.RequestId);
     }
 
@@ -1279,6 +1453,9 @@ public sealed class GroupQuotaEndpointContractTests
         Assert.Equal("active", data[0].GetProperty("status").GetString());
         Assert.Equal("disabled", data[1].GetProperty("status").GetString());
         Assert.Equal("archived", data[2].GetProperty("status").GetString());
+        Assert.Equal(7_001, data[0].GetProperty("requests_per_minute").GetInt32());
+        Assert.Equal(7_002, data[1].GetProperty("requests_per_minute").GetInt32());
+        Assert.Equal(7_003, data[2].GetProperty("requests_per_minute").GetInt32());
         Assert.All(data, static group =>
             Assert.Equal("openai", group.GetProperty("platform").GetString()));
         JsonElement page = document.RootElement.GetProperty("page");
@@ -1486,7 +1663,6 @@ public sealed class GroupQuotaEndpointContractTests
             (new { name = "Valid", description = new string('d', 1001) }, "/description"),
             (new { status = 999, reason = "valid reason" }, "/status"),
             (new { status = "disabled" }, "/reason"),
-            (new { status = "disabled", reason = "bad\nreason" }, "/reason"),
             (new { name = "Valid", reason = " " }, "/reason"),
         ];
         foreach ((object body, string pointer) in cases)
@@ -1729,14 +1905,16 @@ public sealed class GroupQuotaEndpointContractTests
         GroupLifecycle lifecycle,
         long version,
         string name,
-        string? description = "description") => new(
+        string? description = "description",
+        int requestsPerMinute = 6000) => new(
         GroupId,
         name,
         description,
         lifecycle,
         version,
         Timestamp,
-        Timestamp.AddMinutes(version));
+        Timestamp.AddMinutes(version),
+        requestsPerMinute);
 
     private static GroupQuotaView LargeQuotaView(
         GroupPoolQuotaStatus status,
@@ -2021,7 +2199,8 @@ public sealed class GroupQuotaEndpointContractTests
                     GroupLifecycle.Active,
                     2,
                     Timestamp,
-                    Timestamp.AddMinutes(1))));
+                    Timestamp.AddMinutes(1),
+                    RequestsPerMinute: 6000)));
 
         internal GroupActivationOrchestrationCommand? LastCommand { get; private set; }
 

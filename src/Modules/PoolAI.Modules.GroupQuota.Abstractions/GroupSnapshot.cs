@@ -5,4 +5,5 @@ public sealed record GroupSnapshot(
     GroupLifecycle Lifecycle,
     long Version,
     bool HasCurrentQuotaPeriod,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    int RequestsPerMinute);

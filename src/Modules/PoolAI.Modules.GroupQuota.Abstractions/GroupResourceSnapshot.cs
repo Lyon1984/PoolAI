@@ -7,4 +7,5 @@ public sealed record GroupResourceSnapshot(
     GroupLifecycle Lifecycle,
     long Version,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    int RequestsPerMinute);

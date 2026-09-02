@@ -119,6 +119,7 @@ internal sealed class GroupControlPlaneService :
 
         string name;
         string? description;
+        int requestsPerMinute;
         byte[] requestHash;
         try
         {
@@ -130,12 +131,25 @@ internal sealed class GroupControlPlaneService :
                 throw new ArgumentOutOfRangeException(nameof(command));
             }
 
-            requestHash = HashRequest(new
-            {
-                name,
-                description,
-                total_tokens = command.TotalTokens,
-            });
+            requestsPerMinute = GroupInput.RequestsPerMinute(command.RequestsPerMinute);
+
+            // Preserve the schema-18 idempotency ABI for the effective default.
+            // Explicit/default 6000 is semantically identical to the old request
+            // shape, so an in-retention replay must keep its original hash.
+            requestHash = requestsPerMinute == 6000
+                ? HashRequest(new
+                {
+                    name,
+                    description,
+                    total_tokens = command.TotalTokens,
+                })
+                : HashRequest(new
+                {
+                    name,
+                    description,
+                    requests_per_minute = requestsPerMinute,
+                    total_tokens = command.TotalTokens,
+                });
         }
         catch (ArgumentException)
         {
@@ -176,7 +190,8 @@ internal sealed class GroupControlPlaneService :
                 command.TotalTokens,
                 command.Actor.UserId,
                 QuotaIdempotencyKey(scope, command.IdempotencyKey),
-                "Initial quota provisioned with Group creation."),
+                "Initial quota provisioned with Group creation.",
+                requestsPerMinute),
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false);
         if (create.Disposition != GroupWriteDisposition.Written)
@@ -259,14 +274,20 @@ internal sealed class GroupControlPlaneService :
         string? normalizedName;
         string? normalizedDescription;
         string? normalizedReason;
+        int? normalizedRequestsPerMinute;
         byte[] requestHash;
         try
         {
             GroupInput.IdempotencyKey(command.IdempotencyKey);
             if (command.ExpectedVersion <= 0
-                || (!command.HasName && !command.HasDescription && !command.HasStatus)
+                || (!command.HasName
+                    && !command.HasDescription
+                    && !command.HasStatus
+                    && !command.HasRequestsPerMinute)
                 || command.HasName && command.Name is null
-                || command.HasStatus && command.Status is null)
+                || command.HasStatus && command.Status is null
+                || command.HasRequestsPerMinute && command.RequestsPerMinute is null
+                || !command.HasRequestsPerMinute && command.RequestsPerMinute is not null)
             {
                 throw new ArgumentException("The Group update is incomplete.", nameof(command));
             }
@@ -275,21 +296,39 @@ internal sealed class GroupControlPlaneService :
             normalizedDescription = command.HasDescription
                 ? GroupInput.Description(command.Description)
                 : null;
-            normalizedReason = command.HasStatus
+            normalizedRequestsPerMinute = command.HasRequestsPerMinute
+                ? GroupInput.RequestsPerMinute(command.RequestsPerMinute!.Value)
+                : null;
+            normalizedReason = command.HasStatus || command.HasRequestsPerMinute
                 ? GroupInput.Reason(command.Reason ?? string.Empty)
                 : command.Reason is null ? null : GroupInput.Reason(command.Reason);
-            requestHash = HashRequest(new
-            {
-                group_id = command.GroupId.Value,
-                expected_version = command.ExpectedVersion,
-                has_name = command.HasName,
-                name = normalizedName,
-                has_description = command.HasDescription,
-                description = normalizedDescription,
-                has_status = command.HasStatus,
-                status = command.Status is null ? null : LifecycleCode(command.Status.Value),
-                reason = normalizedReason,
-            });
+            requestHash = command.HasRequestsPerMinute
+                ? HashRequest(new
+                {
+                    group_id = command.GroupId.Value,
+                    expected_version = command.ExpectedVersion,
+                    has_name = command.HasName,
+                    name = normalizedName,
+                    has_description = command.HasDescription,
+                    description = normalizedDescription,
+                    has_status = command.HasStatus,
+                    status = command.Status is null ? null : LifecycleCode(command.Status.Value),
+                    has_requests_per_minute = true,
+                    requests_per_minute = normalizedRequestsPerMinute,
+                    reason = normalizedReason,
+                })
+                : HashRequest(new
+                {
+                    group_id = command.GroupId.Value,
+                    expected_version = command.ExpectedVersion,
+                    has_name = command.HasName,
+                    name = normalizedName,
+                    has_description = command.HasDescription,
+                    description = normalizedDescription,
+                    has_status = command.HasStatus,
+                    status = command.Status is null ? null : LifecycleCode(command.Status.Value),
+                    reason = normalizedReason,
+                });
         }
         catch (ArgumentException)
         {
@@ -326,8 +365,10 @@ internal sealed class GroupControlPlaneService :
                 command.HasDescription,
                 normalizedDescription,
                 command.HasStatus ? command.Status : null,
-                command.HasStatus ? normalizedReason : null,
-                SupplyEvidence: null),
+                command.HasStatus || command.HasRequestsPerMinute ? normalizedReason : null,
+                SupplyEvidence: null,
+                command.HasRequestsPerMinute,
+                normalizedRequestsPerMinute),
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false);
         if (update.Disposition != GroupWriteDisposition.Written)
@@ -441,7 +482,8 @@ internal sealed class GroupControlPlaneService :
                 group.Lifecycle,
                 group.Version,
                 group.HasCurrentQuotaPeriod,
-                group.ObservedAt));
+                group.ObservedAt,
+                group.RequestsPerMinute));
     }
 
     public async ValueTask<Result<GroupActivationResult>> ActivateAsync(
@@ -517,7 +559,9 @@ internal sealed class GroupControlPlaneService :
                 prepared.Description,
                 GroupLifecycle.Active,
                 prepared.Reason,
-                command.SupplyEvidence),
+                command.SupplyEvidence,
+                prepared.HasRequestsPerMinute,
+                prepared.RequestsPerMinute),
             unitOfWork.Context,
             cancellationToken).ConfigureAwait(false);
         if (activation.Disposition != GroupWriteDisposition.Written)
@@ -829,7 +873,8 @@ internal sealed class GroupControlPlaneService :
                 view.Status,
                 view.Version,
                 view.CreatedAt,
-                view.UpdatedAt)));
+                view.UpdatedAt,
+                view.RequestsPerMinute)));
     }
 
     private static Result<T> ReplayFailure<T>(CommandIdempotencyResponse response)
@@ -1094,22 +1139,47 @@ internal sealed class GroupControlPlaneService :
         GroupInput.IdempotencyKey(idempotencyKey);
         string normalizedReason = GroupInput.Reason(reason);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedVersion);
+        if (metadata is not null
+            && ((!metadata.HasRequestsPerMinute
+                    && metadata.RequestsPerMinute is not null)
+                || (metadata.HasRequestsPerMinute
+                    && metadata.RequestsPerMinute is null)))
+        {
+            throw new ArgumentException(
+                "The Group requests-per-minute patch is incomplete.",
+                nameof(metadata));
+        }
 
         bool hasName = metadata?.HasName is true;
         bool hasDescription = metadata?.HasDescription is true;
+        bool hasRequestsPerMinute = metadata?.HasRequestsPerMinute is true;
         string? normalizedName = hasName
             ? GroupInput.Name(metadata!.Name ?? string.Empty)
             : null;
         string? normalizedDescription = hasDescription
             ? GroupInput.Description(metadata!.Description)
             : null;
-        return new PreparedActivation(
-            hasName,
-            normalizedName,
-            hasDescription,
-            normalizedDescription,
-            normalizedReason,
-            HashRequest(new
+        int? normalizedRequestsPerMinute = hasRequestsPerMinute
+            ? GroupInput.RequestsPerMinute(
+                metadata!.RequestsPerMinute
+                    ?? throw new ArgumentException(
+                        "The Group requests-per-minute patch is incomplete.",
+                        nameof(metadata)))
+            : null;
+        byte[] requestHash = hasRequestsPerMinute
+            ? HashRequest(new
+            {
+                group_id = groupId.Value,
+                expected_version = expectedVersion,
+                has_name = hasName,
+                name = normalizedName,
+                has_description = hasDescription,
+                description = normalizedDescription,
+                has_requests_per_minute = true,
+                requests_per_minute = normalizedRequestsPerMinute,
+                reason = normalizedReason,
+            })
+            : HashRequest(new
             {
                 group_id = groupId.Value,
                 expected_version = expectedVersion,
@@ -1118,7 +1188,17 @@ internal sealed class GroupControlPlaneService :
                 has_description = hasDescription,
                 description = normalizedDescription,
                 reason = normalizedReason,
-            }));
+            });
+
+        return new PreparedActivation(
+            hasName,
+            normalizedName,
+            hasDescription,
+            normalizedDescription,
+            hasRequestsPerMinute,
+            normalizedRequestsPerMinute,
+            normalizedReason,
+            requestHash);
     }
 
     private static bool IsAdmin(GroupActor actor) =>
@@ -1137,7 +1217,8 @@ internal sealed class GroupControlPlaneService :
         group.Lifecycle,
         group.Version,
         group.CreatedAt,
-        group.UpdatedAt);
+        group.UpdatedAt,
+        group.RequestsPerMinute);
 
     private static JsonElement AuditState(GroupResource group) =>
         JsonSerializer.SerializeToElement(new
@@ -1146,12 +1227,13 @@ internal sealed class GroupControlPlaneService :
             name = group.Name,
             description = group.Description,
             status = LifecycleCode(group.Lifecycle),
+            requests_per_minute = group.RequestsPerMinute,
             version = group.Version,
         });
 
     private static string[] ChangedFields(GroupResource before, GroupResource after)
     {
-        List<string> fields = new(3);
+        List<string> fields = new(4);
         if (!string.Equals(before.Name, after.Name, StringComparison.Ordinal))
         {
             fields.Add("name");
@@ -1165,6 +1247,11 @@ internal sealed class GroupControlPlaneService :
         if (before.Lifecycle != after.Lifecycle)
         {
             fields.Add("status");
+        }
+
+        if (before.RequestsPerMinute != after.RequestsPerMinute)
+        {
+            fields.Add("requests_per_minute");
         }
 
         return fields.ToArray();
@@ -1332,6 +1419,8 @@ internal sealed class GroupControlPlaneService :
         string? Name,
         bool HasDescription,
         string? Description,
+        bool HasRequestsPerMinute,
+        int? RequestsPerMinute,
         string Reason,
         byte[] RequestHash);
 
@@ -1342,7 +1431,8 @@ internal sealed class GroupControlPlaneService :
         GroupLifecycle Status,
         long Version,
         DateTimeOffset CreatedAt,
-        DateTimeOffset UpdatedAt)
+        DateTimeOffset UpdatedAt,
+        int RequestsPerMinute = 6000)
     {
         internal static GroupViewReplay From(GroupView value) => new(
             value.Id.Value,
@@ -1351,13 +1441,15 @@ internal sealed class GroupControlPlaneService :
             value.Status,
             value.Version,
             value.CreatedAt,
-            value.UpdatedAt);
+            value.UpdatedAt,
+            value.RequestsPerMinute);
 
         internal GroupView ToView()
         {
             if (Id == Guid.Empty
                 || string.IsNullOrWhiteSpace(Name)
                 || Version <= 0
+                || RequestsPerMinute is < 1 or > 1_000_000
                 || CreatedAt == default
                 || UpdatedAt == default)
             {
@@ -1372,7 +1464,8 @@ internal sealed class GroupControlPlaneService :
                 Status,
                 Version,
                 CreatedAt,
-                UpdatedAt);
+                UpdatedAt,
+                RequestsPerMinute);
         }
     }
 }

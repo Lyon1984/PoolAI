@@ -162,6 +162,10 @@ public sealed partial class DependencyBoundaryTests
             "../../docs/database/0018_group_quota_monotonic_dispatch_timestamp_m3_exit.sql",
             project,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "../../docs/database/0019_group_runtime_policy_m4_e1.sql",
+            project,
+            StringComparison.Ordinal);
     }
 
     [Fact]
