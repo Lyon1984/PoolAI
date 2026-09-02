@@ -1,6 +1,6 @@
 # ADR 0015: Freeze M4-E1 Gateway admission and upstream handoff
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-09-02
 - Decider: PoolAI architecture, public-contract, GroupQuota, Gateway, Supply, Routing, and database owner (`@Lyon1984`); this candidate does not take effect without the approval evidence below
 - Relates to: [M4-E1 Issue #24](https://github.com/Lyon1984/PoolAI/issues/24), ADR 0006, ADR 0007, ADR 0009, ADR 0010, ADR 0011, and sign-off control Issue #44
@@ -9,7 +9,9 @@
 - Base OpenAPI SHA-256: `9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf`
 - Target OpenAPI SHA-256: `9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5506358261)
+- Architecture approval evidence: [Issue #44 permanent ADR approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5506352845), binding candidate `b44ba9764133ec56d0399c4728c0303f59c2eea9`, tree `1806c5797def51acebf849ed1aca2959c40415c2`, and pre-evidence-backwrite ADR SHA-256 `2144090ec54d85968c0148d5c06fc9ccbef7635bd19a208c399c285bd9f45ac1`
+- Independent database approval evidence: [Issue #44 permanent migration 0019 approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5506361132), binding candidate `b44ba9764133ec56d0399c4728c0303f59c2eea9`, tree `1806c5797def51acebf849ed1aca2959c40415c2`, SQL SHA-256 `7bfa4412c899037ac6b0531ade60fa75f6a2afa721fef1ce7511a245f9e63f43`, release manifest SHA-256 `76c75a1f415650b5f39308010cfd4641df1efaac37044f92cbf2f1d97bd7c8d8`, PostgreSQL major `18`, and compatibility `19..19`
 - Allowed diagnostic: `#/components/schemas/Group/required: property requests_per_minute became required`
 - Allowed diagnostic: `#/components/schemas/GroupUpdateRequest/allOf/0: existing schema alternative was removed or tightened`
 - Allowed diagnostic: `#/components/schemas/GroupUpdateRequest/anyOf: shared-component anyOf alternatives changed`
@@ -406,15 +408,16 @@ undercharge or corrupt immutable facts.
 
 ## Migration and rollback impact
 
-This proposal itself executes no migration. The independently governed forward
-candidate `0019_group_runtime_policy_m4_e1.sql` owns the exact runtime-policy
-backfill/constraint, v2 function ABI, grants, checksums, and release-manifest
-entry. It must receive its own Issue #44 database approval. ADR approval does not
-approve migration 0019; database approval does not accept this ADR or the OpenAPI
-window. Neither approval authorizes remote execution.
+This accepted decision itself executes no migration. The independently governed
+forward candidate `0019_group_runtime_policy_m4_e1.sql` owns the exact runtime-
+policy backfill/constraint, v2 function ABI, grants, checksums, and release-
+manifest entry. It has received its own [Issue #44 database approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5506361132).
+ADR approval does not approve migration 0019; database approval does not accept
+this ADR or the OpenAPI window. Neither approval authorizes remote execution.
 
-Before any target is shipped, rollback is removal of the candidate ADR/OpenAPI/
-implementation and withdrawal of the unsigned database candidate. Once 0019 has
+Before any target is shipped, cancellation requires permanent withdrawal evidence
+and a new governed decision; the accepted ADR/window and database approval remain
+immutable history. Once 0019 has
 executed, its bytes and checksum are immutable: correction uses a new forward
 migration. Once the public target merges, its OpenAPI compatibility window is
 inert and reversal requires a new public-contract decision rather than editing
@@ -432,7 +435,7 @@ rotation, egress change, deployment, or upstream operation is authorized here.
 
 ## Security impact
 
-The proposal closes spoofed client-IP, ambiguous quota-estimate, credential-
+The accepted decision closes spoofed client-IP, ambiguous quota-estimate, credential-
 leakage, cross-authority Authorization, SSRF rebinding, and Token-truncation
 paths. All failures are fail-closed before external dispatch where possible.
 Security telemetry must remain bounded and redacted: no raw client IP, forwarding
@@ -484,6 +487,6 @@ Implementation must update or add the following precise verification surfaces:
   surfaces, lossless `BigInteger` usage, output-safe-number behavior, and no
   Adapter-owned retry.
 
-Those tests are planned evidence until implemented and green. This Proposed ADR
+Those tests are planned evidence until implemented and green. This Accepted ADR
 does not promote any DEC/AC state, authorize source changes, or claim M4-E1
 complete.

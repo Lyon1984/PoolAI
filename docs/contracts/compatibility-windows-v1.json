@@ -123,14 +123,14 @@
     },
     {
       "id": "m4-e1-group-rpm-policy",
-      "status": "proposed",
+      "status": "accepted",
       "scope": "openapi-v1-compatibility-window",
       "baseRef": "08860ac639fa5eb8627e1264c02e138162691c98",
       "baseOpenApiSha256": "9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf",
       "headOpenApiSha256": "9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9",
       "adr": "docs/architecture/adr/0015-freeze-m4-e1-gateway-admission-and-upstream-handoff.md",
       "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
-      "approvalEvidence": null,
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5506358261",
       "allowedFailures": [
         "#/components/schemas/Group/required: property requests_per_minute became required",
         "#/components/schemas/GroupUpdateRequest/allOf/0: existing schema alternative was removed or tightened",
