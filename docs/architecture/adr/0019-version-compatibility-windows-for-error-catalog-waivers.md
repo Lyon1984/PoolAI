@@ -73,8 +73,9 @@ Schema version 2 recognizes two exact record shapes:
    `baseErrorCatalogSha256` and `headErrorCatalogSha256`.
 
 The two new values are lowercase 64-character SHA-256 hex digests of the exact
-UTF-8 bytes of `docs/contracts/error-catalog.md` read from the bound Git base and
-the candidate working tree, respectively. They are an all-or-nothing pair. A
+raw bytes of `docs/contracts/error-catalog.md` read from the bound Git base and
+the candidate working tree, respectively. The digest is calculated over the
+`Buffer` before any decoding or parsing. They are an all-or-nothing pair. A
 record with only one digest, an unknown additional key, uppercase hex, a
 non-64-character value, or a value calculated from normalized/parsed Markdown is
 invalid.
@@ -130,22 +131,70 @@ error-catalog-only breaking transition with identical OpenAPI bytes is outside
 this decision and must open separate governance rather than weakening the
 existing OpenAPI-window identity.
 
-### Resolution and source binding
+### Exact ADR digest markers
 
-For a digest-bound record, window resolution must receive all four exact source
-texts: base and head OpenAPI plus base and head error catalog. Before any
+Every digest-bound window ADR reserves these two machine-line markers with these
+exact case, punctuation, spacing, label, backticks, and one-line form:
+
+```text
+- Base error-catalog SHA-256: `<baseErrorCatalogSha256>`
+- Target error-catalog SHA-256: `<headErrorCatalogSha256>`
+```
+
+The placeholder between backticks is replaced by the exact lowercase digest
+from the corresponding registry field. Each required line must occur exactly
+once and its value must match the record. Within a digest-bound ADR's metadata
+preamble (all lines before the first `##` heading), the error-catalog digest
+marker namespace is reserved. For each metadata bullet label—the text after
+`- ` and before its first `:`—the validator derives a collision key by ASCII-
+lowercasing and removing ASCII whitespace, `-`, and `_`. Any label whose key
+contains `errorcatalog` and any of `sha256`, `digest`, `hash`, or `checksum` is
+in that reserved namespace. Its original label and complete line must be exactly
+one of the two forms above. Thus an extra, conflicting, differently cased,
+whitespace-varied, `Head`-named, `digest`-named, `SHA256`-named, or suffixed near
+marker is rejected rather than treated as prose. A duplicate exact marker is
+also rejected. The validator must perform this reserved-namespace scan before it
+checks the required exact lines, so one correct line cannot mask a contradictory
+second line.
+
+The existing status, window ID, Git base, OpenAPI digest, approval, and allowed-
+diagnostic required lines retain their current exact checks. Legacy OpenAPI-only
+ADRs remain governed by their existing marker set and are not retroactively
+required to contain error-catalog markers.
+
+### Resolution, byte loading, and source binding
+
+For a digest-bound record, window resolution must receive the base and head
+OpenAPI sources plus the base and head error-catalog `Buffer` values. Before any
 allowance is supplied to `validateContractCompatibility`, it must verify:
 
 1. the exact lowercase 40-character `baseRef`;
 2. base and target OpenAPI SHA-256 against their existing fields; and
 3. base and target error-catalog SHA-256 against the new fields.
 
-The base error catalog is read from the same exact Git commit as the base
-OpenAPI. The head error catalog is the same safely loaded source already parsed
-by the contract validator. No caller-provided alternate path, normalized copy,
-generated catalog, network source, or digest-only bypass is permitted. The
-existing repository-local, canonical, no-follow, regular-file protections for
-ADRs remain unchanged.
+The base error catalog is read as a raw Git-blob `Buffer` from the same exact Git
+commit as the base OpenAPI; a UTF-8 string-producing `git show` helper is not
+sufficient. The head error catalog is opened through the repository's canonical,
+inside-root, `O_NOFOLLOW`, `O_NONBLOCK`, stable-descriptor, regular-file reader
+and is read from that verified descriptor as a `Buffer`. A direct path-based
+`readFile(..., 'utf8')`, a second reopen after verification, or a symlink/FIFO/
+device fallback is forbidden.
+
+Each raw `Buffer` is hashed first. It is then decoded exactly once with a fatal
+UTF-8 decoder, and that one decoded value is passed to stable-error parsing and
+compatibility comparison. Invalid UTF-8 fails closed; replacement decoding is
+forbidden, so distinct invalid byte sequences cannot converge through U+FFFD and
+share an approved semantic comparison. The implementation must not hash a
+decoded/re-encoded string or separately decode one byte source for hashing,
+validation, and comparison.
+
+No caller-provided alternate path, normalized copy, generated catalog, network
+source, digest-only bypass, or already-decoded untrusted string is permitted at
+the digest-bound resolution boundary. OpenAPI loading remains under its existing
+contract in this decision; this ADR does not falsely claim that the current
+generic contract-source loader already provides the new error-catalog byte
+guarantee. The implementation must add that guarantee explicitly before a
+digest-bound record can validate.
 
 A digestless OpenAPI-only record continues to resolve exactly as schema version
 1 did and can contain only OpenAPI-pointer diagnostics. Its absence of
@@ -164,8 +213,10 @@ URL, and a matching Accepted ADR may activate the allowance.
 The history guard must parse each side according to its declared schema version
 and enforce all of the following:
 
-- every window present in the base remains present in the head, in the same
-  relative order and with the same ID;
+- the complete base `windows.map(id)` sequence is an exact prefix of the head ID
+  sequence; new records may be appended only after the last base record, so a
+  prepend, middle insertion, reorder, replacement, or duplicate cannot preserve
+  history accidentally;
 - every accepted base record remains field-for-field semantically identical;
   in particular, an existing v1-shaped record cannot be supplemented with
   error-catalog digests, a changed ADR, reordered/changed diagnostics, or
@@ -179,24 +230,42 @@ and enforce all of the following:
 - the initial root change from schema version 1 to 2 cannot be used to delete,
   reorder, drift, or retroactively supplement any existing record.
 
+If `CONTRACT_DIFF_BASE` has no
+`docs/contracts/compatibility-windows-v1.json`, a schema-2 head fails closed. It
+must not be treated as an empty-history initialization and cannot activate the
+v1-to-v2 transition. The existing missing-base bootstrap behavior remains only
+for the historical introduction of a schema-1 registry and cannot contain v2
+fields or `error-catalog:` diagnostics. In the current repository, advancing to
+schema 2 therefore requires a readable schema-1 base registry whose complete
+history passes the prefix and immutability checks.
+
 Whitespace outside signed ADR bytes is not an exemption mechanism: parsed
 registry semantics and ordering are authoritative. Once schema version 2 is in
 the comparison base, the root version and every accepted digest-bound record are
 immutable history under the same rules.
 
 Each digest-bound record's ADR must contain exactly one machine-checkable line
-for its status, window ID, base Git commit, base/target OpenAPI SHA-256,
-base/target error-catalog SHA-256, approval control, approval evidence, and every
-allowed diagnostic. During approval, only the status and evidence lines may
-change. This ADR 0019 governs that format but is not itself a compatibility
-window record.
+for its status, window ID, base Git commit, base/target OpenAPI SHA-256, the exact
+Base/Target error-catalog SHA-256 lines frozen above, approval control, approval
+evidence, and every allowed diagnostic. Reserved marker namespaces must contain
+no additional or approximate line. During approval, only the status and evidence
+lines may change. This ADR 0019 governs that format but is not itself a
+compatibility-window record.
 
 ### Boundary for the first intended window
 
-After this ADR is accepted and the v2 tooling is present, ADR 0017 may propose
-the separate `m4-e2-e3-model-discriminator-overload` record. That record must be
-digest-bound and must enumerate its exact OpenAPI diagnostics plus this exact
-error-catalog diagnostic if the candidate produces it:
+The governance sequence is deliberately two-stage. First, this ADR must receive
+its exact architecture/tooling approval, be backwritten to `Accepted`, and the
+schema-2 validator, self-tests, documentation, and registry transition must land
+through the protected branch. Only a later candidate based on that landed v2
+tooling may request the public-contract approval required by ADR 0017 and the
+separate `m4-e2-e3-model-discriminator-overload` record. ADR 0017 may remain a
+proposal during the first stage, but neither it nor its required public-contract
+change is effective.
+
+The later record must be digest-bound and must enumerate its exact OpenAPI
+diagnostics plus this exact error-catalog diagnostic if the candidate produces
+it:
 
 ```text
 error-catalog:gateway_overloaded: existing status, stream, retry, or meaning semantics changed
@@ -206,6 +275,10 @@ The record must bind the exact base commit and all four source digests. It start
 as `proposed` with null evidence. Its permanent public-contract approval is
 independent of approval for this schema/tooling ADR and independent of ADR 0017's
 architecture approval. None of those approvals may be inferred from another.
+Including ADR 0019 as Proposed, v2 code, ADR 0017, or the concrete window in one
+unaccepted working tree cannot bypass this order or make the error-catalog
+allowance effective. In particular, the concrete window must not be approved in
+the candidate that first lands the v2 tooling.
 
 That concrete window may authorize only the exact 429 description and
 `gateway_overloaded` meaning/causes enumerated by its signed candidate. It cannot
@@ -261,8 +334,9 @@ selector and generated diagnostic remains an exact complete string.
   only an explicitly enumerated exact failure can be waived.
 - An old v1-only tool fails closed on the v2 registry; CI must upgrade tooling and
   registry atomically.
-- The first M4-E2/E3 window remains pending until its own exact hashes,
-  diagnostics, ADR markers, and permanent evidence exist.
+- The first M4-E2/E3 window remains pending until this ADR and the v2 tooling have
+  landed first, then its own later exact hashes, diagnostics, ADR markers, and
+  permanent evidence exist.
 - The reset registry remains separate and unchanged. This decision does not add
   another pre-release reset or alter ADR 0003 history.
 
@@ -287,13 +361,17 @@ records inside v2; there is no data conversion to reverse.
 
 - Binding raw base/head error-catalog digests prevents a signed diagnostic from
   authorizing unreviewed meaning, retry, status, or disclosure drift.
+- Buffer-first hashing plus one fatal UTF-8 decode prevents invalid source bytes
+  from being replaced, normalized, or conflated before the approval binding is
+  checked.
 - Exact selector grammar and full-set equality prevent wildcard, prefix,
   substring, partial-set, and unused-allowance bypasses.
-- The v1-to-v2 history guard prevents deletion, reordering, record mutation,
-  digest backfill, an error allowance without both digests, or approval-marker
-  laundering.
-- Existing canonical/no-follow ADR reads and exact Git-base reads remain in use;
-  no network content or alternate file path enters the trust boundary.
+- Exact-prefix history and missing-base rejection prevent prepend/middle
+  insertion, deletion, reordering, record mutation, digest backfill, an error
+  allowance without both digests, or approval-marker laundering.
+- Canonical/no-follow regular-file reads protect the head source, while exact raw
+  Git-blob reads protect the base source; no network content or alternate file
+  path enters the trust boundary.
 - Registry and ADR content is limited to public commit IDs, SHA-256 digests,
   diagnostics, and public Issue URLs. It contains no credentials, prompts,
   private hosts, request data, or secret material.
@@ -305,9 +383,16 @@ covering:
 
 - `tools/contracts/lib/compatibility-windows.mjs` for schema-1/schema-2 parsing,
   exact OpenAPI-only/digest-bound record shapes, diagnostic grammar, approval
-  markers, and immutable history;
+  markers, exact-prefix/missing-base history, and immutable history;
 - `tools/contracts/lib/compatibility.mjs` for four-source resolution and digest
-  verification before any allowance is consumed;
+  verification, raw Git-blob Buffer loading, and fatal single-decode flow before
+  any allowance is consumed;
+- `tools/contracts/lib/context.mjs` for canonical no-follow regular-file Buffer
+  loading of the head error catalog and for returning the exact bytes together
+  with their one fatal-decoded source;
+- `eng/policies/repository-file.mjs` and its focused tests if the existing
+  descriptor helper cannot be reused unchanged; any loader change is part of
+  this same atomic candidate rather than a follow-up hardening patch;
 - `tools/contracts/lib/compatibility-window-self-tests.mjs` for the positive and
   negative matrix below;
 - `tools/contracts/README.md` for the schema-2 format, legacy-history boundary,
@@ -338,16 +423,27 @@ At minimum, self-tests and contract tests must prove:
    an error diagnostic with equal base/head catalog digests, malformed stable
    codes, unsorted/duplicate entries, newlines, selectors with wildcard syntax,
    and unknown keys fail closed;
-5. a mixed exact OpenAPI/error-catalog failure set is consumed only when every
+5. raw base/head bytes are hashed before a single fatal UTF-8 decode; invalid
+   UTF-8, U+FFFD replacement convergence, a symlink, FIFO/non-regular file,
+   canonical escape, path-swap attempt, decoded-string hashing, or a second
+   reopen/decode fails closed;
+6. a mixed exact OpenAPI/error-catalog failure set is consumed only when every
    base/head digest and every diagnostic matches, and any unused or unexpected
    failure is rejected;
-6. proposed status still ends in the exact pending-approval failure and accepted
+7. proposed status still ends in the exact pending-approval failure and accepted
    status requires the matching permanent evidence in both record and ADR;
-7. history rejects downgrade, deletion, reordering, drift, digest backfill into
-   an existing accepted v1 record, or any non-marker change during
-   proposed-to-accepted approval; and
-8. ADR history remains byte-immutable except for the one permitted status/evidence
-   transition.
+8. history requires the base ID sequence to be the exact head prefix and rejects
+   prepend, middle insertion, reorder, replacement, deletion, drift, digest
+   backfill into an existing accepted v1 record, or any non-marker change during
+   proposed-to-accepted approval;
+9. a missing base registry with a schema-2 head fails closed, while the narrowly
+   retained schema-1 historical bootstrap cannot carry v2 fields or error
+   diagnostics;
+10. the two exact error-catalog ADR marker lines each occur once, and duplicate,
+    conflicting, differently cased, whitespace-varied, Head/digest/SHA256, or
+    other reserved near-marker spellings fail closed; and
+11. ADR history remains byte-immutable except for the one permitted
+    status/evidence transition.
 
 The narrow contract validator/self-tests run first, followed by the repository
 contract test project and normal quality gate. No compatibility success may be
