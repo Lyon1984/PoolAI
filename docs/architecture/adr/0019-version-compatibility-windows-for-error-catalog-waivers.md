@@ -1,11 +1,11 @@
 # ADR 0019: Version compatibility windows for exact error-catalog waivers
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-09-02
 - Decider: PoolAI architecture, public-contract, and contract-tooling owner (`@Lyon1984`); this proposal does not take effect without the exact approval described below
 - Relates to: [M4-E2 Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), [M4-E3 Issue #26](https://github.com/Lyon1984/PoolAI/issues/26), ADR 0003, ADR 0005, ADR 0017, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending an exact permanent approval by `@Lyon1984`**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5510724488)
 - First intended consumer: compatibility window `m4-e2-e3-model-discriminator-overload` (**Pending its own exact public-contract approval**)
 
 ## Context
