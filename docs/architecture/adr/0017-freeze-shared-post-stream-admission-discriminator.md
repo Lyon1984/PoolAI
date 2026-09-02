@@ -116,14 +116,27 @@ authentication, or authoritative parsing. These stages must observe the linked
 deadline token and may not commit response headers while deadline-governed work
 is still in flight. Authentication/validation terminal results and selected-
 policy overload are projected only after replay storage and the guard are
-released. On expiry, the timeout owner cancels and fences late
-continuations, then disposes the spool/file descriptor and releases the guard,
-then releases any selected NonStream/SSE lease, and only then writes the 429 if
-the client remains connected. A late authentication/parser completion cannot
-use the disposed body, write a response, enter the Process Manager, or retain
-the guard. If headers have nevertheless started, that is an invariant breach:
-the connection is aborted and a content-free operations diagnostic is emitted
-rather than appending a false 429 body. Client abort always writes nothing.
+released. On expiry, one atomic request-lifecycle transition from active to
+timed-out fences every normal completion and makes the timeout owner responsible
+for output and cleanup. It signals the linked cancellation token, disposes the
+PoolAI-owned spool/file descriptor and releases the guard, then releases any
+selected NonStream/SSE lease, and only then writes the 429 if the client remains
+connected. A late authentication/parser completion cannot hold or reacquire
+those local resources, write a response, or enter the Process Manager. If
+headers have nevertheless started, that is an invariant breach: the connection
+is aborted and a content-free operations diagnostic is emitted rather than
+appending a false 429 body. Client abort always writes nothing.
+
+The 30-second fence is a bound on the PoolAI request lifecycle and PoolAI-owned
+resources, not a promise that an operating-system operation, Npgsql operation,
+or third-party task is physically terminated at T+30. Database authentication
+receives the linked token and uses Npgsql cancellation together with the
+independent validated `Data:Postgres:CommandTimeoutSeconds` and connection-pool
+bounds. The PoolAI JSON parser checks cancellation between every fixed-size
+input block, so its maximum cancellation-observation latency is the time to
+process one block and is deterministic in tests. Any underlying operation that
+completes later is detached from the timed-out request state and cannot recover
+local ownership or produce an externally visible effect.
 
 Admission metrics add exactly one fifth internal kind and label,
 `model_discriminator`, used only by this guard. The existing active gauge may
@@ -235,7 +248,8 @@ front-proxy connection, header, request-body data-rate, and request timeout
 controls. This ADR does not claim that the NonStream/SSE application bulkheads
 protect socket upload resources. Those transport controls must not be disabled,
 and the discriminator's fixed eight-request concurrency and full-lifecycle
-30-second deadline also bound application-level pre-admission and parser work.
+30-second deadline also bound PoolAI-owned resources during pre-admission and
+parser work without claiming physical termination of underlying operations.
 
 ### Validation, error precedence, and consistency
 
@@ -285,14 +299,16 @@ a bounded security/operations diagnostic without request bytes.
   to the other policy. A lease won concurrently with cancellation is disposed
   exactly once.
 - The lifecycle deadline is enforced around cancellation-aware data-admission,
-  database authentication, and parser operations. They cannot ignore expiry and
-  keep a guard or file descriptor. Late results are fenced and discarded.
+  database authentication, and parser operations. The atomic lifecycle fence,
+  rather than physical task termination, prevents them from retaining local
+  request resources or publishing a late result.
 - On deadline, cleanup order is invariant: dispose replay storage/file
   descriptor and release the discriminator guard first, then release any
   selected data lease, then project the connected-client 429.
-- After data-policy acquisition, one `finally` owner releases that same lease on
+- After data-policy acquisition, one atomic cleanup owner releases that lease on
   every authentication, validation, Process Manager, response, disconnect, and
-  exception path.
+  exception path. Normal `finally` and timeout race through the lifecycle fence;
+  only the winner disposes resources and the loser is a no-op.
 - The guard remains held only through authentication and authoritative body
   parsing so its spool bounds remain real; parser completion disposes the spool
   and releases the guard before the Process Manager begins.
@@ -325,8 +341,10 @@ The implementation must make the following properties executable invariants:
    completion, rejection, cancellation, and injected exception.
 7. One monotonic deadline covers guard acquisition through parser completion,
    spool/file-descriptor disposal, and guard release. Expiry cannot leave a
-   database authentication call, parser, replay storage, guard, or selected
-   data lease alive, and cleanup follows the frozen guard-before-data order.
+   PoolAI-owned replay store, guard, or selected data lease owned by the request,
+   and cleanup follows the frozen guard-before-data order. The lifecycle fence
+   blocks late database/parser completion without asserting that its underlying
+   task has physically terminated.
 
 These invariants prove that a body cannot request SSE while consuming only a
 NonStream permit, cannot request non-stream execution while consuming only an
@@ -414,12 +432,15 @@ process-local and are discarded on process exit; they are never recovery facts.
 The guard bounds unauthenticated classifier work per Api process to eight active
 requests, 512 KiB memory, eight spill descriptors, and at most 256 MiB + 8 bytes
 of temporary spool at the maximum configured body size. Its zero queue and
-full-lifecycle 30-second deadline bound slow-body, database-authentication,
-parser, and aggregate-spool pressure. Saturation, deadline, file open/write,
-descriptor exhaustion, quota failure, and `ENOSPC` fail closed; no failure may
-switch to an unguarded, in-memory-only, NonStream, or SSE fallback. Deadline
-cleanup fences any late database/parser continuation and frees the guard before
-the selected data lease.
+full-lifecycle 30-second deadline bounds how long the request may own PoolAI
+spool, guard, and selected data resources during slow-body, authentication, and
+parser stages. It does not bound physical Npgsql/OS/third-party task lifetime;
+those operations remain constrained by cancellation plus their independent
+timeouts and pools. Saturation, deadline, file open/write, descriptor
+exhaustion, quota failure, and `ENOSPC` fail closed; no failure may switch to an
+unguarded, in-memory-only, NonStream, or SSE fallback. Deadline cleanup fences
+any late database/parser result and frees the guard before the selected data
+lease.
 
 Replay files contain potentially sensitive prompts and tool data. They must be
 runtime-private, owner-only, delete-on-close, never logged, traced, audited,
@@ -506,6 +527,12 @@ The minimum coupled test locations are:
   drain. Deadline injection separately covers data admission, blocked database
   authentication, and parser stages plus the spool/guard-before-data cleanup
   order.
+- A deliberately cancellation-delayed fake authentication/parser operation
+  remains incomplete beyond T+30 while the test proves the atomic late-result
+  fence, immediate release of PoolAI-owned spool/file descriptor/guard/data
+  leases, no response or Process Manager entry from its later completion, and
+  restored capacity. The test must not assert that the fake task itself died at
+  the deadline.
 - Architecture tests forbid a second admission-controller call, mutable
   classification features, endpoint/body-parser bypass of the consistency
   guard, and request-body content in logs/metrics/traces.
