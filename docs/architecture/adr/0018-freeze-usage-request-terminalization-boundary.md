@@ -5,7 +5,7 @@
 - Decider: PoolAI architecture, GroupQuota, Gateway, database, Worker, and usage-fact owner (`@Lyon1984`); this proposal does not take effect without the exact approvals described below
 - Relates to: [M4-E1 Issue #24](https://github.com/Lyon1984/PoolAI/issues/24), [M4-E5 Issue #28](https://github.com/Lyon1984/PoolAI/issues/28), ADR 0012, ADR 0015, D-004, D-027, D-028, AC-015, AC-039, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending an exact permanent architecture approval by `@Lyon1984`**
+- Approval evidence: [Issue architecture approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5510884292)
 - Independent database approval: **Pending for the exact forward migration 0021 candidate**
 
 ## Context
