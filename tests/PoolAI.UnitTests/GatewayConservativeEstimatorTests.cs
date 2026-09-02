@@ -119,6 +119,76 @@ public sealed class GatewayConservativeEstimatorTests
     }
 
     [Fact]
+    public void EstimateRejectsUnknownProtocolAndNonObjectPayload()
+    {
+        ConservativeTokenEstimator estimator = new(new GatewayEstimationOptions());
+        using JsonDocument objectDocument = JsonDocument.Parse("{}");
+        using JsonDocument arrayDocument = JsonDocument.Parse("[]");
+
+        Result<GatewayTokenEstimate> unknownProtocol = estimator.Estimate(
+            (InboundProtocol)int.MaxValue,
+            objectDocument.RootElement);
+        Result<GatewayTokenEstimate> nonObject = estimator.Estimate(
+            InboundProtocol.Responses,
+            arrayDocument.RootElement);
+
+        AssertValidationPointer(unknownProtocol, "/");
+        AssertValidationPointer(nonObject, "/");
+    }
+
+    [Theory]
+    [InlineData("1.5", false, 0)]
+    [InlineData("0.1e1", true, 1)]
+    [InlineData("1.00e0", true, 1)]
+    [InlineData("100e-2", true, 1)]
+    [InlineData("1e+2", true, 100)]
+    [InlineData("9007199254740991", true, 9_007_199_254_740_991L)]
+    [InlineData("9007199254740992", false, 0)]
+    [InlineData("900719925474100e1", false, 0)]
+    [InlineData("1e100", false, 0)]
+    [InlineData("1e-1", false, 0)]
+    [InlineData("0", false, 0)]
+    public void OutputLimitAcceptsOnlyPositiveSafeIntegerNumberShapes(
+        string literal,
+        bool expectedSuccess,
+        long expectedOutput)
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            $"{{\"max_output_tokens\":{literal}}}");
+        ConservativeTokenEstimator estimator = new(
+            new GatewayEstimationOptions(
+                maximumEstimatedTokensPerAttempt: long.MaxValue));
+
+        Result<GatewayTokenEstimate> result = estimator.Estimate(
+            InboundProtocol.Responses,
+            document.RootElement);
+
+        Assert.Equal(expectedSuccess, result.IsSuccess);
+        if (expectedSuccess)
+        {
+            Assert.Equal(expectedOutput, result.Value.OutputTokens);
+        }
+        else
+        {
+            AssertValidationPointer(result, "/max_output_tokens");
+        }
+    }
+
+    [Fact]
+    public void OutputLimitRejectsNonNumericJsonValue()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            "{\"max_output_tokens\":\"100\"}");
+        ConservativeTokenEstimator estimator = new(new GatewayEstimationOptions());
+
+        Result<GatewayTokenEstimate> result = estimator.Estimate(
+            InboundProtocol.Responses,
+            document.RootElement);
+
+        AssertValidationPointer(result, "/max_output_tokens");
+    }
+
+    [Fact]
     public void OptionsRejectDefaultAboveThePerAttemptMaximum()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
@@ -185,6 +255,10 @@ public sealed class GatewayConservativeEstimatorTests
         Assert.Equal(huge, usage.InputTokens);
         Assert.False(usage.IsOpenAiSafeIntegerShape);
         Assert.Equal(JsonValueKind.Object, usage.RawEvidence?.ValueKind);
+        Assert.Equal(nameof(NormalizedUpstreamUsage), usage.ToString());
+        using JsonDocument invalidEvidence = JsonDocument.Parse("[]");
+        Assert.Throws<ArgumentException>(() =>
+            new NormalizedUpstreamUsage(1, 0, 0, 0, 0, invalidEvidence.RootElement));
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new NormalizedUpstreamUsage(
                 1,

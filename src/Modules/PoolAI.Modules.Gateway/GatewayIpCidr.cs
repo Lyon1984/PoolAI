@@ -46,7 +46,7 @@ internal sealed class GatewayIpCidr
             return true;
         }
 
-        byte mask = checked((byte)(0xff << (8 - remainingBits)));
+        byte mask = unchecked((byte)(0xff << (8 - remainingBits)));
         return (candidateBytes[completeBytes] & mask)
             == (_networkBytes[completeBytes] & mask);
     }
@@ -249,7 +249,7 @@ internal sealed class GatewayIpCidr
         int remainingBits = prefixLength % 8;
         if (remainingBits != 0)
         {
-            address[completeBytes] &= checked(
+            address[completeBytes] &= unchecked(
                 (byte)(0xff << (8 - remainingBits)));
             completeBytes++;
         }
