@@ -116,6 +116,13 @@ literal, just as regex punctuation in an OpenAPI diagnostic is literal today.
 An `sse-fixture:`, arbitrary file path, bare code, truncated message, alternate
 prefix, or multi-line value is invalid.
 
+"Single-line" is a source-data property, not merely a result of splitting on
+CR/LF. Registry strings used by any ADR machine line, including every diagnostic,
+must contain no Unicode `Cc`, `Zl`, or `Zp` code point. This rejects CR, LF, tab,
+NEL, U+2028, U+2029, and other control/line/paragraph separators before a line is
+constructed. The diagnostic after the exact `: ` delimiter must contain at least
+one Unicode scalar value.
+
 An `error-catalog:` member is legal only on a digest-bound record with both error
 catalog hashes. When at least one such member exists, the two error-catalog
 digests must differ. The normal checker must still produce exactly the complete
@@ -131,36 +138,79 @@ error-catalog-only breaking transition with identical OpenAPI bytes is outside
 this decision and must open separate governance rather than weakening the
 existing OpenAPI-window identity.
 
-### Exact ADR digest markers
+### Exact digest-bound ADR machine preamble
 
-Every digest-bound window ADR reserves these two machine-line markers with these
-exact case, punctuation, spacing, label, backticks, and one-line form:
+For a digest-bound record, the ADR machine preamble begins on the line after the
+single H1 title and ends immediately before the first line beginning with exact
+`## `. A missing H1, a second H1 before that boundary, a missing `## ` boundary,
+an indented pseudo-heading, or a machine marker outside this preamble is invalid.
+Non-reserved human metadata such as `Date`, `Decider`, and `Relates to` may remain
+in the preamble, but it cannot use a reserved marker namespace.
+
+The complete registry-derived machine-line set is:
 
 ```text
+- Status: **<Proposed-or-Accepted>**
+- Compatibility window ID: `<id>`
+- Base Git commit: `<baseRef>`
+- Base OpenAPI SHA-256: `<baseOpenApiSha256>`
+- Target OpenAPI SHA-256: `<headOpenApiSha256>`
 - Base error-catalog SHA-256: `<baseErrorCatalogSha256>`
 - Target error-catalog SHA-256: `<headErrorCatalogSha256>`
+- Approval control: [Issue #44](<approvalControl>)
+- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](<approvalEvidence>)
+- Allowed diagnostic: `<one exact allowedFailures member>`
 ```
 
-The placeholder between backticks is replaced by the exact lowercase digest
-from the corresponding registry field. Each required line must occur exactly
-once and its value must match the record. Within a digest-bound ADR's metadata
-preamble (all lines before the first `##` heading), the error-catalog digest
-marker namespace is reserved. For each metadata bullet label—the text after
-`- ` and before its first `:`—the validator derives a collision key by ASCII-
-lowercasing and removing ASCII whitespace, `-`, and `_`. Any label whose key
-contains `errorcatalog` and any of `sha256`, `digest`, `hash`, or `checksum` is
-in that reserved namespace. Its original label and complete line must be exactly
-one of the two forms above. Thus an extra, conflicting, differently cased,
-whitespace-varied, `Head`-named, `digest`-named, `SHA256`-named, or suffixed near
-marker is rejected rather than treated as prose. A duplicate exact marker is
-also rejected. The validator must perform this reserved-namespace scan before it
-checks the required exact lines, so one correct line cannot mask a contradictory
-second line.
+The status line is derived from registry `status`. Exactly one of the two
+approval-evidence forms is derived from that same status: Pending for `proposed`,
+or the exact permanent URL for `accepted`. Every other placeholder is replaced
+by its exact registry value. Each singleton namespace must have exactly one
+derived line. `Allowed diagnostic` must have exactly
+`allowedFailures.length` lines, one occurrence of each sorted member and no
+other diagnostic. The two error-catalog digest lines therefore have these exact
+literal labels and map respectively to `baseErrorCatalogSha256` and
+`headErrorCatalogSha256`; `Head error-catalog`, `Base error catalog`, `SHA256`, or
+any other alias is not accepted.
 
-The existing status, window ID, Git base, OpenAPI digest, approval, and allowed-
-diagnostic required lines retain their current exact checks. Legacy OpenAPI-only
-ADRs remain governed by their existing marker set and are not retroactively
-required to contain error-catalog markers.
+For collision detection, a candidate bullet is any ADR line with optional
+leading ASCII whitespace, one CommonMark bullet byte (`-`, `+`, or `*`), and one
+or more ASCII spaces. Its marker label is the text after that prefix and before
+its first `:`. The validator creates a collision key by ASCII-lowercasing and
+removing ASCII whitespace, `-`, and `_`. It applies this scan to the entire ADR;
+a reserved candidate outside the preamble is invalid. A label belongs to a
+reserved namespace if its key contains any of these canonical keys:
+
+```text
+status
+compatibilitywindowid
+basegitcommit
+baseopenapisha256
+targetopenapisha256
+baseerrorcatalogsha256
+targeterrorcatalogsha256
+approvalcontrol
+approvalevidence
+alloweddiagnostic
+```
+
+The source/digest namespaces additionally reserve any collision key containing
+`openapi` or `errorcatalog`, one of `base`, `target`, or `head`, and one of
+`digest`, `hash`, `checksum`, or an ASCII `sha` followed by one or more digits.
+This catches reordered or approximate labels rather than allowing them as prose.
+Every line in a reserved namespace must byte-for-byte equal one member of the
+registry-derived machine-line set; then the exact-count checks above run.
+Consequently a correct line cannot hide an extra or conflicting Status, OpenAPI
+digest, error-catalog digest, approval, or unregistered Allowed diagnostic
+marker. Differently cased, whitespace-varied, suffixed, duplicate, and otherwise
+near marker lines fail closed.
+
+All machine lines must satisfy the single-line/control-code rule above. A marker
+value cannot terminate its bullet and inject a second metadata line. Legacy
+OpenAPI-only ADRs remain governed by their existing marker checks and are not
+retroactively required to contain the two error-catalog digest lines or the new
+reserved-namespace scan.
 
 ### Resolution, byte loading, and source binding
 
@@ -439,9 +489,12 @@ At minimum, self-tests and contract tests must prove:
 9. a missing base registry with a schema-2 head fails closed, while the narrowly
    retained schema-1 historical bootstrap cannot carry v2 fields or error
    diagnostics;
-10. the two exact error-catalog ADR marker lines each occur once, and duplicate,
-    conflicting, differently cased, whitespace-varied, Head/digest/SHA256, or
-    other reserved near-marker spellings fail closed; and
+10. every digest-bound ADR has one valid H1-to-first-`## ` preamble and exactly
+    the registry-derived singleton/diagnostic lines; extra or conflicting
+    Status, Base/Target OpenAPI digest, Base/Target error-catalog digest,
+    approval, or unregistered Allowed diagnostic lines fail closed, as do
+    duplicates, control/line separators, case/whitespace variants,
+    Head/digest/SHA aliases, and other reserved near markers; and
 11. ADR history remains byte-immutable except for the one permitted
     status/evidence transition.
 
