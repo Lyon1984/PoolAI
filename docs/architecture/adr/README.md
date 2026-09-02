@@ -12,6 +12,10 @@ Each ADR must contain status, date, context, decision, alternatives, consequence
 
 Project memory links to ADRs but does not duplicate their decision text.
 
+Proposed decisions:
+
+- [`0017-freeze-shared-post-stream-admission-discriminator.md`](0017-freeze-shared-post-stream-admission-discriminator.md) — allow only the two shared model POST routes to perform a bounded, replayable lexical `stream` classification before acquiring exactly one matching NonStream or SSE admission lease; no implementation may rely on this exception before exact permanent approval.
+
 Accepted decisions:
 
 - [`0001-separate-group-quota-from-supply-configuration.md`](0001-separate-group-quota-from-supply-configuration.md) — separate GroupQuota lifecycle/quota writes from Supply configuration writes.
