@@ -97,7 +97,7 @@ Group quota、`/v1/usage` 时间窗口、Account/Group 聚合是无符号规范�
 | `if_match_required` | 428 | 否 | — | versioned 资源变更缺少 `If-Match`。 |
 | `internal_error` | 500 | 视情况 | 可选 | 未分类内部错误；错误详情只进受控日志。 |
 | `service_unavailable` | 503 | 是 | 必须 | 服务临时不可用。 |
-| `gateway_overloaded` | 429 | 是 | **1** | 当前 API 副本的 NonStream/SSE/Control/Usage 任一独立 bulkhead 令牌或有界队列已满；拒绝发生在 canonical 强读、Account lease 和 reservation 之前。 |
+| `gateway_overloaded` | 429 | 是 | **1** | 当前 API 副本的 NonStream/SSE/Control/Usage 任一独立 bulkhead 令牌或有界队列已满；两个共享模型 POST 的八许可零队列 model-discriminator guard 饱和、覆盖分类、selected admission、鉴权与严格解析的 30 秒生命周期截止，或私有 replay storage 打开/写入失败也使用本 code。guard 饱和和 storage 失败发生在鉴权前；生命周期截止可能发生在鉴权或解析期间，但所有场景都不得进入 Gateway Process Manager、Account lease、reservation 或上游 I/O，并固定返回 `Retry-After: 1`。 |
 | `coordination_unavailable` | 503 | 是 | 必须 | Redis 硬协调不可用且该路径必须 fail-closed。 |
 | `dependency_unavailable` | 503 | 是 | **1** | PostgreSQL（包括配额真相）或其他必需依赖不可用，服务无法安全完成请求；必须 fail-closed。 |
 | `token_numeric_overflow` | 500 | 否 | — | Token 精确整数超出数据库可表示范围；事务必须回滚且不得回显原始数值。 |

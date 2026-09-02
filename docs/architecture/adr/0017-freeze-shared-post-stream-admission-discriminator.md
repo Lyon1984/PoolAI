@@ -4,8 +4,15 @@
 - Date: 2026-09-02
 - Decider: PoolAI architecture, Gateway, protocol-contract, and operational-safety owner (`@Lyon1984`); this proposal does not take effect without the exact approval described below
 - Relates to: [M4-E2 Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), [M4-E3 Issue #26](https://github.com/Lyon1984/PoolAI/issues/26), ADR 0015, D-029, AC-028, AC-043, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
+- Compatibility window ID: `m4-e2-e3-model-discriminator-overload`
+- Base Git commit: `3059f3f1b3dc4166160a9a414e839b9cd04afcc8`
+- Base OpenAPI SHA-256: `9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9`
+- Target OpenAPI SHA-256: `7a6e3c40358e7dec9c59c4c8ae8ec54814a55ccdcb1f64819dc11afb1e24d488`
+- Base error-catalog SHA-256: `875e700f486acdfdd972f2aa239fc99f808663592a48639e6acd1313fbc6f5dc`
+- Target error-catalog SHA-256: `312cc4b1ab88686f456a74145495935fc2185c50593c34772e9a0230b333d066`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending an exact permanent approval by `@Lyon1984`**
+- Approval evidence: **Pending explicit approval**
+- Allowed diagnostic: `error-catalog:gateway_overloaded: existing status, stream, retry, or meaning semantics changed`
 - Required public-contract window: `m4-e2-e3-model-discriminator-overload` (**Pending independent exact OpenAPI/error-catalog approval**)
 
 ## Context
