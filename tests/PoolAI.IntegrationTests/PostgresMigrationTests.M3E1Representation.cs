@@ -134,7 +134,7 @@ public sealed partial class PostgresMigrationTests
         Assert.Null(writerFailure);
         Assert.Null(migrationFailure);
         Assert.Equal(
-            "19:42:2026-07-01 03:00:00+00",
+            "20:42:2026-07-01 03:00:00+00",
             await ReadM3E1EpochStateAsync(
                 connectionString,
                 cancellationToken).ConfigureAwait(true));
@@ -160,7 +160,7 @@ public sealed partial class PostgresMigrationTests
         MigrationCatalog catalog = await MigrationCatalog
             .LoadAsync(cancellationToken)
             .ConfigureAwait(true);
-        Assert.Equal(19, catalog.Assets.Count);
+        Assert.Equal(20, catalog.Assets.Count);
         await ApplyM3E1MigrationPrefixAsync(
             catalog,
             connectionString,
@@ -198,7 +198,7 @@ public sealed partial class PostgresMigrationTests
             "PoolAI.IntegrationTests.m3-e1-representation",
             cancellationToken).ConfigureAwait(true);
         Assert.Equal(
-            "19:42:2026-07-01 03:00:00+00",
+            "20:42:2026-07-01 03:00:00+00",
             await ReadM3E1EpochStateAsync(
                 connectionString,
                 cancellationToken).ConfigureAwait(true));

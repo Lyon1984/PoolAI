@@ -166,6 +166,10 @@ public sealed partial class DependencyBoundaryTests
             "../../docs/database/0019_group_runtime_policy_m4_e1.sql",
             project,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "../../docs/database/0020_gateway_credential_revision_permission_m4_e1.sql",
+            project,
+            StringComparison.Ordinal);
     }
 
     [Fact]

@@ -14,7 +14,7 @@ Project memory links to ADRs but does not duplicate their decision text.
 
 Proposed decisions:
 
-- None.
+- [`0016-add-gateway-credential-revision-column-read.md`](0016-add-gateway-credential-revision-column-read.md) — correct only ADR 0015's no-database-permission assumption by proposing one forward, column-level `poolai_api` SELECT grant for `accounts.credential_revision`; it adds no table-level access, write/function/role/membership capability, OpenAPI change, Redis change, or remote-operation authorization, and remains ineffective until separately approved.
 
 Accepted decisions:
 
