@@ -163,7 +163,7 @@ public sealed class ResponsesAdmissionHttpTests
         return await client.SendAsync(request, TestContext.Current.CancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask AssertProblemAsync(HttpResponseMessage response, HttpStatusCode status, string code)
+    internal static async ValueTask AssertProblemAsync(HttpResponseMessage response, HttpStatusCode status, string code)
     {
         Assert.Equal(status, response.StatusCode);
         Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
@@ -174,7 +174,7 @@ public sealed class ResponsesAdmissionHttpTests
         Assert.Equal(response.Headers.GetValues("X-Request-Id").Single(), json.RootElement.GetProperty("request_id").GetString());
     }
 
-    private static async ValueTask AssertAllCapacityAsync(ResponsesAdmissionApiFactory factory)
+    internal static async ValueTask AssertAllCapacityAsync(ResponsesAdmissionApiFactory factory)
     {
         var discriminator = factory.Services.GetRequiredService<GatewayModelDiscriminator>();
         List<GatewayModelDiscriminatorLease> guards = [];

@@ -13,7 +13,7 @@ internal static class ResponsesEndpoint
     private static readonly Action<ILogger, Exception?> AdmissionInvariantFailed = LoggerMessage.Define(
         LogLevel.Critical, new EventId(1701, "ModelAdmissionInvariant"),
         "Gateway model admission consistency invariant failed; execution was fenced.");
-    internal static async Task HandleAsync(
+    internal static Task HandleAsync(
         HttpContext context,
         GatewayModelDiscriminator discriminator,
         GatewayAdmissionController admission,
@@ -22,6 +22,22 @@ internal static class ResponsesEndpoint
         IConfiguration configuration,
         TimeProvider timeProvider,
         ILogger<GatewayRequestProcess> logger)
+        => HandleCoreAsync(context, discriminator, admission, parser.ParseAsync, process,
+            configuration, timeProvider, logger, InboundProtocol.Responses);
+
+    internal static Task HandleChatAsync(HttpContext context, GatewayModelDiscriminator discriminator,
+        GatewayAdmissionController admission, GatewayChatRequestParser parser, GatewayRequestProcess process,
+        IConfiguration configuration, TimeProvider timeProvider, ILogger<GatewayRequestProcess> logger)
+        => HandleCoreAsync(context, discriminator, admission, parser.ParseAsync, process,
+            configuration, timeProvider, logger, InboundProtocol.ChatCompletions);
+
+    // Both shared POSTs have exactly one admission/cleanup owner. Only the
+    // protocol parser and HTTP wire projection vary; business work stays in Gateway.
+    private static async Task HandleCoreAsync(HttpContext context, GatewayModelDiscriminator discriminator,
+        GatewayAdmissionController admission,
+        Func<Stream, EntityId, CancellationToken, ValueTask<Result<NormalizedGatewayRequest>>> parser,
+        GatewayRequestProcess process, IConfiguration configuration, TimeProvider timeProvider,
+        ILogger<GatewayRequestProcess> logger, InboundProtocol protocol)
     {
         CancellationToken clientAbort = context.RequestAborted;
         CancellationToken serverDeadline = context.Features.Get<IHttpRequestTimeoutFeature>()?.RequestTimeoutToken ?? default;
@@ -47,12 +63,13 @@ internal static class ResponsesEndpoint
         }
 
         using GatewayAdmissionLease selected = prepared.Value.Lease;
-        await ExecuteAsync(context, process, prepared.Value.Request, timeProvider).ConfigureAwait(false);
+        await ExecuteAsync(context, process, prepared.Value.Request, timeProvider, protocol).ConfigureAwait(false);
     }
 
     private static async ValueTask<Result<PreparedAdmission>> PrepareWithinDeadlineAsync(
         HttpContext context, GatewayModelDiscriminatorLease guard, GatewayAdmissionController admission,
-        GatewayResponsesRequestParser parser, GatewayRequestProcess process, IConfiguration configuration,
+        Func<Stream, EntityId, CancellationToken, ValueTask<Result<NormalizedGatewayRequest>>> parser,
+        GatewayRequestProcess process, IConfiguration configuration,
         ILogger<GatewayRequestProcess> logger)
     {
         try
@@ -91,7 +108,8 @@ internal static class ResponsesEndpoint
 
     private static async ValueTask<Result<NormalizedGatewayRequest>> PrepareAsync(
         HttpContext context, GatewayModelDiscriminatorLease guard,
-        GatewayAdmissionController admission, GatewayResponsesRequestParser parser,
+        GatewayAdmissionController admission,
+        Func<Stream, EntityId, CancellationToken, ValueTask<Result<NormalizedGatewayRequest>>> parser,
         GatewayRequestProcess process, long maximumBytes)
     {
         if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } maximum)
@@ -139,12 +157,12 @@ internal static class ResponsesEndpoint
             return Result.Failure<NormalizedGatewayRequest>("payload_too_large", "The request body exceeds the Gateway limit.");
         }
 
-        return await parser.ParseAsync(guard.Replay,
+        return await parser(guard.Replay,
             new EntityId(RequestIdMiddleware.GetRequestId(context)), guard.CancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ExecuteAsync(HttpContext context, GatewayRequestProcess process,
-        NormalizedGatewayRequest request, TimeProvider timeProvider)
+        NormalizedGatewayRequest request, TimeProvider timeProvider, InboundProtocol protocol)
     {
         Result<GatewayAuthorizedRequest> authorized = await process.AuthorizeAsync(ApiKey(context)!,
             context.Connection.RemoteIpAddress, context.Request.Headers["X-Forwarded-For"].ToArray()!,
@@ -155,10 +173,11 @@ internal static class ResponsesEndpoint
             return;
         }
 
-        ResponsesHttpOutput output = new(context);
+        IGatewayResponseOutput output = protocol == InboundProtocol.ChatCompletions
+            ? new ChatHttpOutput(context) : new ResponsesHttpOutput(context);
         request = request with { Output = request.Stream ? output : null };
         Result<GatewaySingleAttemptOutcome> result = await process.ExecuteInitialAttemptAsync(
-            authorized.Value, InboundProtocol.Responses, request, clientRequestId: null,
+            authorized.Value, protocol, request, clientRequestId: null,
             timeProvider.GetUtcNow().Add(request.Stream ? TimeSpan.FromHours(2) : TimeSpan.FromSeconds(600)),
             sessionAffinityHash: null, context.RequestAborted).ConfigureAwait(false);
         if (context.RequestAborted.IsCancellationRequested) { return; }
@@ -172,7 +191,15 @@ internal static class ResponsesEndpoint
                 result.IsFailure ? result.Error : new ResultError(error ?? "upstream_dispatch_ambiguous",
                     "The upstream request could not be completed safely.")).ConfigureAwait(false);
         }
-        else if (request.Stream && upstream.TerminalEvent is JsonElement terminal)
+        else if (request.Stream && output is ChatHttpOutput chat && upstream.StreamCompleted)
+        {
+            if (upstream.TerminalEvent is JsonElement usage)
+            {
+                await chat.WriteEventAsync("chat.completion.chunk", usage, context.RequestAborted).ConfigureAwait(false);
+            }
+            await chat.WriteDoneAsync(context.RequestAborted).ConfigureAwait(false);
+        }
+        else if (request.Stream && protocol == InboundProtocol.Responses && upstream.TerminalEvent is JsonElement terminal)
         {
             await output.WriteEventAsync("response.completed", terminal, context.RequestAborted).ConfigureAwait(false);
         }
@@ -189,9 +216,11 @@ internal static class ResponsesEndpoint
         }
     }
 
-    private static Task WriteTerminalFailureAsync(HttpContext context, ResponsesHttpOutput output, ResultError failure) =>
+    private static Task WriteTerminalFailureAsync(HttpContext context, IGatewayResponseOutput output, ResultError failure) =>
         context.Response.HasStarted
-            ? output.WriteErrorAsync(failure.Code, context.RequestAborted).AsTask()
+            ? (output is ChatHttpOutput chat
+                ? chat.WriteErrorAsync(failure.Code, context.RequestAborted).AsTask()
+                : ((ResponsesHttpOutput)output).WriteErrorAsync(failure.Code, context.RequestAborted).AsTask())
             : GatewayProblemWriter.WriteFailureAsync(context, failure);
 
     private static string? ApiKey(HttpContext context) => context.Request.Headers.Authorization.Count == 1

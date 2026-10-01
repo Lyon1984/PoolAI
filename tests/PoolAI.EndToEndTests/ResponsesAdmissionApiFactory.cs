@@ -94,9 +94,10 @@ internal sealed class ResponsesAdmissionApiFactory : PoolAiApiFactory
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool Block { get; set; }
         internal bool EffectiveStream { get; set; }
+        internal InboundProtocol Protocol { get; set; } = InboundProtocol.Responses;
         internal Task Entered => _entered.Task;
         internal void Release() => _release.TrySetResult();
-        public AdapterCapability Capability { get; } = new(InboundProtocol.Responses, UpstreamType.OpenAi,
+        public AdapterCapability Capability => new(Protocol, UpstreamType.OpenAi,
             AdapterOperation.NonStream, true, false);
         public async ValueTask<Result<NormalizedGatewayRequest>> NormalizeAsync(JsonElement request, CancellationToken cancellationToken)
         {

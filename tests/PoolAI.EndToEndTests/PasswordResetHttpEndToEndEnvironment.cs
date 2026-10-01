@@ -558,7 +558,7 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             app.Use(async (context, continuation) =>
             {
                 context.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
-                if (context.Request.Path != "/v1/responses")
+                if (context.Request.Path != "/v1/responses" && context.Request.Path != "/v1/chat/completions")
                 {
                     await continuation(context).ConfigureAwait(false);
                     return;

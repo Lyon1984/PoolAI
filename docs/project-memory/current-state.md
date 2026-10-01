@@ -1,9 +1,10 @@
 # Current state
 
-Last verified: 2026-10-01
+Last verified: 2026-10-02
 
 ## Verified present
 
+- M4-E3 Chat Completions has a local implementation candidate under [`../runtime/chat-completions-runtime.md`](../runtime/chat-completions-runtime.md): text/function history, non-stream JSON, data-only SSE with settlement-gated `[DONE]`, lossless usage, Gateway error projection, and shared fenced admission. Narrow contract, HTTP/architecture, and real PostgreSQL 18/Redis public-API tests have passed, including quota/audit/outbox facts and gated disconnect cleanup. The candidate is stacked on M4-E2 `e0fb59d`; the formal dependency is M4-E1. AC-028/AC-045 Chat slices are `implemented-local`, not overall completion. Full candidate quality/security and protected final-main delivery are pending; Issue #26 remains OPEN, with no new approval or operational permission implied.
 - M4-E2's Responses implementation under [`../runtime/responses-runtime.md`](../runtime/responses-runtime.md) is governed by accepted ADR 0017 and two independent permanent Issue #44 approvals. The immutable implementation `45df467` passed the full local gate (.NET 3,214/3,214 and frontend 8/8, zero failures/skips); follow-up `1a3848c` passed all three PR quality jobs and CodeQL, while dependency/image security gates failed. [PR #97](https://github.com/Lyon1984/PoolAI/pull/97) remains Draft and Issue #25 OPEN: security scan `023ec9bf-df7f-45a5-b01d-5e94b281be8c` completed with four reportable findings and partial NAT64/SIIT coverage; independent validation retained all four. [Independent maintenance PR #98](https://github.com/Lyon1984/PoolAI/pull/98) has passed its full local gate (.NET 3,011/3,011, frontend 8/8) and CI repository-security, but the fixed Host base prerequisite remains unsatisfied. See [`open-items.md`](open-items.md) for essential contract and image decisions. No M4-E2 completion, AC-028 completion, M4 Exit, or remote acceptance is claimed.
 - Target system, capability disposition, refactoring workstreams, and delivery gates: [`../系统重构方案-v1.0.md`](../系统重构方案-v1.0.md)
 - Release contract index and frozen decisions: [`../README.md`](../README.md)
@@ -85,7 +86,7 @@ The former Sub2API feature-analysis document has been converted into the refacto
 - The physical R1.1 reference environment, immutable candidate-image promotion, section 8.2 load execution, and archived reports; these remain M6-E2/E3 work and are not implied by the M0 certification-plan declaration
 - Production enablement or operational execution of the default-disabled rewrap job, physical PostgreSQL backup/PITR, RPO/RTO, and key retirement remain unimplemented or unverified.
 - Remote execution of migrations 0008–0020, remote Redis operations, real upstream credential/key operations, and deployment remain unverified and unauthorized; independent approvals freeze exact repository artifacts but do not authorize applying them to any remote environment, and the accepted ADR 0006 cross-Context database registry remains unchanged.
-- AC-029's M4-E1 new-admission strong-read slice is implemented; its M4-E5 failover strong-read slice remains planned. M4-E2 has a local candidate pending protected delivery; M4-E3 Chat, M4-E4 Models, and M4-E5 failover/terminalization remain unimplemented.
+- AC-029's M4-E1 new-admission strong-read slice is implemented; its M4-E5 failover strong-read slice remains planned. M4-E2 and M4-E3 have local candidates pending protected delivery; M4-E4 Models and M4-E5 failover/terminalization remain unimplemented.
 
 ## Current milestone
 
@@ -93,6 +94,6 @@ M1, M2, and M3 have passed their repository exit gates. All M1-E1–E5, M2-E1–
 
 The accepted ADR 0006 database-boundary rule remains unchanged.
 
-M3 repository implementation and its independent exit are complete. [M4-E1 / Issue #24](https://github.com/Lyon1984/PoolAI/issues/24) is `CLOSED / COMPLETED` with implementation, protected-merge, exact-main, full local-gate, and zero-finding Codex Security evidence. The next sequential object is open [M4-E2 / Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), assigned to `@Lyon1984`. M4-E2–E5, M4 Exit, and M5+ remain pending their own dependencies, implementation, verification, and approvals.
+M3 repository implementation and its independent exit are complete. [M4-E1 / Issue #24](https://github.com/Lyon1984/PoolAI/issues/24) is `CLOSED / COMPLETED` with implementation, protected-merge, exact-main, full local-gate, and zero-finding Codex Security evidence. [M4-E2 / Issue #25](https://github.com/Lyon1984/PoolAI/issues/25) remains open for security/protected-delivery closeout. At the user's request, [M4-E3 / Issue #26](https://github.com/Lyon1984/PoolAI/issues/26) is being developed independently of that completion gate, while temporarily reusing its code base; both owners remain `@Lyon1984`. M4-E2/E3 protected delivery, M4-E4/E5 implementation, M4 Exit, and M5+ remain pending their own verification and approvals.
 
 Remote Redis operation, migration or data repair, real upstream credential/key operations, deployment, Staging, RC, GA, production, Release 1 acceptance, and the complete M6 physical certification environment and load campaign remain unauthorized or pending. M4-E1 completion is repository-development-only and does not widen any operational permission.

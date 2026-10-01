@@ -46,6 +46,7 @@ public static class DependencyInjection
         services.AddSingleton<GatewayAdmissionController>();
         services.AddSingleton<GatewayModelDiscriminator>();
         services.AddSingleton<GatewayResponsesRequestParser>();
+        services.AddSingleton<GatewayChatRequestParser>();
         services.AddSingleton<GatewayClientIpResolver>();
         services.AddSingleton<ConservativeTokenEstimator>();
         services.AddSingleton<GatewayCanonicalAdmissionService>();

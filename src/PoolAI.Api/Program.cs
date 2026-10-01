@@ -76,6 +76,7 @@ app.UseMiddleware<GatewayAdmissionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapPost("/v1/responses", ResponsesEndpoint.HandleAsync);
+app.MapPost("/v1/chat/completions", ResponsesEndpoint.HandleChatAsync);
 app.MapIdentityEndpoints();
 app.MapGroupQuotaEndpoints();
 app.MapSubscriptionAccessEndpoints();

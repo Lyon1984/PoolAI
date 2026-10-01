@@ -111,7 +111,7 @@ public sealed class GatewayResponsesPublicApiEndToEndTests
         Assert.Single(upstream.Requests);
     }
 
-    private static async ValueTask<FixtureContext> ProvisionAsync(PasswordResetHttpEndToEndEnvironment environment,
+    internal static async ValueTask<FixtureContext> ProvisionAsync(PasswordResetHttpEndToEndEnvironment environment,
         LoopbackResponsesUpstream upstream, CancellationToken cancellationToken)
     {
         string admin = await M2ExitPublicApiEndToEndTests.LoginAsync(environment, environment.AdminEmail,
@@ -147,7 +147,7 @@ public sealed class GatewayResponsesPublicApiEndToEndTests
         return await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask AssertSettlementAsync(PasswordResetHttpEndToEndEnvironment environment,
+    internal static async ValueTask AssertSettlementAsync(PasswordResetHttpEndToEndEnvironment environment,
         FixtureContext context, string requestId, Case testCase, CancellationToken cancellationToken,
         string? expectedOutcome = null)
     {
@@ -185,7 +185,7 @@ public sealed class GatewayResponsesPublicApiEndToEndTests
             context.AdminToken, context.AccountId, cancellationToken).ConfigureAwait(false));
     }
 
-    private static string WireFixture(string name)
+    internal static string WireFixture(string name)
     {
         DirectoryInfo? directory = new(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "PoolAI.sln"))) { directory = directory.Parent; }
@@ -219,7 +219,7 @@ public sealed class GatewayResponsesPublicApiEndToEndTests
         Assert.True(affinity.SupplyConfigurationVersion > 1);
     }
 
-    private sealed class FixtureContext(Guid groupId, Guid accountId, Guid apiKeyId, string adminToken, string apiKey)
+    internal sealed class FixtureContext(Guid groupId, Guid accountId, Guid apiKeyId, string adminToken, string apiKey)
     {
         internal Guid GroupId { get; } = groupId;
         internal Guid AccountId { get; } = accountId;
@@ -227,5 +227,5 @@ public sealed class GatewayResponsesPublicApiEndToEndTests
         internal string AdminToken { get; } = adminToken;
         internal string ApiKey { get; } = apiKey;
     }
-    private sealed record Case(string Body, bool Stream, HttpStatusCode Status, string Source, string? Tokens, bool Failed);
+    internal sealed record Case(string Body, bool Stream, HttpStatusCode Status, string Source, string? Tokens, bool Failed);
 }
