@@ -5,7 +5,7 @@
 - Decider: PoolAI architecture, Gateway, protocol-contract, and operational-safety owner (`@Lyon1984`); this proposal does not take effect without the exact approval described below
 - Relates to: [M4-E2 Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), [M4-E3 Issue #26](https://github.com/Lyon1984/PoolAI/issues/26), ADR 0015, D-029, AC-028, AC-043, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
 - Compatibility window ID: `m4-e2-e3-model-discriminator-overload`
-- Base Git commit: `3059f3f1b3dc4166160a9a414e839b9cd04afcc8`
+- Base Git commit: `65a75e232abacac96fda88b5b2d4f7577adff6bf`
 - Base OpenAPI SHA-256: `9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9`
 - Target OpenAPI SHA-256: `7a6e3c40358e7dec9c59c4c8ae8ec54814a55ccdcb1f64819dc11afb1e24d488`
 - Base error-catalog SHA-256: `875e700f486acdfdd972f2aa239fc99f808663592a48639e6acd1313fbc6f5dc`
@@ -75,6 +75,14 @@ request validation, normalization, or a Gateway attempt. It never calls a
 module port, PostgreSQL, Redis, the Group RPM primitive, Routing, Supply, an
 Adapter, or an upstream. Its resource guard may write only the exact overload
 response frozen below; body classification never chooses a business error.
+
+Authentication at this stage means the Identity-owned API Key authentication
+and canonical client-CIDR check only. Full Key/User/Subscription/Group access
+reads and Group RPM remain behind the consistency guard in the Process Manager.
+The Key is rechecked there, so the earlier authentication snapshot is never an
+execution authority. References below to zero canonical reads mean zero full
+access reads; the explicitly ordered Identity authentication read is allowed
+after selected data admission and before authoritative parsing.
 
 Only routed `POST /v1/responses` and `POST /v1/chat/completions` requests use
 this discriminator. Static endpoint metadata continues to classify every other
