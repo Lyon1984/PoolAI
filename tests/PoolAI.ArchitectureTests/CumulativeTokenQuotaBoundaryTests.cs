@@ -500,6 +500,30 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
         Assert.Contains("Qualified:TotalTokens", owner.MemberPaths);
     }
 
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void ProductionTypeParserPreservesAliasesAcrossLargeMaskedLiteralBlocks(string newline)
+    {
+        // Group-only quota authority must remain detectable after a large raw literal.
+        string literal = string.Concat(Enumerable.Repeat(new string('x', 64) + newline, 20_000));
+        string ownerSource = "using AliasQuota = Other.QuotaFields;" + newline
+            + "namespace Owner;" + newline
+            + "public sealed class UserDto {" + newline
+            + "private const string Text = \"\"\"" + newline + literal
+            + "\"\"\";" + newline
+            + "public AliasQuota Aliased { get; init; }" + newline + "}";
+        const string quotaSource = "namespace Other; public sealed class QuotaFields { public long TotalTokens { get; init; } }";
+
+        CSharpTypeShape[] shapes = ResolveCSharpInheritedMembers(
+            ReadCSharpTypeShapes("/repo", "/repo/src/Owner.cs", ownerSource)
+                .Concat(ReadCSharpTypeShapes("/repo", "/repo/src/Quota.cs", quotaSource))
+                .ToArray());
+        CSharpTypeShape owner = FindShape(shapes, "UserDto");
+        Assert.Contains("Aliased:TotalTokens", owner.MemberPaths);
+        Assert.True(IsForbiddenCSharpPersonalAuthorityPath(owner.Name, "Aliased:TotalTokens"));
+    }
+
     [Fact]
     public void ProductionTypeParserFailsClosedOnUnsupportedAliasAndEscapedIdentifiers()
     {
@@ -4543,8 +4567,9 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
         matchTimeoutMilliseconds: 1_000)]
     private static partial Regex TypeDeclaration();
 
+    // Masked literals retain line breaks; leading whitespace must not rescan the block from every line.
     [GeneratedRegex(
-        @"^\s*using\s+@?(?<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:global::)?(?:@?[A-Za-z_][A-Za-z0-9_]*\.)*@?(?<target>[A-Za-z_][A-Za-z0-9_]*)\s*;",
+        @"^[^\S\r\n]*using\s+@?(?<alias>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:global::)?(?:@?[A-Za-z_][A-Za-z0-9_]*\.)*@?(?<target>[A-Za-z_][A-Za-z0-9_]*)\s*;",
         RegexOptions.CultureInvariant
             | RegexOptions.ExplicitCapture
             | RegexOptions.Multiline,
@@ -4552,7 +4577,7 @@ public sealed partial class CumulativeTokenQuotaBoundaryTests
     private static partial Regex UsingAlias();
 
     [GeneratedRegex(
-        @"^\s*(?:global\s+)?using\s+@?[A-Za-z_][A-Za-z0-9_]*\s*=",
+        @"^[^\S\r\n]*(?:global\s+)?using\s+@?[A-Za-z_][A-Za-z0-9_]*\s*=",
         RegexOptions.CultureInvariant | RegexOptions.Multiline,
         matchTimeoutMilliseconds: 1_000)]
     private static partial Regex CSharpUsingAliasDirective();
