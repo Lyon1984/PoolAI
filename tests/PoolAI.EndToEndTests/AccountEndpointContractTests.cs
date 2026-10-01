@@ -186,6 +186,9 @@ public sealed class AccountEndpointContractTests
         AssertSecretFree(problemBody, CreateCredential, UpdateCredential);
         Assert.Contains("resource_conflict", problemBody, StringComparison.Ordinal);
 
+        await traces.WaitForRequestsAsync(traceId, "POST /api/v1/admin/accounts", 1, TestContext.Current.CancellationToken);
+        await traces.WaitForRequestsAsync(traceId, "GET /api/v1/admin/accounts", 2, TestContext.Current.CancellationToken);
+        await traces.WaitForRequestsAsync(traceId, "PATCH /api/v1/admin/accounts/", 2, TestContext.Current.CancellationToken);
         string logs = string.Join('\n', factory.Logs.Messages);
         AssertSecretFree(logs, CreateCredential, UpdateCredential);
         RecordedActivity[] requestTraces = traces.Snapshots
@@ -679,6 +682,7 @@ public sealed class AccountEndpointContractTests
         string body = await response.Content.ReadAsStringAsync(
             TestContext.Current.CancellationToken);
         AssertSecretFree(body, submittedUrl, submittedCredential, "private-marker");
+        await traces.WaitForRequestsAsync(traceId, "POST /api/v1/admin/accounts", 1, TestContext.Current.CancellationToken);
         AssertSecretFree(
             string.Join('\n', factory.Logs.Messages),
             submittedUrl,
@@ -1027,6 +1031,7 @@ public sealed class AccountEndpointContractTests
     {
         private readonly ActivityListener _listener;
         private readonly ActivitySource _scopeSource;
+        private TaskCompletionSource _captured = NewSignal();
 
         internal RecordingActivityListener()
         {
@@ -1060,6 +1065,25 @@ public sealed class AccountEndpointContractTests
         internal Activity? StartScope(string name) =>
             _scopeSource.StartActivity(name, ActivityKind.Internal);
 
+        internal async Task WaitForRequestsAsync(string traceId, string methodPath, int count,
+            CancellationToken cancellationToken)
+        {
+            // Response content can finish before TestServer stops its request
+            // Activity. Observe the real stop notification, not a timing sleep.
+            using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(10));
+            while (true)
+            {
+                Task captured = Volatile.Read(ref _captured).Task;
+                if (Snapshots.Count(snapshot => string.Equals(snapshot.TraceId, traceId, StringComparison.Ordinal)
+                    && snapshot.SourceName.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal)
+                    && snapshot.Payload.Contains(methodPath, StringComparison.Ordinal)) >= count) { return; }
+                await captured.WaitAsync(deadline.Token).ConfigureAwait(false);
+            }
+        }
+
+        private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Dispose()
         {
             _scopeSource.Dispose();
@@ -1091,6 +1115,7 @@ public sealed class AccountEndpointContractTests
                         activity.DisplayName,
                         activity.StatusDescription ?? string.Empty,
                     }.Concat(tags).Concat(baggage).Concat(events).Concat(links))));
+            Interlocked.Exchange(ref _captured, NewSignal()).TrySetResult();
         }
     }
 
