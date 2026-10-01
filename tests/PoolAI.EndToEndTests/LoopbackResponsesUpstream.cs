@@ -14,9 +14,11 @@ internal sealed class LoopbackResponsesUpstream : IAsyncDisposable
     private readonly Task _serve;
     private readonly Lock _gate = new();
     private readonly List<JsonElement> _requests = [];
+    private readonly string _modelPath;
 
-    internal LoopbackResponsesUpstream()
+    internal LoopbackResponsesUpstream(string modelPath = "/responses")
     {
+        _modelPath = modelPath;
         _listener.Start();
         BaseAddress = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}";
         _serve = ServeAsync(_shutdown.Token);
@@ -27,9 +29,9 @@ internal sealed class LoopbackResponsesUpstream : IAsyncDisposable
     internal void Enqueue(string body, bool stream, int status = 200) =>
         Assert.True(_replies.Writer.TryWrite(new Reply(body, stream, status)));
 
-    internal ReplyPause EnqueuePausedBeforeCompletion(string body)
+    internal ReplyPause EnqueuePausedBeforeCompletion(string body, string terminalMarker = "event: response.completed")
     {
-        int terminal = body.IndexOf("event: response.completed", StringComparison.Ordinal);
+        int terminal = body.IndexOf(terminalMarker, StringComparison.Ordinal);
         Assert.True(terminal > 0);
         ReplyPause pause = new(Encoding.UTF8.GetByteCount(body.AsSpan(0, terminal)));
         Assert.True(_replies.Writer.TryWrite(new Reply(body, true, 200, pause)));
@@ -81,7 +83,7 @@ internal sealed class LoopbackResponsesUpstream : IAsyncDisposable
             return;
         }
 
-        Assert.StartsWith("POST /responses ", requestLine, StringComparison.Ordinal);
+        Assert.StartsWith("POST " + _modelPath + " ", requestLine, StringComparison.Ordinal);
         char[] body = new char[length];
         int offset = 0;
         while (offset < body.Length)

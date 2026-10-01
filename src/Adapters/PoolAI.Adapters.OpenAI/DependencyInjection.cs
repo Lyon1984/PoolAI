@@ -16,9 +16,14 @@ public static class DependencyInjection
             {
                 services.AddSingleton<IUpstreamAdapter>(new ResponsesUpstreamAdapter(capability));
             }
+            else if (capability.Protocol == InboundProtocol.ChatCompletions)
+            {
+                services.AddSingleton<IUpstreamAdapter>(new ChatUpstreamAdapter(capability));
+            }
         }
 
         services.AddSingleton<IProtocolAdapter, ResponsesProtocolAdapter>();
+        services.AddSingleton<IProtocolAdapter, ChatProtocolAdapter>();
 
         return services;
     }

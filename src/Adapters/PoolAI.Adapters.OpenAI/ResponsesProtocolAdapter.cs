@@ -224,7 +224,7 @@ public sealed class ResponsesProtocolAdapter : IProtocolAdapter
     private static bool Only(JsonElement value, params string[] fields) => value.ValueKind == JsonValueKind.Object
         && value.EnumerateObject().All(p => fields.Contains(p.Name, StringComparer.Ordinal));
 
-    private static bool IsPositiveSafeInteger(JsonElement value)
+    internal static bool IsPositiveSafeInteger(JsonElement value)
     {
         if (value.ValueKind != JsonValueKind.Number) { return false; }
         string raw = value.GetRawText();

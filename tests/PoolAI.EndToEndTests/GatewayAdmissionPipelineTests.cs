@@ -210,13 +210,14 @@ public sealed class GatewayAdmissionPipelineTests
     }
 
     [Theory]
-    [InlineData("/api/v1/not-a-route", GatewayAdmissionKind.Control)]
-    [InlineData("/v1/models", GatewayAdmissionKind.NonStream)]
-    [InlineData("/v1/usage", GatewayAdmissionKind.Usage)]
-    [InlineData("/v1/chat/completions", GatewayAdmissionKind.Sse)]
-    public async Task UnmappedPathsAreNotTurnedIntoSyntheticOverloads(
+    [InlineData("/api/v1/not-a-route", GatewayAdmissionKind.Control, HttpStatusCode.NotFound)]
+    [InlineData("/v1/models", GatewayAdmissionKind.NonStream, HttpStatusCode.NotFound)]
+    [InlineData("/v1/usage", GatewayAdmissionKind.Usage, HttpStatusCode.NotFound)]
+    [InlineData("/v1/chat/completions", GatewayAdmissionKind.Sse, HttpStatusCode.MethodNotAllowed)]
+    public async Task UnmappedPathsAndMethodsAreNotTurnedIntoSyntheticOverloads(
         string path,
-        GatewayAdmissionKind saturatedKind)
+        GatewayAdmissionKind saturatedKind,
+        HttpStatusCode expected)
     {
         await using AdmissionApiFactory factory = new(controlQueueLimit: 0);
         GatewayAdmissionController admission = factory.Services
@@ -232,7 +233,11 @@ public sealed class GatewayAdmissionPipelineTests
                 path,
                 TestContext.Current.CancellationToken);
 
-            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal(expected, response.StatusCode);
+            if (expected == HttpStatusCode.MethodNotAllowed)
+            {
+                Assert.Contains("POST", response.Content.Headers.Allow);
+            }
         }
         finally
         {
