@@ -3924,7 +3924,12 @@ components:
                 retryable: true
                 retry_after_seconds: 1
     GatewayTooManyRequests:
-      description: 模型执行路径的 Group 配额、速率限制或 NonStream/SSE 进程级 bulkhead 拒绝
+      description: >-
+        模型执行路径的 Group 配额、速率限制或 NonStream/SSE 进程级 bulkhead 拒绝；
+        两个共享模型 POST 的八许可零队列 model-discriminator guard 饱和、覆盖分类、
+        selected admission、鉴权与严格解析的 30 秒生命周期截止，或私有 replay storage
+        打开/写入失败，也固定返回 `gateway_overloaded` 与 `Retry-After: 1`，且不得进入
+        Gateway Process Manager、Account lease、reservation 或上游 I/O
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'

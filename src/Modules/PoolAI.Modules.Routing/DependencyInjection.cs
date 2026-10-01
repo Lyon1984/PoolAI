@@ -22,6 +22,7 @@ public static class DependencyInjection
         services.AddSingleton<IAccountActiveLeaseReader,
             AccountActiveLeaseReader>();
         services.AddSingleton<IRouteAffinityStore, CoordinationRouteAffinityStore>();
+        services.AddSingleton<IRouteAffinityRecorder, RouteAffinityRecorder>();
         services.AddSingleton<IAccountRouter, AccountRouter>();
         services.AddSingleton<IGroupRequestRateLimiter, GroupRequestRateLimiter>();
         return services;

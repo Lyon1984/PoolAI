@@ -82,7 +82,7 @@ internal sealed class GatewayCanonicalAdmissionService(
             group.Value));
     }
 
-    private async ValueTask<Result<ApiKeyAccessSnapshot>> AuthenticateAsync(
+    internal async ValueTask<Result<ApiKeyAccessSnapshot>> AuthenticateAsync(
         string presentedApiKey,
         IPAddress? socketPeer,
         IReadOnlyList<string>? forwardedForFieldValues,

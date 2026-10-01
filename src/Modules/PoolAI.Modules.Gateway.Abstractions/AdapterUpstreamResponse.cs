@@ -7,7 +7,9 @@ public sealed class AdapterUpstreamResponse
     public AdapterUpstreamResponse(
         int statusCode,
         Stream content,
-        IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers)
+        IEnumerable<KeyValuePair<string, IEnumerable<string>>> headers,
+        TimeSpan? firstEventBudget = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(headers);
@@ -35,11 +37,15 @@ public sealed class AdapterUpstreamResponse
         StatusCode = statusCode;
         Content = content;
         _headers = copied;
+        FirstEventBudget = firstEventBudget ?? TimeSpan.FromSeconds(60);
+        TimeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public int StatusCode { get; }
 
     public Stream Content { get; }
+    public TimeSpan FirstEventBudget { get; }
+    public TimeProvider TimeProvider { get; }
 
     public bool TryGetHeader(
         string name,

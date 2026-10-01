@@ -247,7 +247,7 @@ public sealed class GatewayAdmissionControllerTests
             readings,
             reading => Assert.True(
                 reading.Bulkhead is
-                    "data-nonstream" or "data-stream" or "control" or "usage"));
+                    "data-nonstream" or "data-stream" or "control" or "usage" or "model_discriminator"));
 
         await held.Value.DisposeAsync().ConfigureAwait(true);
         readings.Clear();

@@ -24,6 +24,7 @@ internal sealed class GatewaySingleAttemptProcessManager
     private readonly AdapterCapabilityRegistry _capabilityRegistry;
     private readonly TimeProvider _timeProvider;
     private readonly ReservationLifetimeCoordinator _reservationLifetime;
+    private readonly GatewayResponseAffinity? _responseAffinity;
 
     internal GatewaySingleAttemptProcessManager(
         ConservativeTokenEstimator estimator,
@@ -34,7 +35,8 @@ internal sealed class GatewaySingleAttemptProcessManager
         IEnumerable<IUpstreamAdapter> adapters,
         AdapterCapabilityRegistry capabilityRegistry,
         TimeProvider timeProvider,
-        ReservationLifetimeCoordinator reservationLifetime)
+        ReservationLifetimeCoordinator reservationLifetime,
+        GatewayResponseAffinity? responseAffinity = null)
     {
         _estimator = estimator
             ?? throw new ArgumentNullException(nameof(estimator));
@@ -54,6 +56,7 @@ internal sealed class GatewaySingleAttemptProcessManager
             ?? throw new ArgumentNullException(nameof(timeProvider));
         _reservationLifetime = reservationLifetime
             ?? throw new ArgumentNullException(nameof(reservationLifetime));
+        _responseAffinity = responseAffinity;
     }
 
     internal ValueTask<Result<GatewaySingleAttemptOutcome>> ExecuteAsync(
@@ -304,7 +307,14 @@ internal sealed class GatewaySingleAttemptProcessManager
                 .Adapter
                 .PrepareAsync(
                     _attempt!.AdapterContext,
-                    _command.Request,
+                    _command.Request with
+                    {
+                        Output = _command.Request.Output is null
+                            ? null
+                            : new GatewayAttemptOutput(
+                                _command.Request.Output,
+                                _attempt),
+                    },
                     _attemptCancellationToken)
                 .ConfigureAwait(false);
             if (preparation.IsFailure)
@@ -408,6 +418,15 @@ internal sealed class GatewaySingleAttemptProcessManager
                 finalizer.AttemptOutcome);
             _attempt.Complete(disposition);
             GatewayAttemptEvidence evidence = _attempt.Evidence;
+            if (_command.Protocol == InboundProtocol.Responses
+                && disposition == GatewaySingleAttemptDisposition.Succeeded
+                && _owner._responseAffinity is not null)
+            {
+                await _owner._responseAffinity.RememberAsync(_command.Access,
+                    _attempt.AccountLease.Route, evidence.UpstreamResult,
+                    _callerCancellationToken).ConfigureAwait(false);
+            }
+
             return Result.Success(new GatewaySingleAttemptOutcome(
                 _command.Request.RequestId,
                 _attemptId,

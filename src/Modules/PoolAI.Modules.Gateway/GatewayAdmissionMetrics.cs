@@ -13,6 +13,22 @@ public sealed class GatewayAdmissionMetrics : IDisposable
     private readonly ObservableGauge<long> _active;
     private readonly Counter<long> _rejected;
     private readonly long[] _activeByKind = new long[4];
+    private long _discriminatorActive;
+
+    internal void ChangeDiscriminatorActive(long delta) =>
+        Interlocked.Add(ref _discriminatorActive, delta);
+
+    internal void RecordDiscriminatorRejection(string outcome)
+    {
+        if (outcome is not ("saturation" or "deadline" or "storage_failure"))
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome));
+        }
+
+        _rejected.Add(1,
+            new KeyValuePair<string, object?>("bulkhead", "model_discriminator"),
+            new KeyValuePair<string, object?>("outcome", outcome));
+    }
 
     public GatewayAdmissionMetrics()
         : this(new Meter(MeterName, "1.0"), ownsMeter: true)
@@ -60,6 +76,9 @@ public sealed class GatewayAdmissionMetrics : IDisposable
 
     private IEnumerable<Measurement<long>> ObserveActive()
     {
+        yield return new Measurement<long>(Interlocked.Read(ref _discriminatorActive),
+            new KeyValuePair<string, object?>("bulkhead", "model_discriminator"),
+            new KeyValuePair<string, object?>("outcome", "active"));
         foreach (GatewayAdmissionKind kind in Enum.GetValues<GatewayAdmissionKind>())
         {
             yield return new Measurement<long>(

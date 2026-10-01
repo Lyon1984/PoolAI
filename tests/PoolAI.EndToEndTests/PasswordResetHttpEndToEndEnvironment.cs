@@ -3,6 +3,7 @@ extern alias PoolAiApi;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,12 +35,16 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
     private RedisContainer? redis;
     private RealPasswordResetApiFactory? apiFactory;
     private readonly bool bootstrapAdminOnly;
+    private readonly bool gatewayPeer;
+    private readonly TaskCompletionSource gatewayClientDisconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource gatewayRequestCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Dictionary<string, string?> apiConfiguration = null!;
     private string workerConnectionString = string.Empty;
 
-    private PasswordResetHttpEndToEndEnvironment(bool bootstrapAdminOnly = false)
+    private PasswordResetHttpEndToEndEnvironment(bool bootstrapAdminOnly = false, bool gatewayPeer = false)
     {
         this.bootstrapAdminOnly = bootstrapAdminOnly;
+        this.gatewayPeer = gatewayPeer;
     }
 
     internal NpgsqlDataSource AdministratorDataSource { get; private set; } = null!;
@@ -47,6 +52,10 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
     internal HttpClient Client { get; private set; } = null!;
 
     internal IServiceProvider Services => apiFactory!.Services;
+
+    internal Task GatewayClientDisconnected => gatewayClientDisconnected.Task;
+
+    internal Task GatewayRequestCompleted => gatewayRequestCompleted.Task;
 
     internal Guid ActiveUserId { get; } = Guid.CreateVersion7();
 
@@ -81,9 +90,9 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
     }
 
     internal static async ValueTask<PasswordResetHttpEndToEndEnvironment> CreateM2ExitAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool gatewayPeer = false)
     {
-        PasswordResetHttpEndToEndEnvironment environment = new(bootstrapAdminOnly: true);
+        PasswordResetHttpEndToEndEnvironment environment = new(bootstrapAdminOnly: true, gatewayPeer);
         try
         {
             await environment.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -286,7 +295,8 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
             redis.GetConnectionString(),
             suffix);
         workerConnectionString = connections.Worker;
-        apiFactory = new RealPasswordResetApiFactory(apiConfiguration);
+        apiFactory = new RealPasswordResetApiFactory(apiConfiguration, gatewayPeer,
+            gatewayClientDisconnected, gatewayRequestCompleted);
         Client = apiFactory.CreateClient();
     }
 
@@ -516,7 +526,8 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
         long IdempotencyRecords);
 
     private sealed class RealPasswordResetApiFactory(
-        IReadOnlyDictionary<string, string?> configurationValues)
+        IReadOnlyDictionary<string, string?> configurationValues, bool gatewayPeer,
+        TaskCompletionSource clientDisconnected, TaskCompletionSource requestCompleted)
         : WebApplicationFactory<PoolAiApi::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -529,7 +540,36 @@ internal sealed class PasswordResetHttpEndToEndEnvironment : IAsyncDisposable
 
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(configurationValues));
+            if (gatewayPeer)
+            {
+                builder.ConfigureServices(services => services.AddSingleton<IStartupFilter>(
+                    new LoopbackSocketPeerFilter(clientDisconnected, requestCompleted)));
+            }
         }
+    }
+
+    // TestServer has no TCP socket. Only Gateway HTTP tests opt into this
+    // explicit loopback peer seam; canonical Key/CIDR authorization stays real.
+    private sealed class LoopbackSocketPeerFilter(
+        TaskCompletionSource clientDisconnected, TaskCompletionSource requestCompleted) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, continuation) =>
+            {
+                context.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+                if (context.Request.Path != "/v1/responses")
+                {
+                    await continuation(context).ConfigureAwait(false);
+                    return;
+                }
+                using CancellationTokenRegistration registration = context.RequestAborted.Register(
+                    () => clientDisconnected.TrySetResult());
+                try { await continuation(context).ConfigureAwait(false); }
+                finally { requestCompleted.TrySetResult(); }
+            });
+            next(app);
+        };
     }
 
     private sealed record RuntimePasswords(string Migrator, string Api, string Worker);

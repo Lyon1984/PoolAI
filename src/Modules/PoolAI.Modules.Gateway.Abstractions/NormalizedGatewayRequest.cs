@@ -6,5 +6,7 @@ public sealed record NormalizedGatewayRequest(
     bool Stream,
     JsonElement Payload)
 {
+    public IGatewayResponseOutput? Output { get; init; }
+
     public override string ToString() => nameof(NormalizedGatewayRequest);
 }

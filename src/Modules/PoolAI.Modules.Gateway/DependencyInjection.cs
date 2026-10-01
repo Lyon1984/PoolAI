@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Security.Cryptography;
 using PoolAI.BuildingBlocks;
 using PoolAI.Modules.Gateway.Abstractions;
 using PoolAI.Modules.Gateway.Application;
@@ -43,11 +44,18 @@ public static class DependencyInjection
             environmentName));
         services.AddSingleton<GatewayAdmissionMetrics>();
         services.AddSingleton<GatewayAdmissionController>();
+        services.AddSingleton<GatewayModelDiscriminator>();
+        services.AddSingleton<GatewayResponsesRequestParser>();
         services.AddSingleton<GatewayClientIpResolver>();
         services.AddSingleton<ConservativeTokenEstimator>();
         services.AddSingleton<GatewayCanonicalAdmissionService>();
         services.AddSingleton<AdapterCapabilityRegistry>();
         services.AddSingleton<GatewayCredentialHandoff>();
+        if (configuration["Idempotency:RequestHashPepper"] is { } affinityPepper)
+        {
+            services.AddSingleton(provider => CreateResponseAffinity(affinityPepper,
+                provider.GetRequiredService<IRouteAffinityRecorder>()));
+        }
         services.AddSingleton<IGatewayDnsResolver, GatewayDnsResolver>();
         services.AddSingleton<IGatewayUpstreamTransport, GatewayOutboundTransport>();
         services.AddSingleton(CreateRequestProcess);
@@ -56,6 +64,13 @@ public static class DependencyInjection
             provider.GetRequiredService<TimeProvider>(),
             drainDuration));
         return services;
+    }
+
+    private static GatewayResponseAffinity CreateResponseAffinity(string encodedPepper, IRouteAffinityRecorder recorder)
+    {
+        byte[] pepper = Convert.FromBase64String(encodedPepper);
+        try { return new GatewayResponseAffinity(pepper, recorder); }
+        finally { CryptographicOperations.ZeroMemory(pepper); }
     }
 
     private static GatewayAdmissionOptions CreateAdmissionOptions(
@@ -112,10 +127,12 @@ public static class DependencyInjection
             provider.GetServices<IUpstreamAdapter>(),
             provider.GetRequiredService<AdapterCapabilityRegistry>(),
             provider.GetRequiredService<TimeProvider>(),
-            provider.GetRequiredService<ReservationLifetimeCoordinator>());
+            provider.GetRequiredService<ReservationLifetimeCoordinator>(),
+            provider.GetService<GatewayResponseAffinity>());
         return new GatewayRequestProcess(
             provider.GetRequiredService<GatewayCanonicalAdmissionService>(),
             provider.GetRequiredService<IGroupRequestRateLimiter>(),
-            singleAttempt);
+            singleAttempt,
+            provider.GetService<GatewayResponseAffinity>());
     }
 }

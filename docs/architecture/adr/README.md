@@ -14,6 +14,8 @@ Project memory links to ADRs but does not duplicate their decision text.
 
 Accepted decisions:
 
+- [`0017-freeze-shared-post-stream-admission-discriminator.md`](0017-freeze-shared-post-stream-admission-discriminator.md) — freeze the eight-permit, zero-queue, 30-second shared-POST classifier/replay guard and exactly one matching NonStream/SSE lease through independent [architecture](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5929964301) and [OpenAPI/error-catalog](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5929965026) approvals; no database/Redis ABI or remote-operation authorization.
+
 - [`0001-separate-group-quota-from-supply-configuration.md`](0001-separate-group-quota-from-supply-configuration.md) — separate GroupQuota lifecycle/quota writes from Supply configuration writes.
 - [`0002-introduce-shared-postgres-transaction-runtime.md`](0002-introduce-shared-postgres-transaction-runtime.md) — isolate the shared Npgsql data source, explicit Unit of Work context, and session advisory-lock runtime behind vendor-neutral ports.
 - [`0003-approve-one-exact-pre-external-openapi-v1-reset.md`](0003-approve-one-exact-pre-external-openapi-v1-reset.md) — authorize one hash- and diagnostic-pinned M1-E1 OpenAPI v1 transition before external release evidence exists.

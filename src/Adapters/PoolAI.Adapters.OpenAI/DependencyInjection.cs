@@ -12,7 +12,13 @@ public static class DependencyInjection
         foreach (AdapterCapability capability in OpenAiCapabilityDescriptor.R1Capabilities)
         {
             services.AddSingleton(capability);
+            if (capability.Protocol == InboundProtocol.Responses)
+            {
+                services.AddSingleton<IUpstreamAdapter>(new ResponsesUpstreamAdapter(capability));
+            }
         }
+
+        services.AddSingleton<IProtocolAdapter, ResponsesProtocolAdapter>();
 
         return services;
     }
