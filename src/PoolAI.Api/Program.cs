@@ -75,6 +75,7 @@ app.UseRouting();
 app.UseMiddleware<GatewayAdmissionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapPost("/v1/responses", ResponsesEndpoint.HandleAsync);
 app.MapIdentityEndpoints();
 app.MapGroupQuotaEndpoints();
 app.MapSubscriptionAccessEndpoints();

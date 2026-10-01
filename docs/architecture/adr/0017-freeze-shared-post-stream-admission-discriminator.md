@@ -1,6 +1,6 @@
 # ADR 0017: Freeze the shared-POST stream admission discriminator
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-09-02
 - Decider: PoolAI architecture, Gateway, protocol-contract, and operational-safety owner (`@Lyon1984`); this proposal does not take effect without the exact approval described below
 - Relates to: [M4-E2 Issue #25](https://github.com/Lyon1984/PoolAI/issues/25), [M4-E3 Issue #26](https://github.com/Lyon1984/PoolAI/issues/26), ADR 0015, D-029, AC-028, AC-043, and [sign-off control Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
@@ -11,9 +11,9 @@
 - Base error-catalog SHA-256: `875e700f486acdfdd972f2aa239fc99f808663592a48639e6acd1313fbc6f5dc`
 - Target error-catalog SHA-256: `312cc4b1ab88686f456a74145495935fc2185c50593c34772e9a0230b333d066`
 - Approval control: [Issue #44](https://github.com/Lyon1984/PoolAI/issues/44)
-- Approval evidence: **Pending explicit approval**
+- Approval evidence: [Issue approval comment](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5929965026)
 - Allowed diagnostic: `error-catalog:gateway_overloaded: existing status, stream, retry, or meaning semantics changed`
-- Required public-contract window: `m4-e2-e3-model-discriminator-overload` (**Pending independent exact OpenAPI/error-catalog approval**)
+- Required public-contract window: `m4-e2-e3-model-discriminator-overload` (**Accepted independent exact OpenAPI/error-catalog approval**)
 
 ## Context
 
@@ -50,10 +50,11 @@ an endpoint implementation detail.
 
 ## Decision
 
-This proposal becomes effective only after `@Lyon1984` approves the exact
-candidate in a permanent Issue #44 comment and this ADR is backwritten to
-`Accepted` with that evidence. Until then M4-E2/M4-E3 implementation must not
-rely on this exception.
+This decision is effective for exact candidate
+`af183404cea630ed4813fd045426e83d65b27a80` through the independent permanent
+[architecture approval](https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5929964301)
+and the public-contract approval in the preamble. The approvals do not claim
+implementation, M4 Exit, remote operation, or release acceptance.
 
 The two shared POST operations use this fixed outer sequence:
 

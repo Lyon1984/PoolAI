@@ -358,7 +358,7 @@ public sealed class GatewayOutboundTransportIntegrationTests
         listener.Stop();
 
         Assert.True(result.Response.IsFailure);
-        Assert.Equal("upstream_unavailable", result.Response.Error.Code);
+        Assert.Equal("upstream_first_byte_timeout", result.Response.Error.Code);
         Assert.Equal(
             GatewayRequestWriteEvidence.PossiblyWritten,
             result.WriteEvidence);
@@ -398,7 +398,7 @@ public sealed class GatewayOutboundTransportIntegrationTests
         listener.Stop();
 
         Assert.True(result.Response.IsFailure);
-        Assert.Equal("upstream_unavailable", result.Response.Error.Code);
+        Assert.Equal("upstream_stream_idle_timeout", result.Response.Error.Code);
         Assert.Equal(
             GatewayRequestWriteEvidence.ConfirmedWritten,
             result.WriteEvidence);

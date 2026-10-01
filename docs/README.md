@@ -17,6 +17,7 @@
 - R1.1 认证逻辑环境、参考硬件与负载证据归档约定：[`release-evidence/README.md`](release-evidence/README.md)
 - Identity Integration Event v1 的机器可验证 Published Language：[`contracts/identity-events-v1.json`](contracts/identity-events-v1.json)
 - GroupQuota Integration Event v1 的机器可验证 Published Language：[`contracts/group-quota-events-v1.json`](contracts/group-quota-events-v1.json)
+- M4-E2 Responses 的运行时实现、资源边界与测试导航：[`runtime/responses-runtime.md`](runtime/responses-runtime.md)
 
 项目记忆只用于导航和交接，不能覆盖下列契约优先级。
 

@@ -20,22 +20,25 @@ public sealed class GatewayRequestProcess
     private readonly GatewayCanonicalAdmissionService _canonicalAdmission;
     private readonly IGroupRequestRateLimiter _rateLimiter;
     private readonly IGatewaySingleAttemptExecutor _singleAttempt;
+    private readonly GatewayResponseAffinity? _responseAffinity;
 
     internal GatewayRequestProcess(
         GatewayCanonicalAdmissionService canonicalAdmission,
         IGroupRequestRateLimiter rateLimiter,
-        GatewaySingleAttemptProcessManager singleAttempt)
+        GatewaySingleAttemptProcessManager singleAttempt,
+        GatewayResponseAffinity? responseAffinity = null)
         : this(
             canonicalAdmission,
             rateLimiter,
-            new GatewaySingleAttemptExecutor(singleAttempt))
+            new GatewaySingleAttemptExecutor(singleAttempt), responseAffinity)
     {
     }
 
     internal GatewayRequestProcess(
         GatewayCanonicalAdmissionService canonicalAdmission,
         IGroupRequestRateLimiter rateLimiter,
-        IGatewaySingleAttemptExecutor singleAttempt)
+        IGatewaySingleAttemptExecutor singleAttempt,
+        GatewayResponseAffinity? responseAffinity = null)
     {
         _canonicalAdmission = canonicalAdmission
             ?? throw new ArgumentNullException(nameof(canonicalAdmission));
@@ -43,6 +46,7 @@ public sealed class GatewayRequestProcess
             ?? throw new ArgumentNullException(nameof(rateLimiter));
         _singleAttempt = singleAttempt
             ?? throw new ArgumentNullException(nameof(singleAttempt));
+        _responseAffinity = responseAffinity;
     }
 
     public async ValueTask<Result<GatewayAuthorizedRequest>> AuthorizeAsync(
@@ -63,6 +67,38 @@ public sealed class GatewayRequestProcess
                 stableForwardedForFieldValues,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async ValueTask<Result<bool>> AuthenticateIngressAsync(
+        string presentedApiKey,
+        IPAddress? socketPeer,
+        IReadOnlyList<string>? forwardedForFieldValues,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _canonicalAdmission.AuthenticateAsync(
+                    presentedApiKey,
+                    CloneAddress(socketPeer),
+                    forwardedForFieldValues?.ToArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return result.IsSuccess
+                ? Result.Success(true)
+                : CopyFailure<bool>(result.Error);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return Result.Failure<bool>(
+                ErrorCodesV1.DependencyUnavailable,
+                "Gateway authentication is temporarily unavailable.",
+                retryAfterSeconds: 1);
+        }
     }
 
     private async ValueTask<Result<GatewayAuthorizedRequest>>
@@ -159,7 +195,8 @@ public sealed class GatewayRequestProcess
             CreateReservationLeaseOwner(request.RequestId),
             deadline,
             InitialRetryBudget,
-            sessionAffinityHash);
+            protocol == InboundProtocol.Responses && _responseAffinity is not null
+                ? _responseAffinity.ForRequest(access, request) : sessionAffinityHash);
         return _singleAttempt.ExecuteAsync(initialAttempt, cancellationToken);
     }
 

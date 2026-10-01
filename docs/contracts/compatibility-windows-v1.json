@@ -139,7 +139,7 @@
     },
     {
       "id": "m4-e2-e3-model-discriminator-overload",
-      "status": "proposed",
+      "status": "accepted",
       "scope": "openapi-v1-compatibility-window",
       "baseRef": "65a75e232abacac96fda88b5b2d4f7577adff6bf",
       "baseOpenApiSha256": "9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9",
@@ -148,7 +148,7 @@
       "headErrorCatalogSha256": "312cc4b1ab88686f456a74145495935fc2185c50593c34772e9a0230b333d066",
       "adr": "docs/architecture/adr/0017-freeze-shared-post-stream-admission-discriminator.md",
       "approvalControl": "https://github.com/Lyon1984/PoolAI/issues/44",
-      "approvalEvidence": null,
+      "approvalEvidence": "https://github.com/Lyon1984/PoolAI/issues/44#issuecomment-5929965026",
       "allowedFailures": [
         "error-catalog:gateway_overloaded: existing status, stream, retry, or meaning semantics changed"
       ]

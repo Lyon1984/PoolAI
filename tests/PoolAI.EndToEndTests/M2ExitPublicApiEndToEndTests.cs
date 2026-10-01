@@ -179,7 +179,7 @@ public sealed class M2ExitPublicApiEndToEndTests
         return Assert.IsType<long>(value);
     }
 
-    private static async ValueTask<UserFixture> CreateUserAndLoginAsync(
+    internal static async ValueTask<UserFixture> CreateUserAndLoginAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         CancellationToken cancellationToken)
@@ -230,7 +230,7 @@ public sealed class M2ExitPublicApiEndToEndTests
         return new UserFixture(userId, userToken);
     }
 
-    private static async ValueTask<AccessFixture> CreateDisabledAccessResourcesAsync(
+    internal static async ValueTask<AccessFixture> CreateDisabledAccessResourcesAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         CancellationToken cancellationToken)
@@ -374,7 +374,7 @@ public sealed class M2ExitPublicApiEndToEndTests
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask<SupplyFixture> ProvisionSupplyThroughPublicApiAsync(
+    internal static async ValueTask<SupplyFixture> ProvisionSupplyThroughPublicApiAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         Guid groupId,
@@ -520,7 +520,7 @@ public sealed class M2ExitPublicApiEndToEndTests
             ConfigurationVersion: configurationVersion);
     }
 
-    private static async ValueTask<long> WaitForAccountHealthAsync(
+    internal static async ValueTask<long> WaitForAccountHealthAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         Guid accountId,
@@ -563,7 +563,7 @@ public sealed class M2ExitPublicApiEndToEndTests
         return 0;
     }
 
-    private static async ValueTask<int> ReadAccountActiveLeasesAsync(
+    internal static async ValueTask<int> ReadAccountActiveLeasesAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         Guid accountId,
@@ -757,7 +757,7 @@ public sealed class M2ExitPublicApiEndToEndTests
         return updatedAccountVersion;
     }
 
-    private static async ValueTask ActivateGroupAsync(
+    internal static async ValueTask ActivateGroupAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         Guid groupId,
@@ -789,7 +789,7 @@ public sealed class M2ExitPublicApiEndToEndTests
                 out _));
     }
 
-    private static async ValueTask<SubscriptionFixture> AssignSubscriptionAsync(
+    internal static async ValueTask<SubscriptionFixture> AssignSubscriptionAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string adminToken,
         UserFixture user,
@@ -1255,7 +1255,7 @@ public sealed class M2ExitPublicApiEndToEndTests
         }
     }
 
-    private static async ValueTask<string> LoginAsync(
+    internal static async ValueTask<string> LoginAsync(
         PasswordResetHttpEndToEndEnvironment environment,
         string email,
         string password,
@@ -1450,15 +1450,15 @@ public sealed class M2ExitPublicApiEndToEndTests
             string? Authorization);
     }
 
-    private sealed record UserFixture(Guid UserId, string AccessToken);
+    internal sealed record UserFixture(Guid UserId, string AccessToken);
 
-    private sealed record AccessFixture(Guid GroupId, Guid TemplateId);
+    internal sealed record AccessFixture(Guid GroupId, Guid TemplateId);
 
-    private sealed record SubscriptionFixture(Guid SubscriptionId);
+    internal sealed record SubscriptionFixture(Guid SubscriptionId);
 
     private sealed record ApiKeyFixture(Guid ApiKeyId);
 
-    private sealed record SupplyFixture(
+    internal sealed record SupplyFixture(
         Guid AccountId,
         Guid ChannelId,
         long AccountVersion,

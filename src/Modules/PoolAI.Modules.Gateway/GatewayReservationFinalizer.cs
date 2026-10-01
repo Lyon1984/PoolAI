@@ -182,6 +182,11 @@ internal sealed class GatewayReservationFinalizer(
             return null;
         }
 
+        if (upstream?.ErrorCode is "upstream_first_byte_timeout" or "upstream_stream_idle_timeout" or "upstream_stream_error")
+        {
+            return upstream.ErrorCode;
+        }
+
         if (string.Equals(
                 _upstreamOperation.Failure?.Code,
                 ErrorCodesV1.UpstreamProtocolError,

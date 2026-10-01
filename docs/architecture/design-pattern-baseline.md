@@ -296,6 +296,8 @@ Account lease 执行中每 20 秒 renew；typed `Lost` 立即取消上游，连�
 
 ## 9. Architecture Test 与质量门
 
+Accepted [ADR 0017](adr/0017-freeze-shared-post-stream-admission-discriminator.md) 对两个共享模型 POST 登记唯一 pre-admission 例外：固定八许可、零队列 `model_discriminator` guard；每请求最多 64 KiB 内存、一个 owner-only delete-on-close descriptor、body-limit + 1 字节 spool、depth-64 lexical mode。完整 spool 后只取得一个匹配 NonStream/SSE lease；Identity Key/CIDR 鉴权后严格解析。30 秒 monotonic deadline 贯穿到 replay/guard 释放，原子 fence 禁止迟到结果执行，timeout 清理顺序固定 replay/guard → data lease → 429。严格解析完成后关闭 spool/guard，再经不可变 mode consistency guard 进入 full canonical access/Group RPM/Process Manager，data lease 覆盖完整响应/drain。内部 metrics 仅增加 `model_discriminator` active 与 `saturation/deadline/storage_failure` rejected 标签，不增加业务 workload policy。AC-043 四分区隔离不变，并独立证明 guard 饱和恢复。
+
 `PoolAI.ArchitectureTests` 必须至少阻断：
 
 1. 模块实现引用其他模块实现、Entity、DbContext、Endpoint，或 `*.Abstractions` 之间形成环。

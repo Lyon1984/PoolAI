@@ -4,6 +4,7 @@ Last verified: 2026-09-03
 
 ## Verified present
 
+- M4-E2 has a locally implemented Responses candidate under [`../runtime/responses-runtime.md`](../runtime/responses-runtime.md), governed by accepted ADR 0017 and two independent permanent Issue #44 approvals. Targeted tests verify text/function SSE half-packets and lifecycle rejection, non-stream/usage/error mapping, preparation deadlines and quarantine isolation, production PostgreSQL/Redis settlement, advisory affinity persistence, and client-disconnect drain with cancelled facts and zero remaining leases/reserved Token. Full quality/security/PR/exact-main closeout is still required before Issue #25 can be completed; this does not complete AC-028, M4 Exit, or remote acceptance.
 - Target system, capability disposition, refactoring workstreams, and delivery gates: [`../系统重构方案-v1.0.md`](../系统重构方案-v1.0.md)
 - Release contract index and frozen decisions: [`../README.md`](../README.md)
 - Locked .NET 10 SDK, NuGet, Node, pnpm, frontend packages, and reviewed container digests under `global.json`, `Directory.Packages.props`, lockfiles, and [`../../eng/versions.json`](../../eng/versions.json)
@@ -82,7 +83,7 @@ The former Sub2API feature-analysis document has been converted into the refacto
 - The physical R1.1 reference environment, immutable candidate-image promotion, section 8.2 load execution, and archived reports; these remain M6-E2/E3 work and are not implied by the M0 certification-plan declaration
 - Production enablement or operational execution of the default-disabled rewrap job, physical PostgreSQL backup/PITR, RPO/RTO, and key retirement remain unimplemented or unverified.
 - Remote execution of migrations 0008–0020, remote Redis operations, real upstream credential/key operations, and deployment remain unverified and unauthorized; independent approvals freeze exact repository artifacts but do not authorize applying them to any remote environment, and the accepted ADR 0006 cross-Context database registry remains unchanged.
-- AC-029's M4-E1 new-admission strong-read slice is implemented; its M4-E5 failover strong-read slice remains planned. M4-E2/M4-E3 public provider endpoints, M4-E4 Models, and M4-E5 failover/terminalization remain unimplemented.
+- AC-029's M4-E1 new-admission strong-read slice is implemented; its M4-E5 failover strong-read slice remains planned. M4-E2 has a local candidate pending protected delivery; M4-E3 Chat, M4-E4 Models, and M4-E5 failover/terminalization remain unimplemented.
 
 ## Current milestone
 

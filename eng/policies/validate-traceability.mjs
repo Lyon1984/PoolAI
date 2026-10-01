@@ -3139,7 +3139,7 @@ if (!Array.isArray(manifest.decisions) || !Array.isArray(manifest.acceptanceCrit
   const expectedAc045 = new Map([
     ['contract-error-schema', ['M0-E2', 'implemented-local']],
     ['event-projection', ['M3-E4', 'implemented-local']],
-    ['responses-error-shape', ['M4-E2', 'planned']],
+    ['responses-error-shape', ['M4-E2', 'implemented-local']],
     ['chat-error-shape', ['M4-E3', 'planned']],
     ['models-error-shape', ['M4-E4', 'planned']],
     ['usage-projection', ['M5-E1', 'planned']],

@@ -193,13 +193,14 @@ internal sealed class GatewayOutboundTransport(
                     cancellationToken)
                 .ConfigureAwait(false);
         }
+        catch (UpstreamReadTimeoutException exception)
+        {
+            return Failure(exception.Code, "The upstream read deadline expired.", state.WriteEvidence, capability);
+        }
         catch (OperationCanceledException)
         {
-            return Failure(
-                ErrorCodesV1.UpstreamUnavailable,
-                "The upstream request was cancelled or timed out.",
-                state.WriteEvidence,
-                capability);
+            return Failure(ErrorCodesV1.UpstreamUnavailable,
+                "The upstream request was cancelled or timed out.", state.WriteEvidence, capability);
         }
         catch (Exception exception) when (
             state.WriteEvidence == GatewayRequestWriteEvidence.ConfirmedWritten
@@ -254,6 +255,7 @@ internal sealed class GatewayOutboundTransport(
             _dnsResolver,
             state);
         using HttpMessageInvoker client = new(handler, disposeHandler: false);
+        long firstByteStart = _timeProvider.GetTimestamp();
         using HttpResponseMessage response = await SendForFirstByteAsync(
                 client,
                 request,
@@ -267,6 +269,7 @@ internal sealed class GatewayOutboundTransport(
                 state,
                 _options.StreamIdleTimeout,
                 _timeProvider,
+                _options.FirstByteTimeout - _timeProvider.GetElapsedTime(firstByteStart),
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -284,8 +287,15 @@ internal sealed class GatewayOutboundTransport(
                 cancellationToken,
                 firstByteTimeout.Token);
         using IDisposable instrumentation = SuppressInstrumentationScope.Begin();
-        return await client.SendAsync(request, firstByteCancellation.Token)
-            .ConfigureAwait(false);
+        try
+        {
+            return await client.SendAsync(request, firstByteCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (firstByteTimeout.IsCancellationRequested
+            && !cancellationToken.IsCancellationRequested)
+        {
+            throw new UpstreamReadTimeoutException("upstream_first_byte_timeout", exception);
+        }
     }
 
     private static async ValueTask<GatewayUpstreamTransportResult>
@@ -295,8 +305,9 @@ internal sealed class GatewayOutboundTransport(
             HttpRequestMessage request,
             HttpResponseMessage response,
             SendState state,
-            TimeSpan streamIdleTimeout,
-            TimeProvider timeProvider,
+        TimeSpan streamIdleTimeout,
+        TimeProvider timeProvider,
+        TimeSpan firstEventBudget,
             CancellationToken cancellationToken)
     {
         state.MarkConfirmedWritten();
@@ -313,7 +324,9 @@ internal sealed class GatewayOutboundTransport(
         AdapterUpstreamResponse adapterResponse = new(
             statusCode,
             boundedContent,
-            ResponseHeaders(response));
+            ResponseHeaders(response),
+            firstEventBudget,
+            timeProvider);
         Result<NormalizedUpstreamResult> parsed = await preparedAttempt
             .ParseResponseAsync(adapterResponse, cancellationToken)
             .ConfigureAwait(false);
@@ -699,9 +712,8 @@ internal sealed class GatewayOutboundTransport(
                 when (timeoutCancellation.IsCancellationRequested
                     && !cancellationToken.IsCancellationRequested)
             {
-                throw new IOException(
-                    "The upstream response stream exceeded its idle timeout.",
-                    exception);
+                throw new UpstreamReadTimeoutException(
+                    "upstream_stream_idle_timeout", exception);
             }
         }
 
