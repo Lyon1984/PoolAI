@@ -107,3 +107,14 @@ paths = [
   '''^docs/contracts/compatibility-windows-v1\.json$''',
 ]
 regexes = ['''^(9ab3765ac644a665373e34d716ffb53a9ac6fdc7abdd28408d9f398fb9a362bf|9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9)$''']
+
+[[allowlists]]
+description = "ADR 0017 public OpenAPI digests are not API credentials"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/architecture/adr/0017-freeze-shared-post-stream-admission-discriminator\.md$''',
+  '''^docs/contracts/compatibility-windows-v1\.json$''',
+]
+regexes = ['''^(9969ff4d8eb9558bf1d315d00f1ee2a648dc5e4f374c3c16276e69cd1c6a5aa9|7a6e3c40358e7dec9c59c4c8ae8ec54814a55ccdcb1f64819dc11afb1e24d488)$''']
