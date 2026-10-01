@@ -36,7 +36,7 @@ by the shared Gateway attempt output wrapper.
 The final usage chunk and `data: [DONE]` are held until successful quota settlement. There
 are no Responses `event:` fields. Once headers have started, failure emits only the frozen
 Chat error object and never `[DONE]`; before headers it uses the existing Gateway problem
-projection. Provider error messages and arbitrary provider metadata are not forwarded.
+projection. Provider error messages and arbitrary top-level provider metadata are not forwarded.
 
 ## Usage and cancellation
 
@@ -66,6 +66,24 @@ admission owner and vendor-neutral ports. Real local PostgreSQL 18/Redis public-
 exercise production authorization/routing/dispatch/settlement/audit/outbox/lease cleanup and
 a loopback mock upstream, including gated cancellation and unsafe usage.
 
+Exact implementation `e140586`, compared with `e0fb59d`, passed the full local quality gate:
+32 projects built with zero warnings/errors, .NET 3,389/3,389 and frontend 8/8 passed with
+zero failures/skips, all 26 production assemblies were observed, and modified-line coverage
+was 667/671 (99.40%). The [PR quality run](https://github.com/Lyon1984/PoolAI/actions/runs/36905677409)
+passed `verify`, `browser-smoke`, and `dynamic-compose`; CodeQL passed in the
+[security run](https://github.com/Lyon1984/PoolAI/actions/runs/36905677264), while the inherited
+dependency and Host image gates failed. This evidence is not a security waiver.
+
+The official CLI's report-only immutable diff scan
+`cc743732-1fd7-4a91-8b75-f8d41d769f16` completed and sealed for these exact revisions.
+All 13 changed source/policy files were reviewed, with supporting tests and shared code;
+138 existing Chat contract tests, 18 admission tests, and two focused offline probes passed.
+Four findings remain reportable: authoritative provider usage and anonymous shared preparation
+saturation (HIGH), pre-RPM JSON DOM work and no cumulative streamed-output budget (MEDIUM).
+The focused security probes did not establish production ingress controls, live exploit
+settlement, or deployment-specific resource saturation. Per-frame/retained-metadata bounds
+are not an aggregate stream-output limit.
+
 AC-028 and AC-045 record only their Chat slices as `implemented-local`; both overall criteria
 remain partial. Repository-development evidence does not imply real-provider acceptance,
 remote migration, deployment, M4 Exit, or physical release certification.
@@ -73,5 +91,8 @@ remote migration, deployment, M4 Exit, or physical release certification.
 Protected delivery remains open in [Issue #26](https://github.com/Lyon1984/PoolAI/issues/26).
 The shared code base still has the [M4-E2 blockers](../project-memory/open-items.md), including
 selected-provider usage authority and pre-DOM JSON allocation; this candidate introduces no
-unapproved usage-quarantine policy or client JSON-node budget. The Host image prerequisite,
-exact-base review if the stack is rebased, and protected final-main gates remain independent.
+unapproved usage-quarantine policy or client JSON-node budget. ADR 0017 deliberately freezes
+the pre-authentication guard/order and acknowledges its availability tradeoff; this increment
+does not move that boundary or introduce an unapproved aggregate output budget. The Host image
+prerequisite, exact-base review if the stack is rebased, and protected final-main gates remain
+independent.
