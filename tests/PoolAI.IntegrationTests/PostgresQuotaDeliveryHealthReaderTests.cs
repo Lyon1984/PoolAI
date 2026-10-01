@@ -115,6 +115,27 @@ public sealed class PostgresQuotaDeliveryHealthReaderTests(
         Assert.Null(beforeCheckpoint.BlockingSourceEventSequence);
     }
 
+    [Fact]
+    [Trait("Category", "PostgreSQL")]
+    public async Task SyntheticLineagesDoNotOccupyFutureQuotaEventSequences()
+    {
+        CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+        SeededScenario scenario = await SeedAsync(cancellationToken).ConfigureAwait(true);
+
+        // 0001's unique original-outbox lineage and 0002's quota emitter share
+        // the canonical event identity sequence, even for synthetic fault rows.
+        using NpgsqlCommand command = fixture.AdministratorDataSource.CreateCommand("""
+            SELECT nextval(pg_get_serial_sequence('public.group_quota_events', 'event_sequence'))
+            FROM generate_series(1, 25);
+            """);
+        using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(true);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(true))
+        {
+            Assert.DoesNotContain(reader.GetInt64(0), scenario.ExpectedSourceEventSequences);
+        }
+    }
+
     private async ValueTask<InboxScenario> SeedInboxScenarioAsync(
         CancellationToken cancellationToken)
     {
@@ -324,9 +345,13 @@ public sealed class PostgresQuotaDeliveryHealthReaderTests(
         NpgsqlTransaction transaction,
         CancellationToken cancellationToken)
     {
+        // The largest synthetic offset is ten. Reserve the entire range from
+        // the identity sequence so later real quota events cannot reuse it.
         using NpgsqlCommand command = new(
-            "SELECT coalesce(max(source_event_sequence), 0) + 10 "
-                + "FROM public.outbox_messages;",
+            """
+            SELECT min(nextval(pg_get_serial_sequence('public.group_quota_events', 'event_sequence')))
+            FROM generate_series(1, 11);
+            """,
             connection,
             transaction);
         object? value = await command.ExecuteScalarAsync(cancellationToken)
