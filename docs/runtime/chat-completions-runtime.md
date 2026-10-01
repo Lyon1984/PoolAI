@@ -66,13 +66,20 @@ admission owner and vendor-neutral ports. Real local PostgreSQL 18/Redis public-
 exercise production authorization/routing/dispatch/settlement/audit/outbox/lease cleanup and
 a loopback mock upstream, including gated cancellation and unsafe usage.
 
-Exact implementation `e140586`, compared with `e0fb59d`, passed the full local quality gate:
-32 projects built with zero warnings/errors, .NET 3,389/3,389 and frontend 8/8 passed with
+Implementation `e140586` and test-only follow-up `0076aed`, compared with `e0fb59d`,
+passed the full local quality gate. The follow-up built 32 projects with zero warnings/errors;
+.NET 3,391/3,391 and frontend 8/8 passed with
 zero failures/skips, all 26 production assemblies were observed, and modified-line coverage
-was 667/671 (99.40%). The [PR quality run](https://github.com/Lyon1984/PoolAI/actions/runs/36905677409)
+was 667/671 (99.40%). The initial implementation's [PR quality run](https://github.com/Lyon1984/PoolAI/actions/runs/36905677409)
 passed `verify`, `browser-smoke`, and `dynamic-compose`; CodeQL passed in the
 [security run](https://github.com/Lyon1984/PoolAI/actions/runs/36905677264), while the inherited
 dependency and Host image gates failed. This evidence is not a security waiver.
+
+The follow-up reproduces an architecture alias-scanner timeout with 20,000 raw-literal lines
+under LF and CRLF before the fix. Line-local leading whitespace removes cross-line rescanning;
+the tests still prove aliased Token authority is detected and unsupported aliases fail closed.
+All 119 architecture tests passed, with unchanged assertions and one-second regex budgets.
+Production, policy, and frozen-contract files remain identical to the scanned implementation.
 
 The official CLI's report-only immutable diff scan
 `cc743732-1fd7-4a91-8b75-f8d41d769f16` completed and sealed for these exact revisions.
