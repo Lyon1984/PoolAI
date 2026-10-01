@@ -72,3 +72,12 @@ usage, premature EOF, unsafe usage, affinity persistence, and a deterministicall
 client disconnect. Guard tests separately prove partition isolation and late-continuation
 fencing. These are repository-development evidence, not remote migration, deployment,
 real-provider, physical certification, M4 Exit, or Release 1 approval.
+
+The implementation/security closeout remains open in [Issue #25](https://github.com/Lyon1984/PoolAI/issues/25)
+and [Draft PR #97](https://github.com/Lyon1984/PoolAI/pull/97). The completed implementation-range
+security scan and independent validation retain four reportable findings: selected-provider
+usage authority under provider compromise, client JSON DOM allocation before Group RPM,
+and advisory affinity cardinality on shared coordination Redis. The request byte/depth and
+discriminator bounds above are not a pre-DOM JSON-node budget. No new legal-input budget,
+usage-quarantine policy, or cache-isolation contract is approved by this implementation map.
+The NAT64/SIIT deployment proof gap and Host image vulnerability gate also remain open.
